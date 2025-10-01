@@ -870,4 +870,943 @@ mod tests {
         // The router is properly configured with /v1/chat/completions endpoint
         drop(router);
     }
+
+    // Tool schema validation tests
+    #[test]
+    fn test_tool_schema_invalid_not_object() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: Some("test".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: Some(vec![OpenAITool {
+                tool_type: "function".to_string(),
+                function: OpenAIFunction {
+                    name: "test_func".to_string(),
+                    description: None,
+                    parameters: serde_json::json!("not an object"),
+                },
+            }]),
+            tool_choice: None,
+        };
+
+        let result = to_normalized(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("parameters must be a valid JSON Schema object"));
+    }
+
+    #[test]
+    fn test_tool_schema_missing_type_field() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: Some("test".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: Some(vec![OpenAITool {
+                tool_type: "function".to_string(),
+                function: OpenAIFunction {
+                    name: "test_func".to_string(),
+                    description: None,
+                    parameters: serde_json::json!({"properties": {}}),
+                },
+            }]),
+            tool_choice: None,
+        };
+
+        let result = to_normalized(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("schema must have 'type' field"));
+    }
+
+    #[test]
+    fn test_tool_schema_valid_object() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: Some("test".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: Some(vec![OpenAITool {
+                tool_type: "function".to_string(),
+                function: OpenAIFunction {
+                    name: "test_func".to_string(),
+                    description: Some("Test function".to_string()),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "arg1": {"type": "string"}
+                        }
+                    }),
+                },
+            }]),
+            tool_choice: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.tools.len(), 1);
+        assert_eq!(normalized.tools[0].function.name, "test_func");
+        assert_eq!(normalized.tools[0].function.description, Some("Test function".to_string()));
+    }
+
+    #[test]
+    fn test_tool_schema_empty_object() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: Some("test".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: Some(vec![OpenAITool {
+                tool_type: "function".to_string(),
+                function: OpenAIFunction {
+                    name: "test_func".to_string(),
+                    description: None,
+                    parameters: serde_json::json!({"type": "object"}),
+                },
+            }]),
+            tool_choice: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.tools.len(), 1);
+    }
+
+    // Tool argument size validation tests
+    #[test]
+    fn test_tool_args_at_size_limit() {
+        // Create arguments string at exactly 1MB
+        let large_args = "x".repeat(1_000_000);
+
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                OpenAIMessage {
+                    role: "user".to_string(),
+                    content: Some("test".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    name: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "call_1".to_string(),
+                        tool_type: "function".to_string(),
+                        function: OpenAIFunctionCall {
+                            name: "test_func".to_string(),
+                            arguments: large_args,
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        // Should succeed at exactly the limit
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.messages.len(), 2);
+    }
+
+    #[test]
+    fn test_tool_args_exceeds_size_limit() {
+        // Create arguments string exceeding 1MB
+        let large_args = "x".repeat(1_000_001);
+
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                OpenAIMessage {
+                    role: "user".to_string(),
+                    content: Some("test".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    name: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "call_1".to_string(),
+                        tool_type: "function".to_string(),
+                        function: OpenAIFunctionCall {
+                            name: "test_func".to_string(),
+                            arguments: large_args,
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let result = to_normalized(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Tool arguments too large"));
+        assert!(err_msg.contains("max 1MB"));
+    }
+
+    #[test]
+    fn test_tool_args_empty_json() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                OpenAIMessage {
+                    role: "user".to_string(),
+                    content: Some("test".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    name: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "call_1".to_string(),
+                        tool_type: "function".to_string(),
+                        function: OpenAIFunctionCall {
+                            name: "test_func".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.messages.len(), 2);
+        assert_eq!(normalized.messages[1].tool_calls.len(), 1);
+        assert_eq!(normalized.messages[1].tool_calls[0].function.arguments, "{}");
+    }
+
+    // Multimodal content extraction tests
+    #[test]
+    fn test_multimodal_multiple_text_parts() {
+        use lunaroute_core::normalized::ContentPart;
+
+        let resp = NormalizedResponse {
+            id: "test".to_string(),
+            model: "gpt-4".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Parts(vec![
+                        ContentPart::Text {
+                            text: "First part".to_string(),
+                        },
+                        ContentPart::Text {
+                            text: "Second part".to_string(),
+                        },
+                        ContentPart::Text {
+                            text: "Third part".to_string(),
+                        },
+                    ]),
+                    name: None,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                },
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai = from_normalized(resp);
+        // Multiple text parts should be joined with newlines
+        assert_eq!(openai.choices[0].message.content, Some("First part\nSecond part\nThird part".to_string()));
+    }
+
+    #[test]
+    fn test_multimodal_mixed_text_and_images() {
+        use lunaroute_core::normalized::{ContentPart, ImageSource};
+
+        let resp = NormalizedResponse {
+            id: "test".to_string(),
+            model: "gpt-4-vision".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Parts(vec![
+                        ContentPart::Text {
+                            text: "I see".to_string(),
+                        },
+                        ContentPart::Image {
+                            source: ImageSource::Url {
+                                url: "https://example.com/image.jpg".to_string(),
+                            },
+                        },
+                        ContentPart::Text {
+                            text: "a cat".to_string(),
+                        },
+                    ]),
+                    name: None,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                },
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai = from_normalized(resp);
+        // Image parts should be filtered out, only text extracted
+        assert_eq!(openai.choices[0].message.content, Some("I see\na cat".to_string()));
+    }
+
+    #[test]
+    fn test_multimodal_empty_parts() {
+        let resp = NormalizedResponse {
+            id: "test".to_string(),
+            model: "gpt-4".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Parts(vec![]),
+                    name: None,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                },
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai = from_normalized(resp);
+        // Empty parts should result in None content
+        assert_eq!(openai.choices[0].message.content, None);
+    }
+
+    #[test]
+    fn test_multimodal_only_images() {
+        use lunaroute_core::normalized::{ContentPart, ImageSource};
+
+        let resp = NormalizedResponse {
+            id: "test".to_string(),
+            model: "gpt-4-vision".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Parts(vec![
+                        ContentPart::Image {
+                            source: ImageSource::Url {
+                                url: "https://example.com/image1.jpg".to_string(),
+                            },
+                        },
+                        ContentPart::Image {
+                            source: ImageSource::Base64 {
+                                media_type: "image/jpeg".to_string(),
+                                data: "base64data".to_string(),
+                            },
+                        },
+                    ]),
+                    name: None,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                },
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai = from_normalized(resp);
+        // Only images should result in None content
+        assert_eq!(openai.choices[0].message.content, None);
+    }
+
+    // Round-trip conversion tests
+    #[test]
+    fn test_roundtrip_basic_request() {
+        let original_req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                OpenAIMessage {
+                    role: "system".to_string(),
+                    content: Some("You are helpful".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "user".to_string(),
+                    content: Some("Hello world".to_string()),
+                    name: Some("user1".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            temperature: Some(0.8),
+            top_p: Some(0.9),
+            max_tokens: Some(150),
+            stream: Some(false),
+            stop: Some(vec!["STOP".to_string()]),
+            n: None,
+            presence_penalty: Some(0.5),
+            frequency_penalty: Some(-0.5),
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let normalized = to_normalized(original_req.clone()).unwrap();
+
+        // Verify key fields are preserved in normalized format
+        assert_eq!(normalized.model, "gpt-4");
+        assert_eq!(normalized.messages.len(), 2);
+        assert_eq!(normalized.temperature, Some(0.8));
+        assert_eq!(normalized.max_tokens, Some(150));
+        assert_eq!(normalized.stop_sequences, vec!["STOP".to_string()]);
+    }
+
+    #[test]
+    fn test_roundtrip_request_with_tools() {
+        let original_req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: Some("What's the weather?".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: Some(vec![OpenAITool {
+                tool_type: "function".to_string(),
+                function: OpenAIFunction {
+                    name: "get_weather".to_string(),
+                    description: Some("Get weather info".to_string()),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "location": {"type": "string"}
+                        }
+                    }),
+                },
+            }]),
+            tool_choice: Some(OpenAIToolChoice::String("auto".to_string())),
+        };
+
+        let normalized = to_normalized(original_req.clone()).unwrap();
+
+        // Verify tools are preserved
+        assert_eq!(normalized.tools.len(), 1);
+        assert_eq!(normalized.tools[0].function.name, "get_weather");
+        assert_eq!(normalized.tools[0].function.description, Some("Get weather info".to_string()));
+        assert_eq!(normalized.tool_choice, Some(ToolChoice::Auto));
+    }
+
+    #[test]
+    fn test_roundtrip_response() {
+        let normalized_resp = NormalizedResponse {
+            id: "resp-123".to_string(),
+            model: "gpt-4".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Text("Hello back!".to_string()),
+                    name: None,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                },
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage {
+                prompt_tokens: 20,
+                completion_tokens: 10,
+                total_tokens: 30,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai_resp = from_normalized(normalized_resp.clone());
+
+        // Verify response fields are preserved (ID gets prefixed with chatcmpl-)
+        assert_eq!(openai_resp.id, "chatcmpl-resp-123");
+        assert_eq!(openai_resp.model, "gpt-4");
+        assert_eq!(openai_resp.choices[0].message.content, Some("Hello back!".to_string()));
+        assert_eq!(openai_resp.usage.total_tokens, 30);
+        assert_eq!(openai_resp.choices[0].finish_reason, Some("stop".to_string()));
+    }
+
+    #[test]
+    fn test_roundtrip_message_with_tool_calls() {
+        let original_req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                OpenAIMessage {
+                    role: "user".to_string(),
+                    content: Some("Get weather".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    name: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "call_123".to_string(),
+                        tool_type: "function".to_string(),
+                        function: OpenAIFunctionCall {
+                            name: "get_weather".to_string(),
+                            arguments: r#"{"location":"NYC"}"#.to_string(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "tool".to_string(),
+                    content: Some("72°F".to_string()),
+                    name: Some("get_weather".to_string()),
+                    tool_calls: None,
+                    tool_call_id: Some("call_123".to_string()),
+                },
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let normalized = to_normalized(original_req.clone()).unwrap();
+
+        // Verify tool calls are preserved
+        assert_eq!(normalized.messages.len(), 3);
+        assert_eq!(normalized.messages[1].tool_calls.len(), 1);
+        assert_eq!(normalized.messages[1].tool_calls[0].id, "call_123");
+        assert_eq!(normalized.messages[1].tool_calls[0].function.name, "get_weather");
+        assert_eq!(normalized.messages[2].role, Role::Tool);
+        assert_eq!(normalized.messages[2].tool_call_id, Some("call_123".to_string()));
+    }
+
+    // Error path tests
+    #[test]
+    fn test_error_invalid_temperature_range() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: Some("test".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: Some(2.5), // Invalid: > 2.0
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let result = to_normalized(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("temperature must be between 0.0 and 2.0"));
+    }
+
+    #[test]
+    fn test_error_message_content_too_large() {
+        // Create content larger than 1MB
+        let large_content = "x".repeat(1_000_001);
+
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: Some(large_content),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let result = to_normalized(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Message content too large"));
+    }
+
+    #[test]
+    fn test_error_empty_model_name() {
+        let req = OpenAIChatRequest {
+            model: "".to_string(), // Invalid: empty
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: Some("test".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let result = to_normalized(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("model field cannot be empty"));
+    }
+
+    #[test]
+    fn test_error_invalid_max_tokens() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: Some("test".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: Some(200000), // Invalid: > 100000
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let result = to_normalized(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("max_tokens must be <= 100000"));
+    }
+
+    // Edge case tests
+    #[test]
+    fn test_edge_empty_tools_array() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: Some("test".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: Some(vec![]), // Empty tools array
+            tool_choice: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.tools.len(), 0);
+    }
+
+    #[test]
+    fn test_edge_message_only_tool_calls_no_content() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                OpenAIMessage {
+                    role: "user".to_string(),
+                    content: Some("test".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content: None, // No content
+                    name: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "call_1".to_string(),
+                        tool_type: "function".to_string(),
+                        function: OpenAIFunctionCall {
+                            name: "test_func".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.messages.len(), 2);
+        // Content should be empty string when None
+        if let MessageContent::Text(text) = &normalized.messages[1].content {
+            assert_eq!(text, "");
+        } else {
+            panic!("Expected Text content");
+        }
+        assert_eq!(normalized.messages[1].tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn test_edge_unicode_in_content_and_names() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: Some("Hello 世界 🌍 مرحبا".to_string()), // Unicode content
+                name: Some("用户_1".to_string()), // Unicode name
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        if let MessageContent::Text(text) = &normalized.messages[0].content {
+            assert!(text.contains("世界"));
+            assert!(text.contains("🌍"));
+            assert!(text.contains("مرحبا"));
+        } else {
+            panic!("Expected Text content");
+        }
+        assert_eq!(normalized.messages[0].name, Some("用户_1".to_string()));
+    }
+
+    #[test]
+    fn test_edge_multiple_tool_calls_in_message() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                OpenAIMessage {
+                    role: "user".to_string(),
+                    content: Some("test".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    name: None,
+                    tool_calls: Some(vec![
+                        OpenAIToolCall {
+                            id: "call_1".to_string(),
+                            tool_type: "function".to_string(),
+                            function: OpenAIFunctionCall {
+                                name: "func1".to_string(),
+                                arguments: r#"{"arg":"value1"}"#.to_string(),
+                            },
+                        },
+                        OpenAIToolCall {
+                            id: "call_2".to_string(),
+                            tool_type: "function".to_string(),
+                            function: OpenAIFunctionCall {
+                                name: "func2".to_string(),
+                                arguments: r#"{"arg":"value2"}"#.to_string(),
+                            },
+                        },
+                        OpenAIToolCall {
+                            id: "call_3".to_string(),
+                            tool_type: "function".to_string(),
+                            function: OpenAIFunctionCall {
+                                name: "func3".to_string(),
+                                arguments: r#"{"arg":"value3"}"#.to_string(),
+                            },
+                        },
+                    ]),
+                    tool_call_id: None,
+                },
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.messages.len(), 2);
+        assert_eq!(normalized.messages[1].tool_calls.len(), 3);
+        assert_eq!(normalized.messages[1].tool_calls[0].function.name, "func1");
+        assert_eq!(normalized.messages[1].tool_calls[1].function.name, "func2");
+        assert_eq!(normalized.messages[1].tool_calls[2].function.name, "func3");
+    }
 }
