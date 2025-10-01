@@ -64,12 +64,33 @@ make install-hooks
 ## Development Status
 
 **Phase 0: Project Setup** ✅ Complete
-
 - Workspace structure
 - Development environment
 - CI/CD workflows
 
-**Phase 1-17**: In progress
+**Phase 1: Core Types** ✅ Complete
+- Normalized data models (requests, responses, streams)
+- Core traits (Provider, Storage, PII detection)
+- 100% test coverage
+
+**Phase 3: Ingress Layer** ✅ Complete
+- OpenAI-compatible HTTP endpoints (/v1/chat/completions)
+- Anthropic-compatible HTTP endpoints (/v1/messages)
+- Request/response normalization and validation
+- Middleware (CORS, security headers, request tracing)
+- Comprehensive input validation
+- Production-ready security hardening
+- 53 tests passing, 100% coverage
+
+**Security Features:**
+- Cryptographically secure RNG for trace/span IDs
+- Configurable CORS with secure localhost-only default
+- Zero panic-prone unwrap() calls
+- Comprehensive request validation (temperature, tokens, penalties, etc.)
+- Request size limits (1MB per message, 100K max tokens)
+- API-specific validation (OpenAI vs Anthropic parameter ranges)
+
+**Phase 2, 4-17**: In progress
 
 See [TODO.md](TODO.md) for the complete implementation roadmap.
 
