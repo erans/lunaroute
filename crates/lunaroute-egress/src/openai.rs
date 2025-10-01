@@ -155,6 +155,9 @@ struct OpenAIChatRequest {
     top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    /// GPT-5 models use max_completion_tokens instead of max_tokens
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -382,12 +385,21 @@ fn to_openai_request(req: NormalizedRequest) -> Result<OpenAIChatRequest> {
         },
     });
 
+    // GPT-5 models use max_completion_tokens instead of max_tokens
+    let is_gpt5 = req.model.starts_with("gpt-5") || req.model.starts_with("o1") || req.model.starts_with("o3");
+    let (max_tokens, max_completion_tokens) = if is_gpt5 {
+        (None, req.max_tokens)
+    } else {
+        (req.max_tokens, None)
+    };
+
     Ok(OpenAIChatRequest {
         model: req.model,
         messages,
         temperature: req.temperature,
         top_p: req.top_p,
-        max_tokens: req.max_tokens,
+        max_tokens,
+        max_completion_tokens,
         stream: Some(req.stream),
         stop: if req.stop_sequences.is_empty() {
             None

@@ -51,24 +51,36 @@ impl ProviderHealth {
 
     /// Record a successful request
     fn record_success(&self) {
-        self.success_count.fetch_add(1, Ordering::Relaxed);
-        *self.last_success.write().unwrap() = Some(Instant::now());
+        // Use fetch_update for atomic saturating arithmetic
+        self.success_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                Some(current.saturating_add(1))
+            })
+            .ok();
+        *self.last_success.write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
     }
 
     /// Record a failed request
     fn record_failure(&self) {
-        self.failure_count.fetch_add(1, Ordering::Relaxed);
-        *self.last_failure.write().unwrap() = Some(Instant::now());
+        // Use fetch_update for atomic saturating arithmetic
+        self.failure_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                Some(current.saturating_add(1))
+            })
+            .ok();
+        *self.last_failure.write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
     }
 
     /// Get total success count
     fn success_count(&self) -> u64 {
-        self.success_count.load(Ordering::Relaxed)
+        self.success_count.load(Ordering::Acquire)
     }
 
     /// Get total failure count
     fn failure_count(&self) -> u64 {
-        self.failure_count.load(Ordering::Relaxed)
+        self.failure_count.load(Ordering::Acquire)
     }
 
     /// Get total request count
@@ -89,7 +101,7 @@ impl ProviderHealth {
     fn time_since_last_success(&self) -> Option<Duration> {
         self.last_success
             .read()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .map(|instant| instant.elapsed())
     }
 
@@ -97,7 +109,7 @@ impl ProviderHealth {
     fn time_since_last_failure(&self) -> Option<Duration> {
         self.last_failure
             .read()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .map(|instant| instant.elapsed())
     }
 
@@ -129,6 +141,49 @@ impl Default for HealthMonitorConfig {
     }
 }
 
+impl HealthMonitorConfig {
+    /// Validate configuration values
+    ///
+    /// Returns an error if the configuration is invalid
+    pub fn validate(&self) -> Result<(), String> {
+        if !(0.0..=1.0).contains(&self.healthy_threshold) {
+            return Err("healthy_threshold must be between 0.0 and 1.0".to_string());
+        }
+        if !(0.0..=1.0).contains(&self.unhealthy_threshold) {
+            return Err("unhealthy_threshold must be between 0.0 and 1.0".to_string());
+        }
+        if self.unhealthy_threshold >= self.healthy_threshold {
+            return Err("unhealthy_threshold must be less than healthy_threshold".to_string());
+        }
+        if self.failure_window.as_millis() == 0 {
+            return Err("failure_window must be greater than 0".to_string());
+        }
+        if self.min_requests == 0 {
+            return Err("min_requests must be greater than 0".to_string());
+        }
+        Ok(())
+    }
+
+    /// Create a new validated configuration
+    ///
+    /// Returns an error if validation fails
+    pub fn new(
+        healthy_threshold: f64,
+        unhealthy_threshold: f64,
+        failure_window: Duration,
+        min_requests: u64,
+    ) -> Result<Self, String> {
+        let config = Self {
+            healthy_threshold,
+            unhealthy_threshold,
+            failure_window,
+            min_requests,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+}
+
 /// Health monitor for tracking provider health
 #[derive(Debug)]
 pub struct HealthMonitor {
@@ -155,7 +210,8 @@ impl HealthMonitor {
     /// Register a provider for health monitoring
     pub fn register_provider(&self, provider_id: impl Into<String>) {
         let provider_id = provider_id.into();
-        let mut providers = self.providers.write().unwrap();
+        let mut providers = self.providers.write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         providers
             .entry(provider_id.clone())
             .or_insert_with(|| Arc::new(ProviderHealth::new()));
@@ -164,7 +220,8 @@ impl HealthMonitor {
 
     /// Record a successful request for a provider
     pub fn record_success(&self, provider_id: &str) {
-        let providers = self.providers.read().unwrap();
+        let providers = self.providers.read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(health) = providers.get(provider_id) {
             health.record_success();
         }
@@ -172,7 +229,8 @@ impl HealthMonitor {
 
     /// Record a failed request for a provider
     pub fn record_failure(&self, provider_id: &str) {
-        let providers = self.providers.read().unwrap();
+        let providers = self.providers.read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(health) = providers.get(provider_id) {
             health.record_failure();
         }
@@ -180,7 +238,8 @@ impl HealthMonitor {
 
     /// Get the health status of a provider
     pub fn get_status(&self, provider_id: &str) -> HealthStatus {
-        let providers = self.providers.read().unwrap();
+        let providers = self.providers.read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(health) = providers.get(provider_id) else {
             return HealthStatus::Unknown;
         };
@@ -194,20 +253,19 @@ impl HealthMonitor {
 
         let success_rate = health.success_rate();
 
-        // Check if we've had recent failures with no recent successes
-        if let Some(time_since_failure) = health.time_since_last_failure()
-            && time_since_failure < self.config.failure_window
-        {
-            // Recent failure - check if we've had any recent successes
-            if let Some(time_since_success) = health.time_since_last_success() {
-                if time_since_success > self.config.failure_window {
-                    // No recent successes, but recent failures
-                    return HealthStatus::Unhealthy;
-                }
-            } else {
-                // Never had a success
-                return HealthStatus::Unhealthy;
-            }
+        // Check for recent failures without recent successes (indicates current issues)
+        let has_recent_failure = health
+            .time_since_last_failure()
+            .is_some_and(|duration| duration < self.config.failure_window);
+
+        let has_recent_success = health
+            .time_since_last_success()
+            .is_some_and(|duration| duration < self.config.failure_window);
+
+        // If we have recent failures but no recent successes, mark as unhealthy
+        // This catches degradation faster than waiting for success rate to drop
+        if has_recent_failure && !has_recent_success {
+            return HealthStatus::Unhealthy;
         }
 
         // Determine status based on success rate
@@ -222,7 +280,8 @@ impl HealthMonitor {
 
     /// Get detailed metrics for a provider
     pub fn get_metrics(&self, provider_id: &str) -> Option<HealthMetrics> {
-        let providers = self.providers.read().unwrap();
+        let providers = self.providers.read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         providers.get(provider_id).map(|health| HealthMetrics {
             success_count: health.success_count(),
             failure_count: health.failure_count(),
@@ -236,13 +295,15 @@ impl HealthMonitor {
 
     /// Get all provider IDs being monitored
     pub fn get_provider_ids(&self) -> Vec<String> {
-        let providers = self.providers.read().unwrap();
+        let providers = self.providers.read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         providers.keys().cloned().collect()
     }
 
     /// Reset metrics for a provider
     pub fn reset_provider(&self, provider_id: &str) {
-        let providers = self.providers.read().unwrap();
+        let providers = self.providers.read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(_health) = providers.get(provider_id) {
             // Need to get mutable access - this is a bit awkward with Arc
             // In practice, we'd need to use interior mutability
@@ -255,7 +316,8 @@ impl HealthMonitor {
 
     /// Remove a provider from monitoring
     pub fn unregister_provider(&self, provider_id: &str) {
-        let mut providers = self.providers.write().unwrap();
+        let mut providers = self.providers.write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if providers.remove(provider_id).is_some() {
             tracing::debug!("Unregistered provider from health monitoring: {}", provider_id);
         }

@@ -12,6 +12,7 @@ publish = false
 lunaroute-core = { path = "../lunaroute-core" }
 lunaroute-ingress = { path = "../lunaroute-ingress" }
 lunaroute-egress = { path = "../lunaroute-egress" }
+lunaroute-routing = { path = "../lunaroute-routing" }
 
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -19,3 +20,8 @@ tower = { workspace = true }
 serde_json = { workspace = true }
 wiremock = { workspace = true }
 async-trait = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+dotenv = "0.15"
+tracing-subscriber = { workspace = true }

@@ -7,6 +7,7 @@
 //! - Fallback chains for automatic failover
 
 use lunaroute_core::normalized::NormalizedRequest;
+use once_cell::sync::OnceCell;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -85,12 +86,17 @@ pub struct RoutingRule {
 }
 
 /// Matcher for routing rules
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum RuleMatcher {
     /// Match based on model name pattern (regex)
     #[serde(rename = "model")]
-    ModelPattern { pattern: String },
+    ModelPattern {
+        pattern: String,
+        /// Compiled regex (lazily initialized, not serialized)
+        #[serde(skip)]
+        compiled: OnceCell<Option<Regex>>,
+    },
     /// Match based on listener type
     #[serde(rename = "listener")]
     Listener { listener: ListenerType },
@@ -102,18 +108,53 @@ pub enum RuleMatcher {
     Always,
 }
 
+// Implement Clone manually because OnceCell doesn't implement Clone
+impl Clone for RuleMatcher {
+    fn clone(&self) -> Self {
+        match self {
+            RuleMatcher::ModelPattern { pattern, .. } => RuleMatcher::ModelPattern {
+                pattern: pattern.clone(),
+                compiled: OnceCell::new(), // New cell for the clone
+            },
+            RuleMatcher::Listener { listener } => RuleMatcher::Listener {
+                listener: *listener,
+            },
+            RuleMatcher::ProviderOverride => RuleMatcher::ProviderOverride,
+            RuleMatcher::Always => RuleMatcher::Always,
+        }
+    }
+}
+
 impl RuleMatcher {
+    /// Create a new ModelPattern matcher with the given regex pattern
+    pub fn model_pattern(pattern: impl Into<String>) -> Self {
+        RuleMatcher::ModelPattern {
+            pattern: pattern.into(),
+            compiled: OnceCell::new(),
+        }
+    }
+
     /// Check if this matcher matches the given request and context
     fn matches(&self, request: &NormalizedRequest, context: &RoutingContext) -> bool {
         match self {
-            RuleMatcher::ModelPattern { pattern } => {
-                // Compile regex and match against model name
-                if let Ok(regex) = Regex::new(pattern) {
-                    regex.is_match(&request.model)
-                } else {
-                    tracing::warn!("Invalid regex pattern in routing rule: {}", pattern);
-                    false
-                }
+            RuleMatcher::ModelPattern { pattern, compiled } => {
+                // Get or compile regex (cached for performance)
+                let regex_opt = compiled.get_or_init(|| {
+                    match Regex::new(pattern) {
+                        Ok(regex) => Some(regex),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Invalid regex pattern '{}' in routing rule: {}",
+                                pattern,
+                                e
+                            );
+                            None
+                        }
+                    }
+                });
+
+                // Match against model name if regex compiled successfully
+                regex_opt.as_ref().is_some_and(|regex| regex.is_match(&request.model))
             }
             RuleMatcher::Listener { listener } => {
                 // Match listener type
@@ -263,9 +304,7 @@ mod tests {
 
     #[test]
     fn test_rule_matcher_model_pattern() {
-        let matcher = RuleMatcher::ModelPattern {
-            pattern: "^gpt-.*".to_string(),
-        };
+        let matcher = RuleMatcher::model_pattern("^gpt-.*");
         let request = create_test_request("gpt-4");
         let context = RoutingContext::new();
 
@@ -376,9 +415,7 @@ mod tests {
         let rule = RoutingRule {
             priority: 10,
             name: Some("gpt_rule".to_string()),
-            matcher: RuleMatcher::ModelPattern {
-                pattern: "^gpt-.*".to_string(),
-            },
+            matcher: RuleMatcher::model_pattern("^gpt-.*"),
             primary: "openai".to_string(),
             fallbacks: vec!["openai_backup".to_string()],
         };
@@ -419,9 +456,7 @@ mod tests {
             RoutingRule {
                 priority: 20,
                 name: Some("high_priority".to_string()),
-                matcher: RuleMatcher::ModelPattern {
-                    pattern: ".*".to_string(), // Matches everything
-                },
+                matcher: RuleMatcher::model_pattern(".*"), // Matches everything
                 primary: "provider1".to_string(),
                 fallbacks: vec![],
             },
@@ -449,9 +484,7 @@ mod tests {
         let rule = RoutingRule {
             priority: 10,
             name: Some("gpt_only".to_string()),
-            matcher: RuleMatcher::ModelPattern {
-                pattern: "^gpt-.*".to_string(),
-            },
+            matcher: RuleMatcher::model_pattern("^gpt-.*"),
             primary: "openai".to_string(),
             fallbacks: vec![],
         };
@@ -490,9 +523,7 @@ mod tests {
         let rule = RoutingRule {
             priority: 10,
             name: Some("gpt_rule".to_string()),
-            matcher: RuleMatcher::ModelPattern {
-                pattern: "^gpt-.*".to_string(),
-            },
+            matcher: RuleMatcher::model_pattern("^gpt-.*"),
             primary: "openai".to_string(),
             fallbacks: vec!["openai_backup".to_string()],
         };
@@ -506,7 +537,7 @@ mod tests {
         assert_eq!(deserialized.fallbacks, vec!["openai_backup"]);
 
         // Verify matcher is correct
-        if let RuleMatcher::ModelPattern { pattern } = deserialized.matcher {
+        if let RuleMatcher::ModelPattern { pattern, .. } = deserialized.matcher {
             assert_eq!(pattern, "^gpt-.*");
         } else {
             panic!("Expected ModelPattern matcher");
@@ -558,7 +589,7 @@ mod tests {
         assert_eq!(rule.primary, "anthropic");
         assert_eq!(rule.fallbacks, vec!["anthropic_backup"]);
 
-        if let RuleMatcher::ModelPattern { pattern } = rule.matcher {
+        if let RuleMatcher::ModelPattern { pattern, .. } = rule.matcher {
             assert_eq!(pattern, "^claude-.*");
         } else {
             panic!("Expected ModelPattern matcher");
@@ -602,9 +633,7 @@ mod tests {
             RoutingRule {
                 priority: 10,
                 name: Some("rule1".to_string()),
-                matcher: RuleMatcher::ModelPattern {
-                    pattern: "^gpt-.*".to_string(),
-                },
+                matcher: RuleMatcher::model_pattern("^gpt-.*"),
                 primary: "openai".to_string(),
                 fallbacks: vec![],
             },
@@ -680,9 +709,7 @@ mod tests {
 
     #[test]
     fn test_invalid_regex_pattern_returns_false() {
-        let matcher = RuleMatcher::ModelPattern {
-            pattern: "[invalid(regex".to_string(), // Invalid regex
-        };
+        let matcher = RuleMatcher::model_pattern("[invalid(regex"); // Invalid regex
         let request = create_test_request("any-model");
         let context = RoutingContext::new();
 
@@ -787,9 +814,7 @@ mod tests {
         ];
 
         for (pattern, model, expected) in test_cases {
-            let matcher = RuleMatcher::ModelPattern {
-                pattern: pattern.to_string(),
-            };
+            let matcher = RuleMatcher::model_pattern(pattern);
             let request = create_test_request(model);
             let context = RoutingContext::new();
 

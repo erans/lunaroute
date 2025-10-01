@@ -59,6 +59,41 @@ impl Default for CircuitBreakerConfig {
     }
 }
 
+impl CircuitBreakerConfig {
+    /// Validate configuration values
+    ///
+    /// Returns an error if the configuration is invalid
+    pub fn validate(&self) -> Result<(), String> {
+        if self.failure_threshold == 0 {
+            return Err("failure_threshold must be greater than 0".to_string());
+        }
+        if self.success_threshold == 0 {
+            return Err("success_threshold must be greater than 0".to_string());
+        }
+        if self.timeout.as_millis() == 0 {
+            return Err("timeout must be greater than 0".to_string());
+        }
+        Ok(())
+    }
+
+    /// Create a new validated configuration
+    ///
+    /// Returns an error if validation fails
+    pub fn new(
+        failure_threshold: u32,
+        success_threshold: u32,
+        timeout: Duration,
+    ) -> Result<Self, String> {
+        let config = Self {
+            failure_threshold,
+            success_threshold,
+            timeout,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+}
+
 /// Circuit breaker implementation
 ///
 /// Thread-safe circuit breaker that tracks failures and successes,
@@ -109,10 +144,27 @@ impl CircuitBreaker {
             CircuitState::Closed => true,
             CircuitState::Open => {
                 // Check if timeout has expired
-                let last_change = self.last_state_change.lock().unwrap();
+                let last_change = self.last_state_change.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 if last_change.elapsed() >= self.config.timeout {
                     drop(last_change); // Release lock before state change
-                    self.transition_to_half_open();
+
+                    // Use compare_exchange to atomically transition to HalfOpen
+                    // Only one thread will succeed, preventing race condition
+                    if self.state.compare_exchange(
+                        CircuitState::Open as u8,
+                        CircuitState::HalfOpen as u8,
+                        Ordering::AcqRel,
+                        Ordering::Acquire
+                    ).is_ok() {
+                        // We won the race - update state change time and reset counters
+                        *self.last_state_change.lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
+                        self.consecutive_failures.store(0, Ordering::Release);
+                        self.consecutive_successes.store(0, Ordering::Release);
+                        tracing::info!("Circuit breaker half-open (testing recovery)");
+                    }
+                    // Either we transitioned or another thread did - allow request
                     true
                 } else {
                     false
@@ -136,8 +188,12 @@ impl CircuitBreaker {
                 self.consecutive_failures.store(0, Ordering::Release);
             }
             CircuitState::HalfOpen => {
-                // Increment success count
-                let successes = self.consecutive_successes.fetch_add(1, Ordering::AcqRel) + 1;
+                // Increment success count with atomic saturation to prevent overflow
+                let successes = self.consecutive_successes
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                        Some(current.saturating_add(1))
+                    })
+                    .unwrap_or(0) + 1; // unwrap_or gives old value, +1 for new value
 
                 // Reset failure count
                 self.consecutive_failures.store(0, Ordering::Release);
@@ -160,8 +216,12 @@ impl CircuitBreaker {
 
         match current_state {
             CircuitState::Closed => {
-                // Increment failure count
-                let failures = self.consecutive_failures.fetch_add(1, Ordering::AcqRel) + 1;
+                // Increment failure count with atomic saturation to prevent overflow
+                let failures = self.consecutive_failures
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                        Some(current.saturating_add(1))
+                    })
+                    .unwrap_or(0) + 1; // unwrap_or gives old value, +1 for new value
 
                 // Reset success count
                 self.consecutive_successes.store(0, Ordering::Release);
@@ -177,8 +237,12 @@ impl CircuitBreaker {
                 self.transition_to_open();
             }
             CircuitState::Open => {
-                // Already open, just track the failure
-                self.consecutive_failures.fetch_add(1, Ordering::AcqRel);
+                // Already open, just track the failure with atomic saturation
+                self.consecutive_failures
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                        Some(current.saturating_add(1))
+                    })
+                    .ok();
             }
         }
     }
@@ -205,32 +269,25 @@ impl CircuitBreaker {
 
     /// Get the time since last state change
     pub fn time_since_state_change(&self) -> Duration {
-        self.last_state_change.lock().unwrap().elapsed()
+        self.last_state_change.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .elapsed()
     }
 
     /// Transition to open state
     fn transition_to_open(&self) {
         self.state.store(CircuitState::Open as u8, Ordering::Release);
-        *self.last_state_change.lock().unwrap() = Instant::now();
+        *self.last_state_change.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
         self.consecutive_failures.store(0, Ordering::Release);
         self.consecutive_successes.store(0, Ordering::Release);
         tracing::warn!("Circuit breaker opened");
     }
-
-    /// Transition to half-open state
-    fn transition_to_half_open(&self) {
-        self.state
-            .store(CircuitState::HalfOpen as u8, Ordering::Release);
-        *self.last_state_change.lock().unwrap() = Instant::now();
-        self.consecutive_failures.store(0, Ordering::Release);
-        self.consecutive_successes.store(0, Ordering::Release);
-        tracing::info!("Circuit breaker half-open (testing recovery)");
-    }
-
     /// Transition to closed state
     fn transition_to_closed(&self) {
         self.state.store(CircuitState::Closed as u8, Ordering::Release);
-        *self.last_state_change.lock().unwrap() = Instant::now();
+        *self.last_state_change.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
         self.consecutive_failures.store(0, Ordering::Release);
         self.consecutive_successes.store(0, Ordering::Release);
         tracing::info!("Circuit breaker closed (recovered)");
