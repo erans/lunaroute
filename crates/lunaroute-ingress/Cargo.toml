@@ -19,3 +19,4 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
+rand = { workspace = true }
