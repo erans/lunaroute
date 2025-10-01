@@ -132,6 +132,36 @@ pub enum IngressError {
     Internal(String),
 }
 
+impl axum::response::IntoResponse for IngressError {
+    fn into_response(self) -> axum::response::Response {
+        use axum::http::StatusCode;
+
+        let (status, message) = match self {
+            IngressError::InvalidRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            IngressError::MissingHeader(msg) => (StatusCode::BAD_REQUEST, msg),
+            IngressError::AuthenticationFailed(msg) => (StatusCode::UNAUTHORIZED, msg),
+            IngressError::RequestTooLarge(size) => {
+                (StatusCode::PAYLOAD_TOO_LARGE, format!("Request too large: {} bytes", size))
+            }
+            IngressError::Timeout => (StatusCode::REQUEST_TIMEOUT, "Request timeout".to_string()),
+            IngressError::Serialization(err) => {
+                (StatusCode::BAD_REQUEST, format!("Serialization error: {}", err))
+            }
+            IngressError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        };
+
+        let body = serde_json::json!({
+            "error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "code": status.as_u16(),
+            }
+        });
+
+        (status, axum::Json(body)).into_response()
+    }
+}
+
 /// Ingress result type
 pub type IngressResult<T> = Result<T, IngressError>;
 
