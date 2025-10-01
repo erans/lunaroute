@@ -613,6 +613,7 @@ impl OpenAIResponseHandler for reqwest::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lunaroute_core::normalized::{Tool, FunctionDefinition, FunctionCall};
 
     #[test]
     fn test_openai_config_builder() {
@@ -700,5 +701,460 @@ mod tests {
         assert_eq!(normalized.id, "chatcmpl-123");
         assert_eq!(normalized.choices[0].message.role, Role::Assistant);
         assert_eq!(normalized.usage.total_tokens, 15);
+    }
+
+    // Tool conversion tests
+    #[test]
+    fn test_to_openai_request_with_tools() {
+        let normalized = NormalizedRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("What's the weather?".to_string()),
+                name: None,
+                tool_calls: vec![],
+                tool_call_id: None,
+            }],
+            system: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            top_k: None,
+            stream: false,
+            stop_sequences: vec![],
+            tools: vec![Tool {
+                tool_type: "function".to_string(),
+                function: FunctionDefinition {
+                    name: "get_weather".to_string(),
+                    description: Some("Get weather info".to_string()),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "location": {"type": "string"}
+                        }
+                    }),
+                },
+            }],
+            tool_choice: Some(ToolChoice::Auto),
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai_req = to_openai_request(normalized).unwrap();
+        assert_eq!(openai_req.tools.as_ref().unwrap().len(), 1);
+        assert_eq!(openai_req.tools.as_ref().unwrap()[0].function.name, "get_weather");
+        assert!(matches!(openai_req.tool_choice, Some(OpenAIToolChoice::String(ref s)) if s == "auto"));
+    }
+
+    #[test]
+    fn test_to_openai_request_tool_choice_variants() {
+        // Test Auto
+        let req = NormalizedRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            system: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            top_k: None,
+            stream: false,
+            stop_sequences: vec![],
+            tools: vec![],
+            tool_choice: Some(ToolChoice::Auto),
+            metadata: std::collections::HashMap::new(),
+        };
+        let openai = to_openai_request(req).unwrap();
+        assert!(matches!(openai.tool_choice, Some(OpenAIToolChoice::String(ref s)) if s == "auto"));
+
+        // Test Required
+        let req = NormalizedRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            system: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            top_k: None,
+            stream: false,
+            stop_sequences: vec![],
+            tools: vec![],
+            tool_choice: Some(ToolChoice::Required),
+            metadata: std::collections::HashMap::new(),
+        };
+        let openai = to_openai_request(req).unwrap();
+        assert!(matches!(openai.tool_choice, Some(OpenAIToolChoice::String(ref s)) if s == "required"));
+
+        // Test None
+        let req = NormalizedRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            system: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            top_k: None,
+            stream: false,
+            stop_sequences: vec![],
+            tools: vec![],
+            tool_choice: Some(ToolChoice::None),
+            metadata: std::collections::HashMap::new(),
+        };
+        let openai = to_openai_request(req).unwrap();
+        assert!(matches!(openai.tool_choice, Some(OpenAIToolChoice::String(ref s)) if s == "none"));
+
+        // Test Specific
+        let req = NormalizedRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            system: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            top_k: None,
+            stream: false,
+            stop_sequences: vec![],
+            tools: vec![],
+            tool_choice: Some(ToolChoice::Specific { name: "my_func".to_string() }),
+            metadata: std::collections::HashMap::new(),
+        };
+        let openai = to_openai_request(req).unwrap();
+        match openai.tool_choice {
+            Some(OpenAIToolChoice::Object { function, .. }) => {
+                assert_eq!(function.name, "my_func");
+            }
+            _ => panic!("Expected Object variant"),
+        }
+    }
+
+    #[test]
+    fn test_to_openai_request_with_tool_calls() {
+        let normalized = NormalizedRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: MessageContent::Text("Get weather".to_string()),
+                    name: None,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Text("".to_string()),
+                    name: None,
+                    tool_calls: vec![ToolCall {
+                        id: "call_123".to_string(),
+                        tool_type: "function".to_string(),
+                        function: FunctionCall {
+                            name: "get_weather".to_string(),
+                            arguments: r#"{"location":"NYC"}"#.to_string(),
+                        },
+                    }],
+                    tool_call_id: None,
+                },
+            ],
+            system: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            top_k: None,
+            stream: false,
+            stop_sequences: vec![],
+            tools: vec![],
+            tool_choice: None,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai_req = to_openai_request(normalized).unwrap();
+        assert_eq!(openai_req.messages.len(), 2);
+        assert!(openai_req.messages[1].tool_calls.is_some());
+        assert_eq!(openai_req.messages[1].tool_calls.as_ref().unwrap()[0].id, "call_123");
+        // Content should be None when message has tool calls
+        assert_eq!(openai_req.messages[1].content, None);
+    }
+
+    #[test]
+    fn test_from_openai_response_with_tool_calls() {
+        let openai_resp = OpenAIChatResponse {
+            id: "chatcmpl-123".to_string(),
+            model: "gpt-4".to_string(),
+            choices: vec![OpenAIChoice {
+                index: 0,
+                message: OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    name: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "call_123".to_string(),
+                        tool_type: "function".to_string(),
+                        function: OpenAIFunctionCall {
+                            name: "get_weather".to_string(),
+                            arguments: r#"{"location":"NYC"}"#.to_string(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+                finish_reason: Some("tool_calls".to_string()),
+            }],
+            usage: OpenAIUsage {
+                prompt_tokens: 20,
+                completion_tokens: 10,
+                total_tokens: 30,
+            },
+            created: 1234567890,
+        };
+
+        let normalized = from_openai_response(openai_resp).unwrap();
+        assert_eq!(normalized.choices[0].message.tool_calls.len(), 1);
+        assert_eq!(normalized.choices[0].message.tool_calls[0].function.name, "get_weather");
+        assert_eq!(normalized.choices[0].finish_reason, Some(FinishReason::ToolCalls));
+    }
+
+    #[test]
+    fn test_to_openai_request_multiple_tool_calls() {
+        let normalized = NormalizedRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![Message {
+                role: Role::Assistant,
+                content: MessageContent::Text("".to_string()),
+                name: None,
+                tool_calls: vec![
+                    ToolCall {
+                        id: "call_1".to_string(),
+                        tool_type: "function".to_string(),
+                        function: FunctionCall {
+                            name: "func1".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                    },
+                    ToolCall {
+                        id: "call_2".to_string(),
+                        tool_type: "function".to_string(),
+                        function: FunctionCall {
+                            name: "func2".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                    },
+                ],
+                tool_call_id: None,
+            }],
+            system: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            top_k: None,
+            stream: false,
+            stop_sequences: vec![],
+            tools: vec![],
+            tool_choice: None,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai_req = to_openai_request(normalized).unwrap();
+        assert_eq!(openai_req.messages[0].tool_calls.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_from_openai_response_all_finish_reasons() {
+        let finish_reasons = vec![
+            ("stop", FinishReason::Stop),
+            ("length", FinishReason::Length),
+            ("tool_calls", FinishReason::ToolCalls),
+            ("content_filter", FinishReason::ContentFilter),
+        ];
+
+        for (openai_reason, expected_reason) in finish_reasons {
+            let openai_resp = OpenAIChatResponse {
+                id: "test".to_string(),
+                model: "gpt-4".to_string(),
+                choices: vec![OpenAIChoice {
+                    index: 0,
+                    message: OpenAIMessage {
+                        role: "assistant".to_string(),
+                        content: Some("test".to_string()),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    },
+                    finish_reason: Some(openai_reason.to_string()),
+                }],
+                usage: OpenAIUsage {
+                    prompt_tokens: 1,
+                    completion_tokens: 1,
+                    total_tokens: 2,
+                },
+                created: 0,
+            };
+
+            let normalized = from_openai_response(openai_resp).unwrap();
+            assert_eq!(normalized.choices[0].finish_reason, Some(expected_reason));
+        }
+    }
+
+    // Edge case tests
+    #[test]
+    fn test_to_openai_request_multimodal_content() {
+        use lunaroute_core::normalized::{ContentPart, ImageSource};
+
+        let normalized = NormalizedRequest {
+            model: "gpt-4-vision".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Parts(vec![
+                    ContentPart::Text { text: "First".to_string() },
+                    ContentPart::Image {
+                        source: ImageSource::Url {
+                            url: "https://example.com/image.jpg".to_string(),
+                        },
+                    },
+                    ContentPart::Text { text: "Second".to_string() },
+                ]),
+                name: None,
+                tool_calls: vec![],
+                tool_call_id: None,
+            }],
+            system: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            top_k: None,
+            stream: false,
+            stop_sequences: vec![],
+            tools: vec![],
+            tool_choice: None,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai_req = to_openai_request(normalized).unwrap();
+        // Should extract text and join with newlines, ignoring images
+        assert_eq!(openai_req.messages[0].content, Some("First\nSecond".to_string()));
+    }
+
+    #[test]
+    fn test_to_openai_request_empty_tools() {
+        let normalized = NormalizedRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("Hello".to_string()),
+                name: None,
+                tool_calls: vec![],
+                tool_call_id: None,
+            }],
+            system: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            top_k: None,
+            stream: false,
+            stop_sequences: vec![],
+            tools: vec![],
+            tool_choice: None,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai_req = to_openai_request(normalized).unwrap();
+        assert!(openai_req.tools.is_none());
+    }
+
+    #[test]
+    fn test_to_openai_request_with_stop_sequences() {
+        let normalized = NormalizedRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("Hello".to_string()),
+                name: None,
+                tool_calls: vec![],
+                tool_call_id: None,
+            }],
+            system: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            top_k: None,
+            stream: false,
+            stop_sequences: vec!["STOP".to_string(), "END".to_string()],
+            tools: vec![],
+            tool_choice: None,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai_req = to_openai_request(normalized).unwrap();
+        assert_eq!(openai_req.stop, Some(vec!["STOP".to_string(), "END".to_string()]));
+    }
+
+    #[test]
+    fn test_from_openai_response_multiple_choices() {
+        let openai_resp = OpenAIChatResponse {
+            id: "test".to_string(),
+            model: "gpt-4".to_string(),
+            choices: vec![
+                OpenAIChoice {
+                    index: 0,
+                    message: OpenAIMessage {
+                        role: "assistant".to_string(),
+                        content: Some("First".to_string()),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    },
+                    finish_reason: Some("stop".to_string()),
+                },
+                OpenAIChoice {
+                    index: 1,
+                    message: OpenAIMessage {
+                        role: "assistant".to_string(),
+                        content: Some("Second".to_string()),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    },
+                    finish_reason: Some("stop".to_string()),
+                },
+            ],
+            usage: OpenAIUsage {
+                prompt_tokens: 10,
+                completion_tokens: 10,
+                total_tokens: 20,
+            },
+            created: 0,
+        };
+
+        let normalized = from_openai_response(openai_resp).unwrap();
+        assert_eq!(normalized.choices.len(), 2);
+        assert_eq!(normalized.choices[0].index, 0);
+        assert_eq!(normalized.choices[1].index, 1);
+    }
+
+    #[test]
+    fn test_from_openai_response_empty_content() {
+        let openai_resp = OpenAIChatResponse {
+            id: "test".to_string(),
+            model: "gpt-4".to_string(),
+            choices: vec![OpenAIChoice {
+                index: 0,
+                message: OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: OpenAIUsage {
+                prompt_tokens: 10,
+                completion_tokens: 0,
+                total_tokens: 10,
+            },
+            created: 0,
+        };
+
+        let normalized = from_openai_response(openai_resp).unwrap();
+        // Should default to empty string
+        match &normalized.choices[0].message.content {
+            MessageContent::Text(text) => assert_eq!(text, ""),
+            _ => panic!("Expected Text content"),
+        }
     }
 }

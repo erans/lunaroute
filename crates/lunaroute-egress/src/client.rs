@@ -137,4 +137,59 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_error_display_formatting() {
+        // Test all error variants display properly
+        let err = EgressError::ConfigError("bad config".to_string());
+        assert!(err.to_string().contains("Invalid configuration"));
+
+        let err = EgressError::Timeout(30);
+        assert_eq!(err.to_string(), "Request timeout after 30s");
+
+        let err = EgressError::ProviderError {
+            status_code: 500,
+            message: "Internal error".to_string(),
+        };
+        assert!(err.to_string().contains("500"));
+
+        let err = EgressError::RateLimitExceeded {
+            retry_after_secs: Some(60),
+        };
+        assert!(err.to_string().contains("60s"));
+
+        let err = EgressError::RateLimitExceeded {
+            retry_after_secs: None,
+        };
+        assert_eq!(err.to_string(), "Rate limit exceeded");
+    }
+
+    #[test]
+    fn test_custom_config() {
+        let config = HttpClientConfig {
+            timeout_secs: 30,
+            connect_timeout_secs: 5,
+            pool_max_idle_per_host: 16,
+            max_retries: 5,
+            user_agent: "CustomAgent/1.0".to_string(),
+        };
+
+        assert_eq!(config.timeout_secs, 30);
+        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.user_agent, "CustomAgent/1.0");
+    }
+
+    #[test]
+    fn test_client_with_custom_config() {
+        let config = HttpClientConfig {
+            timeout_secs: 120,
+            connect_timeout_secs: 20,
+            pool_max_idle_per_host: 64,
+            max_retries: 5,
+            user_agent: "Test/1.0".to_string(),
+        };
+
+        let client = create_client(&config);
+        assert!(client.is_ok());
+    }
 }
