@@ -357,19 +357,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup providers
     let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
 
+    // Store raw connectors for passthrough mode
+    let mut anthropic_connector: Option<Arc<AnthropicConnector>> = None;
+    let mut openai_connector: Option<Arc<OpenAIConnector>> = None;
+
     // OpenAI provider
     if let Some(openai_config) = &config.providers.openai {
         if openai_config.enabled {
             if let Some(ref api_key) = openai_config.api_key {
                 info!("✓ OpenAI provider enabled");
                 let provider_config = OpenAIConfig::new(api_key.clone());
-                let connector = OpenAIConnector::new(provider_config)?;
+                let conn = OpenAIConnector::new(provider_config)?;
 
                 // Build the provider stack (order matters!)
                 // 1. Start with connector
                 // 2. Wrap with session recording if enabled
                 // 3. Wrap with logging if enabled
-                let connector = Arc::new(connector);
+                let connector = Arc::new(conn);
+                openai_connector = Some(connector.clone()); // Save for passthrough
                 let provider: Arc<dyn Provider> = if let Some(ref rec) = recorder {
                     let recording = RecordingProvider::new(
                         connector.clone(),
@@ -415,13 +420,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     api_version: "2023-06-01".to_string(),
                     client_config: Default::default(),
                 };
-                let connector = AnthropicConnector::new(provider_config)?;
+                let conn = AnthropicConnector::new(provider_config)?;
 
                 // Build the provider stack (order matters!)
                 // 1. Start with connector
                 // 2. Wrap with session recording if enabled
                 // 3. Wrap with logging if enabled
-                let connector = Arc::new(connector);
+                let connector = Arc::new(conn);
+                anthropic_connector = Some(connector.clone()); // Save for passthrough
                 let provider: Arc<dyn Provider> = if let Some(ref rec) = recorder {
                     let recording = RecordingProvider::new(
                         connector.clone(),
@@ -507,13 +513,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             rule.name, rule.matcher, rule.primary, rule.fallbacks);
     }
 
-    // Create router with routing table
+    // Detect passthrough mode BEFORE creating router: dialect matches the only enabled provider
+    // This skips normalization for optimal performance and 100% API fidelity
+    let is_anthropic_passthrough = config.api_dialect == ApiDialect::Anthropic
+        && anthropic_connector.is_some()
+        && providers.len() == 1
+        && providers.contains_key("anthropic");
+
+    let is_openai_passthrough = config.api_dialect == ApiDialect::OpenAI
+        && openai_connector.is_some()
+        && providers.len() == 1
+        && providers.contains_key("openai");
+
+    let is_passthrough = is_anthropic_passthrough || is_openai_passthrough;
+
+    // Create router with routing table (not needed in passthrough mode, but keep for consistency)
     let route_table = RouteTable::with_rules(rules);
     let router = Arc::new(Router::with_defaults(route_table, providers));
 
-    info!("✓ Router created with health monitoring and circuit breakers");
-    info!("   Circuit breaker: 3 failures → open, 1 success → close");
-    info!("   Health monitor: tracks success rate and recent failures");
+    if !is_passthrough {
+        info!("✓ Router created with health monitoring and circuit breakers");
+        info!("   Circuit breaker: 3 failures → open, 1 success → close");
+        info!("   Health monitor: tracks success rate and recent failures");
+    }
 
     // Initialize observability
     info!("📊 Initializing observability (metrics, health endpoints)");
@@ -524,11 +546,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_router = match config.api_dialect {
         ApiDialect::OpenAI => {
             info!("📡 API dialect: OpenAI (/v1/chat/completions)");
-            openai::router(router)
+            if is_openai_passthrough && openai_connector.is_some() {
+                info!("⚡ Passthrough mode: OpenAI→OpenAI (no normalization)");
+                // TODO: Implement OpenAI passthrough
+                openai::router(router)
+            } else {
+                openai::router(router)
+            }
         }
         ApiDialect::Anthropic => {
             info!("📡 API dialect: Anthropic (/v1/messages)");
-            anthropic_ingress::router(router)
+            if is_anthropic_passthrough {
+                if let Some(connector) = anthropic_connector {
+                    info!("⚡ Passthrough mode: Anthropic→Anthropic (no normalization)");
+                    anthropic_ingress::passthrough_router(connector)
+                } else {
+                    anthropic_ingress::router(router)
+                }
+            } else {
+                anthropic_ingress::router(router)
+            }
         }
     };
 

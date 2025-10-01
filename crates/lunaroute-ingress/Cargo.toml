@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 lunaroute-core = { path = "../lunaroute-core" }
+lunaroute-egress = { path = "../lunaroute-egress" }
 
 tokio = { workspace = true }
 axum = { workspace = true }

@@ -768,11 +768,61 @@ pub async fn messages(
     }
 }
 
+/// Passthrough handler for Anthropic→Anthropic routing (no normalization)
+/// Takes raw JSON, sends directly to Anthropic, returns raw JSON
+/// Preserves 100% API fidelity while still extracting metrics
+pub async fn messages_passthrough(
+    State(connector): State<Arc<lunaroute_egress::anthropic::AnthropicConnector>>,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Response, IngressError> {
+    tracing::info!("Anthropic passthrough mode: skipping normalization");
+
+    let is_streaming = req.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    if is_streaming {
+        return Err(IngressError::UnsupportedFeature(
+            "Streaming not yet supported in passthrough mode".to_string(),
+        ));
+    }
+
+    // Send directly to Anthropic API
+    let response = connector
+        .send_passthrough(req)
+        .await
+        .map_err(|e| IngressError::ProviderError(e.to_string()))?;
+
+    // Extract metrics for observability (optional: log tokens, model, etc.)
+    if let Some(usage) = response.get("usage") {
+        if let (Some(input_tokens), Some(output_tokens)) = (
+            usage.get("input_tokens").and_then(|v| v.as_u64()),
+            usage.get("output_tokens").and_then(|v| v.as_u64()),
+        ) {
+            tracing::debug!(
+                "Passthrough metrics: input_tokens={}, output_tokens={}, total={}",
+                input_tokens,
+                output_tokens,
+                input_tokens + output_tokens
+            );
+        }
+    }
+
+    Ok(Json(response).into_response())
+}
+
 /// Create Anthropic router with provider state
 pub fn router(provider: Arc<dyn Provider>) -> Router {
     Router::new()
         .route("/v1/messages", post(messages))
         .with_state(provider)
+}
+
+/// Create Anthropic passthrough router (for Anthropic→Anthropic direct routing)
+pub fn passthrough_router(
+    connector: Arc<lunaroute_egress::anthropic::AnthropicConnector>,
+) -> Router {
+    Router::new()
+        .route("/v1/messages", post(messages_passthrough))
+        .with_state(connector)
 }
 
 #[cfg(test)]
