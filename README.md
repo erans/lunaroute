@@ -80,7 +80,7 @@ make install-hooks
 - Middleware (CORS, security headers, request tracing)
 - Comprehensive input validation
 - Production-ready security hardening
-- 53 tests passing, 100% coverage
+- 76 tests passing, 100% coverage
 
 **Security Features:**
 - Cryptographically secure RNG for trace/span IDs
@@ -109,8 +109,15 @@ make install-hooks
   - Fixed all clippy warnings (idiomatic Rust patterns)
   - Let-chain syntax for nested conditions
   - RangeInclusive::contains() for range checks
+  - ToolChoice enum with PartialEq/Eq for testability
+- Comprehensive test coverage (76 tests)
+  - Tool schema validation tests (4)
+  - Tool argument size validation tests (3)
+  - Multimodal content extraction tests (4)
+  - Round-trip conversion tests (4)
+  - Error path tests (4)
+  - Edge case tests (4)
 - Stream translation (deferred to Phase 6 with egress)
-- 53 tests passing (100% coverage for both converters)
 
 **Phase 2: Storage Layer** ✅ Complete
 - File-based config store (JSON/YAML/TOML support)
