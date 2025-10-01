@@ -28,7 +28,7 @@ LunaRoute is organized as a Rust workspace with the following crates:
 - **lunaroute-storage**: Storage abstractions (config, sessions, state)
 - **lunaroute-pii**: PII detection and redaction
 - **lunaroute-observability**: Metrics, tracing, and health endpoints
-- **lunaroute-cli**: Command-line interface (`luna`)
+- **lunaroute-cli**: Command-line interface (`lunaroute`)
 - **lunaroute-demos**: Demo server for testing the gateway
 - **lunaroute-integration-tests**: End-to-end integration tests
 

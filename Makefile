@@ -9,7 +9,7 @@ help:
 	@echo "  make fmt           - Format code with rustfmt"
 	@echo "  make lint          - Run clippy lints"
 	@echo "  make clean         - Clean build artifacts"
-	@echo "  make run           - Run the luna CLI"
+	@echo "  make run           - Run the lunaroute CLI"
 	@echo "  make install-hooks - Install git pre-commit hooks"
 
 # Build all crates
@@ -42,7 +42,7 @@ clean:
 
 # Run the CLI
 run:
-	cargo run --bin luna -- $(ARGS)
+	cargo run --bin lunaroute -- $(ARGS)
 
 # Install pre-commit hooks
 install-hooks:

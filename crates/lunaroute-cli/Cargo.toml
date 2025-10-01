@@ -8,7 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "luna"
+name = "lunaroute"
 path = "src/main.rs"
 
 [dependencies]

@@ -375,7 +375,7 @@ Primary objective: drop‑in compatibility for both OpenAI and Anthropic APIs wi
     "mode": "tokenize",
     "detectors": ["email","phone","credit_card","ip"],
     "custom_regex": ["(?i)\bssn:?[ -]?([0-9]{3}-[0-9]{2}-[0-9]{4})\b"],
-    "salt_ref": "kms:projects/acme/keys/luna-pii"
+    "salt_ref": "kms:projects/acme/keys/lunaroute-pii"
   }
 }
 ```
@@ -445,7 +445,7 @@ Primary objective: drop‑in compatibility for both OpenAI and Anthropic APIs wi
 * **Streaming**: bounded channels for ingress↔egress; heartbeat keepalives; flush on newline.
 * **Backpressure**: propagate when downstream is slow; drop policy for oversized queues; disk‑space watermarks guard writes.
 * **Security**: secrets from env or file vault; structured logging with redaction middleware.
-* **CLI**: `luna validate config ./config` and `luna export session sess_... --out ./out.tgz`.
+* **CLI**: `lunaroute validate config ./config` and `lunaroute export session sess_... --out ./out.tgz`.
 
 ---
 

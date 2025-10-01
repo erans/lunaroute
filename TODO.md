@@ -503,7 +503,7 @@
 - [ ] Implement session query endpoints
 
 ### CLI Tool
-- [ ] Implement `luna` CLI with clap
+- [ ] Implement `lunaroute` CLI with clap
 - [ ] Add `init` command for setup
 - [ ] Create `route` command for testing
 - [ ] Add `export` command for sessions

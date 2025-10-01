@@ -5,7 +5,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "luna")]
+#[command(name = "lunaroute")]
 #[command(about = "LunaRoute - Intelligent LLM API Gateway", long_about = None)]
 struct Cli {
     #[command(subcommand)]

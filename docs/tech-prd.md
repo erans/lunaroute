@@ -2282,7 +2282,7 @@ use clap::{Parser, Subcommand};
 use dirs;
 
 #[derive(Parser)]
-#[command(name = "luna")]
+#[command(name = "lunaroute")]
 #[command(about = "LunaRoute CLI")]
 struct Cli {
     #[command(subcommand)]
@@ -2588,7 +2588,7 @@ groups:
 cargo install --path .
 
 # Initialize configuration
-luna init
+lunaroute init
 
 # Set API keys
 export OPENAI_API_KEY="your-openai-key"
@@ -2603,7 +2603,7 @@ docker-compose up
 # Test with curl (OpenAI format)
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-luna-key" \
+  -H "Authorization: Bearer your-lunaroute-key" \
   -d '{
     "model": "gpt-4",
     "messages": [{"role": "user", "content": "Hello!"}]
@@ -2613,5 +2613,5 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 curl http://localhost:9090/metrics
 
 # Export sessions
-luna export --since "1h" --output sessions.ndjson
+lunaroute export --since "1h" --output sessions.ndjson
 ```
