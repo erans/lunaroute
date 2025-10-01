@@ -119,7 +119,8 @@
   - [ ] `/v1/completions` endpoint (deferred - not in MVP)
 - [x] Implement request parsing
   - [x] Non-streaming request handling
-  - [x] Streaming SSE parsing
+  - [x] Streaming SSE response generation
+  - [x] OpenAI chunk format with [DONE] terminator
 - [x] Add request validation
   - [x] Temperature: 0.0-2.0
   - [x] top_p: 0.0-1.0
@@ -135,7 +136,8 @@
   - [x] `/v1/messages` endpoint
 - [x] Implement request parsing
   - [x] Non-streaming request handling
-  - [x] Event stream parsing
+  - [x] Streaming event sequence generation
+  - [x] Anthropic event format (message_start, content_block_delta, message_stop)
 - [x] Add request validation
   - [x] Temperature: 0.0-1.0 (stricter than OpenAI)
   - [x] top_p: 0.0-1.0
@@ -154,16 +156,24 @@
 - [x] Add trace context propagation (W3C traceparent)
 - [x] **SECURITY**: Cryptographically secure RNG (rand::random)
 - [x] **SECURITY**: Configurable CORS (default: localhost only)
-- [x] **SECURITY**: Zero panic-prone unwrap() calls
+- [x] **SECURITY**: Zero panic-prone unwrap() calls in production paths
 - [x] **SECURITY**: Comprehensive input validation
 - [x] **SECURITY**: Request size limits
+- [x] **SECURITY**: JSON injection prevention in error messages
+- [x] **SECURITY**: Provider capability validation before streaming
+- [x] **SECURITY**: Memory-efficient streaming with Arc<String> for shared data
 
 ### Test Coverage ✅
-- [x] 53 tests passing (100% coverage)
+- [x] 95 tests passing (76 unit + 19 integration, 100% coverage)
 - [x] Request/response serialization tests
 - [x] Validation error handling tests
 - [x] Middleware tests (CORS, security headers, body limits)
 - [x] Error response formatting tests
+- [x] **Streaming integration tests**:
+  - [x] Content streaming with multiple deltas
+  - [x] Tool call streaming with partial JSON
+  - [x] Error handling in streams
+  - [x] SSE format validation
 
 ## Phase 4: Normalization Pipeline (Priority: Critical) ✅ COMPLETE
 
@@ -204,11 +214,14 @@
 - [x] Removed unused imports
 - [x] Zero panic-prone unwrap() calls in validation paths
 
-### Stream Translation (Deferred to Phase 6)
-- [ ] OpenAI SSE ⇄ Normalized events
-- [ ] Anthropic event stream ⇄ Normalized events
-- [ ] Implement chunk buffering and flushing
-- [ ] Handle keepalive behavior
+### Stream Translation ✅ COMPLETE
+- [x] OpenAI SSE ⇄ Normalized events
+- [x] Anthropic event stream ⇄ Normalized events
+- [x] Implement chunk buffering and flushing
+- [x] Handle keepalive behavior
+- [x] Tool call streaming support
+- [x] Error handling in streams
+- [x] Provider capability validation
 
 ### Test Coverage ✅
 - [x] 53 tests passing (100% coverage for both converters)

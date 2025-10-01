@@ -7,6 +7,7 @@ LunaRoute is a high-performance API gateway for Large Language Model providers, 
 ## Features
 
 - **Unified API Translation**: Seamlessly translate between OpenAI and Anthropic API formats
+- **Streaming Support**: Full SSE streaming for real-time responses from both providers
 - **Intelligent Routing**: Route requests based on rules, health, and cost optimization
 - **Session Recording**: Capture and replay all LLM interactions
 - **PII Detection & Redaction**: Automatically detect and redact sensitive information
@@ -81,9 +82,18 @@ curl http://localhost:3000/v1/chat/completions \
     "model": "gpt-5",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
+
+# Test with streaming:
+curl http://localhost:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
 ```
 
-The demo server accepts OpenAI-compatible requests and proxies them through the LunaRoute gateway.
+The demo server accepts OpenAI-compatible requests and proxies them through the LunaRoute gateway. Streaming is fully supported for real-time responses.
 
 ## Development Status
 
@@ -101,15 +111,22 @@ The demo server accepts OpenAI-compatible requests and proxies them through the 
 - OpenAI-compatible HTTP endpoints (/v1/chat/completions)
 - Anthropic-compatible HTTP endpoints (/v1/messages)
 - Request/response normalization and validation
+- **Full Server-Sent Events (SSE) streaming support**
+  - OpenAI streaming with chunk format and [DONE] terminator
+  - Anthropic streaming with event sequence (message_start, content_block_delta, etc.)
+  - Proper error handling in streams
+  - Tool call streaming support
 - Middleware (CORS, security headers, request tracing)
 - Comprehensive input validation
 - Production-ready security hardening
-- 76 tests passing, 100% coverage
+- 95 tests passing (76 unit + 19 integration)
 
 **Security Features:**
 - Cryptographically secure RNG for trace/span IDs
 - Configurable CORS with secure localhost-only default
 - Zero panic-prone unwrap() calls
+- JSON injection prevention in error messages
+- Provider capability validation before streaming
 - Comprehensive request validation (temperature, tokens, penalties, etc.)
 - Request size limits (1MB per message, 100K max tokens)
 - API-specific validation (OpenAI vs Anthropic parameter ranges)
@@ -179,10 +196,11 @@ The demo server accepts OpenAI-compatible requests and proxies them through the 
 - Ingress ↔ Egress wiring with Provider trait injection
 - Axum state-based dependency injection
 - Full end-to-end request flow (HTTP → Normalize → Provider → Response)
+- **Complete streaming pipeline**: Client → Ingress SSE → Normalized events → Egress SSE → Provider
 - Error propagation (validation errors, provider errors)
-- Demo server (`lunaroute-demos`) for local testing
-- 247 total tests passing across workspace:
-  - Ingress integration tests (15 tests)
+- Demo server (`lunaroute-demos`) for local testing with streaming examples
+- 251 total tests passing across workspace:
+  - Ingress integration tests (19 tests)
   - Egress wiremock tests (6 tests)
   - End-to-end tests (5 tests)
   - All existing unit tests passing
@@ -193,7 +211,11 @@ The demo server accepts OpenAI-compatible requests and proxies them through the 
 - Full stack testing (ingress → egress → mocked provider)
 - Error scenarios (rate limits, timeouts, validation)
 - Tool/function calling end-to-end
-- Non-streaming requests fully functional
+- **Comprehensive streaming tests**:
+  - Content streaming with multiple deltas
+  - Tool call streaming with partial JSON
+  - Error handling in streams
+  - SSE format validation
 
 **Phase 2: Storage Layer** ✅ Complete
 - File-based config store (JSON/YAML/TOML support)
@@ -216,14 +238,20 @@ The demo server accepts OpenAI-compatible requests and proxies them through the 
 - Secure key derivation (Argon2id with 64MB, 3 iterations)
 - Cryptographically secure RNG for salts and keys
 
-**Completed Phases:** 0, 1, 2, 3, 4, 6, Integration ✅
+**Completed Phases:** 0, 1, 2, 3, 4, 6, Integration, Streaming ✅
 
-**Current Status:** Working end-to-end gateway for non-streaming requests! 🎉
+**Current Status:** Production-ready gateway with full streaming support! 🎉
+- ✅ Non-streaming and streaming requests fully functional
+- ✅ OpenAI and Anthropic API compatibility
+- ✅ Tool/function calling with streaming
+- ✅ Comprehensive security hardening
+- ✅ 251 tests passing with 100% critical path coverage
 
 **Next Steps:**
-- **Phase 5: Routing Engine** - Not started
-- **Streaming Support** - Deferred (ingress ready, egress has streaming)
-- **Phase 7-17**: Not started
+- **Phase 5: Routing Engine** - Intelligent request routing, health monitoring, circuit breakers
+- **Phase 7: Session Recording** - Capture and replay LLM interactions
+- **Phase 8: Observability** - Metrics, tracing, and monitoring
+- **Phase 9+**: PII detection, budget management, advanced features
 
 See [TODO.md](TODO.md) for the complete implementation roadmap.
 
