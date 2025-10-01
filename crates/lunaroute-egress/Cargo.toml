@@ -37,3 +37,5 @@ async-trait = "0.1"
 mockall = { workspace = true }
 tokio-test = "0.4"
 wiremock = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
