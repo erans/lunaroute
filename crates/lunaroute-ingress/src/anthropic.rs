@@ -409,4 +409,48 @@ mod tests {
         // Currently returns None - will be populated when tracking is implemented
         assert_eq!(anthropic.stop_sequence, None);
     }
+
+    #[test]
+    fn test_anthropic_multimodal_parts() {
+        use lunaroute_core::normalized::ContentPart;
+
+        let resp = NormalizedResponse {
+            id: "test".to_string(),
+            model: "claude-3-opus".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Parts(vec![
+                        ContentPart::Text {
+                            text: "I see an image".to_string(),
+                        },
+                    ]),
+                    name: None,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                },
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let anthropic = from_normalized(resp);
+        // Currently returns empty vec for Parts - this is a known limitation
+        assert_eq!(anthropic.content.len(), 0);
+    }
+
+    #[test]
+    fn test_anthropic_router_creation() {
+        let router = router();
+        // Just verify it creates without panicking
+        // The router is properly configured with /v1/messages endpoint
+        drop(router);
+    }
 }

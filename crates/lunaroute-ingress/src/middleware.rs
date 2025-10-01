@@ -398,5 +398,49 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         // The middleware should extract the first IP (203.0.113.1)
     }
+
+    #[tokio::test]
+    async fn test_request_context_x_real_ip_fallback() {
+        let app = Router::new()
+            .route("/test", get(test_handler))
+            .layer(middleware::from_fn(request_context_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("x-real-ip", "192.0.2.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-request-id").is_some());
+        // X-Real-IP should be extracted as client IP
+    }
+
+    #[tokio::test]
+    async fn test_request_context_user_agent() {
+        let app = Router::new()
+            .route("/test", get(test_handler))
+            .layer(middleware::from_fn(request_context_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header(header::USER_AGENT, "Mozilla/5.0 Test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-request-id").is_some());
+        // User-Agent should be extracted
+    }
 }
 

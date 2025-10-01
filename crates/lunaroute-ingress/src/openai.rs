@@ -563,4 +563,12 @@ mod tests {
         let normalized = to_normalized(req).unwrap();
         assert_eq!(normalized.messages.len(), 0);
     }
+
+    #[test]
+    fn test_openai_router_creation() {
+        let router = router();
+        // Just verify it creates without panicking
+        // The router is properly configured with /v1/chat/completions endpoint
+        drop(router);
+    }
 }

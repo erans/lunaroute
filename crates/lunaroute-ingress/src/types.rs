@@ -429,4 +429,36 @@ mod tests {
         let ctx = TraceContext::from_traceparent("");
         assert!(ctx.is_none());
     }
+
+    #[test]
+    fn test_request_metadata_default() {
+        let meta1 = RequestMetadata::default();
+        let meta2 = RequestMetadata::new();
+
+        // Both should create metadata with request IDs
+        assert!(meta1.request_id.as_str().starts_with("req_"));
+        assert!(meta2.request_id.as_str().starts_with("req_"));
+        assert!(meta1.timestamp > 0);
+        assert!(meta2.timestamp > 0);
+    }
+
+    #[test]
+    fn test_stream_event_new() {
+        let data = serde_json::json!({"message": "hello"});
+        let event = StreamEvent::new(data.clone());
+
+        assert_eq!(event.data, data);
+        assert_eq!(event.event, None);
+        assert_eq!(event.id, None);
+    }
+
+    #[test]
+    fn test_stream_event_to_sse_without_optional_fields() {
+        let event = StreamEvent::new(serde_json::json!({"test": "value"}));
+
+        let sse = event.to_sse();
+        assert!(sse.contains("data: {"));
+        assert!(!sse.contains("event:"));
+        assert!(!sse.contains("id:"));
+    }
 }
