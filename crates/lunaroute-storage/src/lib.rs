@@ -13,6 +13,7 @@ pub mod buffer_pool;
 pub mod compression;
 pub mod config;
 pub mod encryption;
+pub mod file_lock;
 pub mod rolling_writer;
 pub mod session;
 pub mod session_index;
@@ -23,7 +24,11 @@ pub use atomic_writer::AtomicWriter;
 pub use buffer_pool::BufferPool;
 pub use compression::{compress, decompress, CompressionAlgorithm};
 pub use config::{ConfigValidator, FileConfigStore, ValidatedConfigStore};
-pub use encryption::{decrypt, encrypt, generate_key};
+pub use encryption::{
+    decrypt, derive_key_from_password, encrypt, generate_key, generate_salt,
+    KeyDerivationParams,
+};
+pub use file_lock::FileLock;
 pub use rolling_writer::RollingWriter;
 pub use session::FileSessionStore;
 pub use session_index::SessionIndex;

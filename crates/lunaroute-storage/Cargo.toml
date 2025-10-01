@@ -22,6 +22,14 @@ aes-gcm = { workspace = true }
 bytes = { workspace = true }
 async-trait = "0.1"
 rand = { workspace = true }
+argon2 = { workspace = true }
+sha2 = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["fileapi", "minwinbase", "winerror"] }
 
 [dev-dependencies]
 tempfile = "3.13"
