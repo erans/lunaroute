@@ -504,14 +504,24 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
 
 /// Convert normalized stream event to Anthropic SSE events
 /// Returns a vector because some normalized events map to multiple Anthropic events
+///
+/// State Management:
+/// - `content_block_started` tracks whether we've sent a ContentBlockStart event
+/// - This ensures proper event sequencing: Start → Delta → Stop
+/// - State is maintained per-stream via scan() combinator (sequential, no concurrency)
 fn stream_event_to_anthropic_events(
     event: NormalizedStreamEvent,
     stream_id: &str,
     model: &str,
     content_block_started: &mut bool,
 ) -> Vec<AnthropicStreamEvent> {
+    use tracing::debug;
     match event {
         NormalizedStreamEvent::Start { .. } => {
+            // Reset state for new stream
+            *content_block_started = false;
+            debug!("Anthropic stream started: stream_id={}", stream_id);
+
             // Anthropic starts with message_start event
             vec![AnthropicStreamEvent::MessageStart {
                 message: AnthropicMessageStart {
@@ -589,6 +599,10 @@ fn stream_event_to_anthropic_events(
             // Close content block if it was started
             if *content_block_started {
                 events.push(AnthropicStreamEvent::ContentBlockStop { index: 0 });
+                *content_block_started = false;
+                debug!("Anthropic content block closed");
+            } else {
+                debug!("Anthropic stream ended without content block");
             }
 
             // Send message_delta with stop_reason
@@ -628,45 +642,60 @@ pub async fn messages(
     let is_streaming = req.stream.unwrap_or(false);
     let model = req.model.clone();
 
-    // Convert to normalized format
+    // Convert to normalized format (includes validation)
     let normalized = to_normalized(req)?;
 
     if is_streaming {
+        // Log streaming request for observability
+        tracing::debug!(
+            "Anthropic streaming request: model={}, messages={}",
+            model,
+            normalized.messages.len()
+        );
+
+        // Validate that provider supports streaming
+        if !provider.capabilities().supports_streaming {
+            return Err(IngressError::UnsupportedFeature(
+                "Provider does not support streaming".to_string(),
+            ));
+        }
+
         // Call provider.stream()
         let stream = provider
             .stream(normalized)
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
-        // Generate stream ID (Anthropic uses msg_* prefix)
-        let stream_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
+        // Generate stream ID (Anthropic uses msg_* prefix) and wrap in Arc for efficient sharing
+        let stream_id = Arc::new(format!("msg_{}", uuid::Uuid::new_v4().simple()));
+        let model = Arc::new(model);
 
         // Convert normalized events to Anthropic SSE format
         // Use scan to maintain state across stream events
         let sse_stream = stream
             .scan(false, move |content_block_started, result| {
-                let stream_id = stream_id.clone();
-                let model = model.clone();
+                let stream_id = Arc::clone(&stream_id);
+                let model = Arc::clone(&model);
 
                 let events = match result {
                     Ok(event) => {
                         let anthropic_events = stream_event_to_anthropic_events(
                             event,
-                            &stream_id,
-                            &model,
+                            stream_id.as_str(),
+                            model.as_str(),
                             content_block_started,
                         );
 
                         anthropic_events
                             .into_iter()
-                            .filter_map(|evt| match serde_json::to_string(&evt) {
-                                Ok(_) => Some(Ok::<_, IngressError>(
-                                    Event::default().json_data(evt).unwrap(),
-                                )),
-                                Err(e) => Some(Err(IngressError::Internal(format!(
-                                    "Failed to serialize SSE event: {}",
-                                    e
-                                )))),
+                            .filter_map(|evt| {
+                                match Event::default().json_data(evt) {
+                                    Ok(event) => Some(Ok::<_, IngressError>(event)),
+                                    Err(e) => Some(Err(IngressError::Internal(format!(
+                                        "Failed to create SSE event: {}",
+                                        e
+                                    )))),
+                                }
                             })
                             .collect::<Vec<_>>()
                     }
@@ -679,7 +708,12 @@ pub async fn messages(
                                 "message": e.to_string()
                             }
                         });
-                        vec![Ok(Event::default().json_data(error_event).unwrap())]
+                        match Event::default().json_data(error_event) {
+                            Ok(event) => vec![Ok(event)],
+                            Err(_) => vec![Err(IngressError::Internal(
+                                "Failed to create error SSE event".to_string()
+                            ))],
+                        }
                     }
                 };
 

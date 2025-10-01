@@ -455,7 +455,7 @@ async fn test_chat_completions_provider_error() {
 
 #[tokio::test]
 async fn test_chat_completions_streaming_basic() {
-    let provider = Arc::new(MockProvider::new("Hello from stream"));
+    let provider = Arc::new(StreamingMockProvider::new_text_stream());
     let app = openai::router(provider);
 
     // Request with streaming enabled

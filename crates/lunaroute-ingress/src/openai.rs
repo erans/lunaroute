@@ -625,28 +625,43 @@ pub async fn chat_completions(
     let is_streaming = req.stream.unwrap_or(false);
     let model = req.model.clone();
 
-    // Convert to normalized format
+    // Convert to normalized format (includes validation)
     let normalized = to_normalized(req)?;
 
     if is_streaming {
+        // Log streaming request for observability
+        tracing::debug!(
+            "OpenAI streaming request: model={}, messages={}",
+            model,
+            normalized.messages.len()
+        );
+
+        // Validate that provider supports streaming
+        if !provider.capabilities().supports_streaming {
+            return Err(IngressError::UnsupportedFeature(
+                "Provider does not support streaming".to_string(),
+            ));
+        }
+
         // Handle streaming response
         let stream = provider
             .stream(normalized)
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
-        // Generate a stream ID
-        let stream_id = format!("chatcmpl-{}", Uuid::new_v4().simple());
+        // Generate a stream ID and wrap in Arc for efficient sharing across stream events
+        let stream_id = Arc::new(format!("chatcmpl-{}", Uuid::new_v4().simple()));
+        let model = Arc::new(model);
 
         // Convert normalized stream to OpenAI SSE format
         let sse_stream = stream.filter_map(move |result| {
-            let stream_id = stream_id.clone();
-            let model = model.clone();
+            let stream_id = Arc::clone(&stream_id);
+            let model = Arc::clone(&model);
             async move {
                 match result {
                     Ok(event) => {
                         // Convert normalized event to OpenAI chunk
-                        if let Some(chunk) = stream_event_to_openai_chunk(event, &stream_id, &model) {
+                        if let Some(chunk) = stream_event_to_openai_chunk(event, stream_id.as_str(), model.as_str()) {
                             // Serialize to JSON
                             match serde_json::to_string(&chunk) {
                                 Ok(json) => Some(Ok(Event::default().data(json))),
@@ -660,9 +675,16 @@ pub async fn chat_completions(
                         }
                     }
                     Err(e) => {
-                        // Send error event
-                        let error_msg = format!("{{\"error\":{{\"message\":\"{}\"}}}}", e);
-                        Some(Ok(Event::default().data(error_msg)))
+                        // Send error event with proper JSON serialization to prevent injection
+                        let error_json = serde_json::json!({
+                            "error": {
+                                "message": e.to_string()
+                            }
+                        });
+                        match serde_json::to_string(&error_json) {
+                            Ok(error_msg) => Some(Ok(Event::default().data(error_msg))),
+                            Err(_) => Some(Ok(Event::default().data(r#"{"error":{"message":"Failed to serialize error"}}"#))),
+                        }
                     }
                 }
             }
