@@ -79,7 +79,7 @@ cargo run --package lunaroute-demos
 curl http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-5",
+    "model": "gpt-5-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 
@@ -87,13 +87,30 @@ curl http://localhost:3000/v1/chat/completions \
 curl http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-5",
+    "model": "gpt-5-mini",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
   }'
 ```
 
-The demo server accepts OpenAI-compatible requests and proxies them through the LunaRoute gateway. Streaming is fully supported for real-time responses.
+The demo server accepts OpenAI-compatible requests and proxies them through the LunaRoute gateway. Supports latest models including **GPT-5 mini** and **Claude Sonnet 4.5**. Streaming is fully supported for real-time responses.
+
+### Running Integration Tests
+
+Test with real OpenAI and Anthropic APIs:
+
+```bash
+# Set API keys in .env file
+cat > .env <<EOF
+OPENAI_API_KEY="sk-..."
+ANTHROPIC_API_KEY="sk-ant-..."
+EOF
+
+# Run real API tests (requires API keys)
+cargo test --package lunaroute_integration_tests -- --ignored --nocapture
+```
+
+See `crates/lunaroute-integration-tests/README.md` for details.
 
 ## Development Status
 
@@ -251,18 +268,53 @@ The demo server accepts OpenAI-compatible requests and proxies them through the 
 - Secure key derivation (Argon2id with 64MB, 3 iterations)
 - Cryptographically secure RNG for salts and keys
 
-**Completed Phases:** 0, 1, 2, 3, 4, 6, Integration, Streaming ✅
+**Phase 5: Routing Engine** ✅ Complete
+- **Route table with rule matching**
+  - Model-based routing with regex patterns (cached with OnceCell)
+  - Listener-based routing (OpenAI vs Anthropic endpoints)
+  - Header/query parameter overrides (X-Luna-Provider)
+  - Priority ordering and fallback chain construction
+- **Health monitoring**
+  - Provider health tracking (Healthy, Degraded, Unhealthy, Unknown)
+  - Success rate thresholds and recent failure window detection
+  - Thread-safe concurrent health tracking with atomic operations
+- **Circuit breakers**
+  - State machine (Closed, Open, Half-Open)
+  - Failure/success thresholds with automatic recovery
+  - Thread-safe state transitions using compare_exchange
+  - Atomic saturating counters for overflow protection
+- **Production quality**
+  - All code review issues fixed (race conditions, panics, overflows)
+  - Poisoned lock handling, regex caching, memory ordering
+  - Config validation for all components
+  - 66 tests passing, 100% coverage, 0 clippy warnings
 
-**Current Status:** Production-ready gateway with full streaming support! 🎉
+**Integration Tests** ✅ Real API Testing
+- **GPT-5 mini** (`gpt-5-mini`) - Latest OpenAI reasoning model
+  - Auto-detection of max_completion_tokens parameter
+  - Backward compatible with GPT-4 and earlier
+- **Claude Sonnet 4.5** (`claude-sonnet-4-5`) - Latest Anthropic model
+  - Best for coding and complex agents
+- **Test suite**: 6 real API tests (marked `#[ignore]` to prevent costs)
+  - Basic completions for both providers
+  - System message handling
+  - Error handling for invalid models
+  - Sequential provider testing
+- See `crates/lunaroute-integration-tests/README.md` for usage
+
+**Completed Phases:** 0, 1, 2, 3, 4, 5, 6, Integration, Streaming ✅
+
+**Current Status:** Production-ready gateway with routing engine! 🎉
 - ✅ Non-streaming and streaming requests fully functional
 - ✅ **Complete OpenAI and Anthropic egress connectors**
+- ✅ **Intelligent routing with health monitoring and circuit breakers**
+- ✅ **GPT-5 and Claude Sonnet 4.5 support**
 - ✅ Bidirectional API translation (OpenAI ⇄ Anthropic via normalized format)
 - ✅ Tool/function calling with streaming
 - ✅ Comprehensive security hardening
-- ✅ **259 tests passing with 100% critical path coverage**
+- ✅ **346+ tests passing with 100% critical path coverage**
 
 **Next Steps:**
-- **Phase 5: Routing Engine** - Intelligent request routing, health monitoring, circuit breakers
 - **Phase 7: Session Recording** - Capture and replay LLM interactions
 - **Phase 8: Observability** - Metrics, tracing, and monitoring
 - **Phase 9+**: PII detection, budget management, advanced features

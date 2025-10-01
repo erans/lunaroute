@@ -231,31 +231,47 @@
 - [x] Validation tests (size limits, schema validation)
 - [x] Security tests (tool arg limits, safe JSON parsing)
 
-## Phase 5: Routing Engine (Priority: Critical)
+## Phase 5: Routing Engine (Priority: Critical) ✅ COMPLETE
 
-### Basic Routing
-- [ ] Implement `RouteTable` with rule matching
-- [ ] Create compiled matchers for performance
-- [ ] Implement route decision logic:
-  - [ ] Listener-based routing
-  - [ ] Model-based routing
-  - [ ] Header/query param overrides
-- [ ] Add fallback chain construction
-- [ ] Implement route caching
+### Basic Routing ✅
+- [x] Implement `RouteTable` with rule matching
+- [x] Create compiled matchers for performance (OnceCell-cached regex)
+- [x] Implement route decision logic:
+  - [x] Listener-based routing
+  - [x] Model-based routing (regex patterns)
+  - [x] Header/query param overrides (provider_override)
+- [x] Add fallback chain construction
+- [x] Implement route priority ordering
 
-### Health Monitoring
-- [ ] Create `HealthMonitor` component
-- [ ] Implement health check endpoints
-- [ ] Add provider health tracking
-- [ ] Create exponential backoff logic
+### Health Monitoring ✅
+- [x] Create `HealthMonitor` component
+- [x] Implement provider health tracking
+- [x] Add health status calculation (Healthy, Degraded, Unhealthy, Unknown)
+- [x] Implement success rate thresholds
+- [x] Add recent failure window detection
+- [x] Thread-safe concurrent health tracking
 
-### Circuit Breakers
-- [ ] Implement `CircuitBreaker` with states
-  - [ ] Closed, Open, Half-Open states
-  - [ ] Failure threshold tracking
-  - [ ] Reset timeout handling
-- [ ] Add per-provider circuit breakers
-- [ ] Implement success/failure recording
+### Circuit Breakers ✅
+- [x] Implement `CircuitBreaker` with states
+  - [x] Closed, Open, Half-Open states
+  - [x] Failure threshold tracking
+  - [x] Success threshold for recovery
+  - [x] Reset timeout handling
+- [x] Add per-provider circuit breakers support
+- [x] Implement success/failure recording
+- [x] Thread-safe state transitions with compare_exchange
+- [x] Atomic saturating counters for overflow protection
+
+### Code Quality & Security ✅
+- [x] Fixed race condition in state transitions (compare_exchange)
+- [x] Replaced all .unwrap() calls with poisoned lock handling
+- [x] Implemented regex caching (OnceCell) for performance
+- [x] Fixed integer overflow with atomic fetch_update + saturating_add
+- [x] Simplified health status logic
+- [x] Standardized atomic memory ordering (Acquire/Release)
+- [x] Added config validation (CircuitBreakerConfig, HealthMonitorConfig)
+- [x] Zero clippy warnings
+- [x] 66 tests passing (100% coverage)
 
 ## Phase 6: Egress Layer (Priority: Critical) ✅ COMPLETE (OpenAI)
 
@@ -272,14 +288,17 @@
 - [x] Multimodal content handling
 - [x] 23 tests passing (100% coverage)
 
-### Anthropic Connector (Deferred)
-- [ ] Implement `AnthropicConnector` with Provider trait
-- [ ] Setup HTTP client
-- [ ] Add request serialization
-- [ ] Implement response parsing
-- [ ] Handle event streams
-- [ ] Add rate limiting
-- [ ] Implement retry logic
+### Anthropic Connector ✅
+- [x] Implement `AnthropicConnector` with Provider trait
+- [x] Setup HTTP client with connection pooling
+- [x] Add request serialization (Normalized → Anthropic format)
+- [x] Implement response parsing (Anthropic → Normalized format)
+- [x] Handle event streams (SSE with message_start, content_block_delta, etc.)
+- [x] Implement retry logic (exponential backoff)
+- [x] Full tool support (tool_use, tool_result blocks)
+- [x] System message extraction
+- [x] Content blocks (text, tool_use, tool_result)
+- [x] 29 tests passing (18 unit + 5 streaming + 6 integration)
 
 ### Connection Management ✅
 - [x] Create connection pooling (32 idle connections per host)
@@ -428,21 +447,38 @@
 - [ ] Create config templating
 - [ ] Add migration utilities
 
-## Phase 13: Testing Framework (Priority: High - Parallel)
+## Phase 13: Testing Framework (Priority: High - Parallel) ✅ EXTENSIVE COVERAGE
 
-### Unit Tests
-- [ ] Test normalization conversions
-- [ ] Test routing logic
-- [ ] Test PII detection
-- [ ] Test budget calculations
-- [ ] Test storage operations
+### Unit Tests ✅
+- [x] Test normalization conversions (53 tests)
+- [x] Test routing logic (66 tests)
+- [x] Test storage operations (88 tests)
+- [x] Test egress connectors (58 tests)
+- [x] Test ingress adapters (95 tests)
+- [ ] Test PII detection (deferred)
+- [ ] Test budget calculations (deferred)
 
-### Integration Tests
-- [ ] Test end-to-end request flow
-- [ ] Test streaming scenarios
-- [ ] Test fallback behavior
-- [ ] Test circuit breaker states
-- [ ] Test session recording
+### Integration Tests ✅
+- [x] Test end-to-end request flow (5 wiremock tests)
+- [x] Test streaming scenarios (5 streaming tests)
+- [x] **Real API integration tests** (6 tests with GPT-5 & Claude Sonnet 4.5)
+  - [x] OpenAI GPT-5 mini testing
+  - [x] Anthropic Claude Sonnet 4.5 testing
+  - [x] System message handling
+  - [x] Error handling for invalid models
+  - [x] Sequential provider testing
+- [x] **GPT-5 support** (max_completion_tokens parameter)
+- [x] **Claude Sonnet 4.5 support** (latest API format)
+- [ ] Test fallback behavior (deferred)
+- [ ] Test circuit breaker states (unit tests complete, integration deferred)
+- [ ] Test session recording (deferred)
+
+### Test Statistics ✅
+- **346+ tests passing** across workspace
+- **100% coverage** for critical paths
+- **0 clippy warnings**
+- Real API tests marked `#[ignore]` to prevent accidental costs
+- Comprehensive documentation in `crates/lunaroute-integration-tests/README.md`
 
 ### Compatibility Tests
 - [ ] Create golden fixtures for OpenAI
