@@ -95,10 +95,21 @@ make install-hooks
 - File-based session store with compression (Zstd/LZ4)
 - File-based state store with periodic persistence
 - AES-256-GCM encryption utilities
+- Argon2id key derivation from passwords
+- Cross-platform file locking (Unix/Windows)
 - Buffer pool for memory efficiency
 - Atomic file writer and rolling file writer
 - Session indexing for fast queries
-- 70 tests passing, 100% coverage
+- 88 tests passing, 100% coverage
+
+**Storage Security Features:**
+- Memory exhaustion protection (100MB file limit, 500MB state limit)
+- Path traversal prevention (session ID validation)
+- File watcher leak fix (proper cleanup)
+- Atomic writes with parent directory fsync
+- Concurrent write protection (advisory file locks)
+- Secure key derivation (Argon2id with 64MB, 3 iterations)
+- Cryptographically secure RNG for salts and keys
 
 **Phase 4-17**: In progress
 

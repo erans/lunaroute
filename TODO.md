@@ -80,19 +80,36 @@
 ### Storage Utilities ✅
 - [x] Implement compression (Zstd, LZ4, None)
 - [x] Implement encryption (AES-256-GCM with random nonces)
+- [x] Implement Argon2id key derivation from passwords
+- [x] Implement cross-platform file locking (Unix/Windows)
 - [x] Create buffer pool for memory efficiency
-- [x] Implement atomic file writer (temp file + rename)
+- [x] Implement atomic file writer (temp file + rename + parent fsync)
 - [x] Implement rolling file writer for streams
 - [x] Implement session index (O(1) lookups, filtered queries)
 
+### Security Hardening ✅
+- [x] Memory exhaustion protection
+  - [x] File size limits (100MB max) before loading
+  - [x] State size limits (500MB max in-memory)
+  - [x] Size validation on set() and set_many()
+- [x] Path traversal prevention
+  - [x] Session ID validation (alphanumeric, dash, underscore only)
+  - [x] Reject "..", "/", "\" characters
+  - [x] Max length 255 characters
+- [x] Fix file watcher memory leak (proper cleanup)
+- [x] Improve atomic writer durability (parent directory fsync)
+- [x] Add concurrent write protection (FileLock)
+- [x] Add secure key derivation (Argon2id)
+
 ### Test Coverage ✅
-- [x] 70 tests passing (100% coverage)
+- [x] 88 tests passing (100% coverage)
 - [x] Compression tests (Zstd, LZ4, roundtrip, large data)
-- [x] Encryption tests (AES-256-GCM, wrong key, corruption)
+- [x] Encryption tests (AES-256-GCM, wrong key, corruption, key derivation)
 - [x] Config store tests (JSON, YAML, TOML, validation, hot-reload stub)
-- [x] Session store tests (CRUD, filtering, pruning, compression)
-- [x] State store tests (KV operations, persistence, auto-persist)
-- [x] Utility tests (atomic writer, buffer pool, rolling writer)
+- [x] Session store tests (CRUD, filtering, pruning, compression, path traversal)
+- [x] State store tests (KV operations, persistence, auto-persist, size limits)
+- [x] Utility tests (atomic writer, buffer pool, rolling writer, file locking)
+- [x] Security tests (path traversal, empty/long IDs, size limits, key derivation)
 
 ## Phase 3: Ingress Layer (Priority: Critical) ✅ COMPLETE
 
