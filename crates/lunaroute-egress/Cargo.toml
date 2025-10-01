@@ -10,12 +10,29 @@ rust-version.workspace = true
 [dependencies]
 lunaroute-core = { path = "../lunaroute-core" }
 
+# Async runtime
 tokio = { workspace = true }
+futures = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 tower = { workspace = true }
+eventsource-stream = { workspace = true }
+
+# Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# Observability
 tracing = { workspace = true }
+
+# Utilities
 bytes = { workspace = true }
 thiserror = { workspace = true }
+async-trait = "0.1"
+
+[dev-dependencies]
+mockall = { workspace = true }
+tokio-test = "0.4"
