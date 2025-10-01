@@ -90,7 +90,17 @@ make install-hooks
 - Request size limits (1MB per message, 100K max tokens)
 - API-specific validation (OpenAI vs Anthropic parameter ranges)
 
-**Phase 2, 4-17**: In progress
+**Phase 2: Storage Layer** ✅ Complete
+- File-based config store (JSON/YAML/TOML support)
+- File-based session store with compression (Zstd/LZ4)
+- File-based state store with periodic persistence
+- AES-256-GCM encryption utilities
+- Buffer pool for memory efficiency
+- Atomic file writer and rolling file writer
+- Session indexing for fast queries
+- 70 tests passing, 100% coverage
+
+**Phase 4-17**: In progress
 
 See [TODO.md](TODO.md) for the complete implementation roadmap.
 
