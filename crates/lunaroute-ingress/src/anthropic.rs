@@ -3,14 +3,18 @@
 use crate::types::{IngressError, IngressResult};
 use axum::{
     extract::{Json, State},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::post,
     Router,
 };
+use futures::StreamExt;
 use lunaroute_core::{
     normalized::{
         ContentPart, FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent,
-        NormalizedRequest, NormalizedResponse, Role, Tool, ToolCall,
+        NormalizedRequest, NormalizedResponse, NormalizedStreamEvent, Role, Tool, ToolCall,
     },
     provider::Provider,
 };
@@ -141,6 +145,73 @@ pub struct AnthropicTool {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub input_schema: serde_json::Value,
+}
+
+/// Anthropic streaming event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicStreamEvent {
+    MessageStart {
+        message: AnthropicMessageStart,
+    },
+    ContentBlockStart {
+        index: u32,
+        content_block: AnthropicContentBlockStart,
+    },
+    ContentBlockDelta {
+        index: u32,
+        delta: AnthropicContentDelta,
+    },
+    ContentBlockStop {
+        index: u32,
+    },
+    MessageDelta {
+        delta: AnthropicMessageDelta,
+        usage: AnthropicUsageDelta,
+    },
+    MessageStop,
+}
+
+/// Anthropic message start
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicMessageStart {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub role: String,
+    pub model: String,
+    pub usage: AnthropicUsage,
+}
+
+/// Anthropic content block start
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicContentBlockStart {
+    Text { text: String },
+    ToolUse { id: String, name: String },
+}
+
+/// Anthropic content delta
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicContentDelta {
+    TextDelta { text: String },
+    InputJsonDelta { partial_json: String },
+}
+
+/// Anthropic message delta
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicMessageDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_sequence: Option<String>,
+}
+
+/// Anthropic usage delta
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicUsageDelta {
+    pub output_tokens: u32,
 }
 
 /// Validate Anthropic request parameters
@@ -431,31 +502,206 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
     }
 }
 
+/// Convert normalized stream event to Anthropic SSE events
+/// Returns a vector because some normalized events map to multiple Anthropic events
+fn stream_event_to_anthropic_events(
+    event: NormalizedStreamEvent,
+    stream_id: &str,
+    model: &str,
+    content_block_started: &mut bool,
+) -> Vec<AnthropicStreamEvent> {
+    match event {
+        NormalizedStreamEvent::Start { .. } => {
+            // Anthropic starts with message_start event
+            vec![AnthropicStreamEvent::MessageStart {
+                message: AnthropicMessageStart {
+                    id: stream_id.to_string(),
+                    type_: "message".to_string(),
+                    role: "assistant".to_string(),
+                    model: model.to_string(),
+                    usage: AnthropicUsage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    },
+                },
+            }]
+        }
+        NormalizedStreamEvent::Delta { index, delta } => {
+            let mut events = Vec::new();
+
+            // For first delta, send content_block_start
+            if !*content_block_started {
+                events.push(AnthropicStreamEvent::ContentBlockStart {
+                    index,
+                    content_block: AnthropicContentBlockStart::Text {
+                        text: String::new(),
+                    },
+                });
+                *content_block_started = true;
+            }
+
+            // Send the text delta
+            if let Some(content) = delta.content {
+                events.push(AnthropicStreamEvent::ContentBlockDelta {
+                    index,
+                    delta: AnthropicContentDelta::TextDelta { text: content },
+                });
+            }
+
+            events
+        }
+        NormalizedStreamEvent::ToolCallDelta {
+            index: _,
+            tool_call_index,
+            id,
+            function,
+        } => {
+            let mut events = Vec::new();
+
+            // Start tool use block if we have id and name
+            if let (Some(tool_id), Some(func)) = (id, function.as_ref().and_then(|f| f.name.clone())) {
+                events.push(AnthropicStreamEvent::ContentBlockStart {
+                    index: tool_call_index,
+                    content_block: AnthropicContentBlockStart::ToolUse {
+                        id: tool_id,
+                        name: func,
+                    },
+                });
+            }
+
+            // Send partial JSON if available
+            if let Some(func) = function.and_then(|f| f.arguments) {
+                events.push(AnthropicStreamEvent::ContentBlockDelta {
+                    index: tool_call_index,
+                    delta: AnthropicContentDelta::InputJsonDelta { partial_json: func },
+                });
+            }
+
+            events
+        }
+        NormalizedStreamEvent::Usage { .. } => {
+            // Usage is sent with message_delta at the end
+            vec![]
+        }
+        NormalizedStreamEvent::End { finish_reason } => {
+            let mut events = Vec::new();
+
+            // Close content block if it was started
+            if *content_block_started {
+                events.push(AnthropicStreamEvent::ContentBlockStop { index: 0 });
+            }
+
+            // Send message_delta with stop_reason
+            let stop_reason = match finish_reason {
+                FinishReason::Stop => "end_turn",
+                FinishReason::Length => "max_tokens",
+                FinishReason::ToolCalls => "tool_use",
+                FinishReason::ContentFilter => "end_turn",
+                FinishReason::Error => "end_turn",
+            };
+
+            events.push(AnthropicStreamEvent::MessageDelta {
+                delta: AnthropicMessageDelta {
+                    stop_reason: Some(stop_reason.to_string()),
+                    stop_sequence: None,
+                },
+                usage: AnthropicUsageDelta { output_tokens: 0 },
+            });
+
+            // Send message_stop
+            events.push(AnthropicStreamEvent::MessageStop);
+
+            events
+        }
+        NormalizedStreamEvent::Error { .. } => {
+            // Errors are handled separately
+            vec![]
+        }
+    }
+}
+
 /// Messages handler
 pub async fn messages(
     State(provider): State<Arc<dyn Provider>>,
     Json(req): Json<AnthropicMessagesRequest>,
 ) -> Result<Response, IngressError> {
-    // Check if streaming is requested
-    if req.stream.unwrap_or(false) {
-        return Err(IngressError::UnsupportedFeature(
-            "Streaming not yet implemented".to_string()
-        ));
-    }
+    let is_streaming = req.stream.unwrap_or(false);
+    let model = req.model.clone();
 
     // Convert to normalized format
     let normalized = to_normalized(req)?;
 
-    // Call provider
-    let normalized_response = provider
-        .send(normalized)
-        .await
-        .map_err(|e| IngressError::ProviderError(e.to_string()))?;
+    if is_streaming {
+        // Call provider.stream()
+        let stream = provider
+            .stream(normalized)
+            .await
+            .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
-    // Convert back to Anthropic format
-    let response = from_normalized(normalized_response);
+        // Generate stream ID (Anthropic uses msg_* prefix)
+        let stream_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
 
-    Ok(Json(response).into_response())
+        // Convert normalized events to Anthropic SSE format
+        // Use scan to maintain state across stream events
+        let sse_stream = stream
+            .scan(false, move |content_block_started, result| {
+                let stream_id = stream_id.clone();
+                let model = model.clone();
+
+                let events = match result {
+                    Ok(event) => {
+                        let anthropic_events = stream_event_to_anthropic_events(
+                            event,
+                            &stream_id,
+                            &model,
+                            content_block_started,
+                        );
+
+                        anthropic_events
+                            .into_iter()
+                            .filter_map(|evt| match serde_json::to_string(&evt) {
+                                Ok(_) => Some(Ok::<_, IngressError>(
+                                    Event::default().json_data(evt).unwrap(),
+                                )),
+                                Err(e) => Some(Err(IngressError::Internal(format!(
+                                    "Failed to serialize SSE event: {}",
+                                    e
+                                )))),
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                    Err(e) => {
+                        // Send error event
+                        let error_event = serde_json::json!({
+                            "type": "error",
+                            "error": {
+                                "type": "api_error",
+                                "message": e.to_string()
+                            }
+                        });
+                        vec![Ok(Event::default().json_data(error_event).unwrap())]
+                    }
+                };
+
+                futures::future::ready(Some(events))
+            })
+            .flat_map(futures::stream::iter);
+
+        Ok(Sse::new(sse_stream)
+            .keep_alive(KeepAlive::default())
+            .into_response())
+    } else {
+        // Call provider
+        let normalized_response = provider
+            .send(normalized)
+            .await
+            .map_err(|e| IngressError::ProviderError(e.to_string()))?;
+
+        // Convert back to Anthropic format
+        let response = from_normalized(normalized_response);
+
+        Ok(Json(response).into_response())
+    }
 }
 
 /// Create Anthropic router with provider state

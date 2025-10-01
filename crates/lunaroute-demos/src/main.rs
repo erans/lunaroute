@@ -12,11 +12,21 @@
 //!
 //! Test with:
 //! ```bash
+//! # Non-streaming request
 //! curl http://localhost:3000/v1/chat/completions \
 //!   -H "Content-Type: application/json" \
 //!   -d '{
-//!     "model": "gpt-3.5-turbo",
+//!     "model": "gpt-5",
 //!     "messages": [{"role": "user", "content": "Hello!"}]
+//!   }'
+//!
+//! # Streaming request
+//! curl http://localhost:3000/v1/chat/completions \
+//!   -H "Content-Type: application/json" \
+//!   -d '{
+//!     "model": "gpt-5",
+//!     "messages": [{"role": "user", "content": "Hello!"}],
+//!     "stream": true
 //!   }'
 //! ```
 
@@ -56,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr).await?;
     info!("✅ LunaRoute gateway listening on http://{}", addr);
     info!("   OpenAI endpoint: http://{}/v1/chat/completions", addr);
+    info!("   Streaming: Add \"stream\": true to request body");
 
     axum::serve(listener, app).await?;
 

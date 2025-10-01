@@ -78,7 +78,7 @@ cargo run --package lunaroute-demos
 curl http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-3.5-turbo",
+    "model": "gpt-5",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```

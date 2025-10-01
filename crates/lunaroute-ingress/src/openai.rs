@@ -3,14 +3,19 @@
 use crate::types::{IngressError, IngressResult};
 use axum::{
     extract::{Json, State},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::post,
     Router,
 };
+use futures::StreamExt;
 use lunaroute_core::{
     normalized::{
-        ContentPart, FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent,
-        NormalizedRequest, NormalizedResponse, Role, Tool, ToolCall, ToolChoice,
+        ContentPart, FinishReason, FunctionCall, FunctionDefinition, Message,
+        MessageContent, NormalizedRequest, NormalizedResponse, NormalizedStreamEvent, Role, Tool,
+        ToolCall, ToolChoice,
     },
     provider::Provider,
 };
@@ -18,6 +23,7 @@ use lunaroute_core::{
 use lunaroute_core::normalized::{Choice, Usage};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Maximum size for tool arguments (1MB)
 const MAX_TOOL_ARGS_SIZE: usize = 1_000_000;
@@ -111,31 +117,57 @@ pub struct OpenAIUsage {
     pub total_tokens: u32,
 }
 
-/// OpenAI stream chunk
+/// OpenAI streaming chunk (SSE format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpenAIStreamChunk {
-    pub id: String,
-    pub object: String,
-    pub created: i64,
-    pub model: String,
-    pub choices: Vec<OpenAIStreamChoice>,
+struct OpenAIStreamChunk {
+    id: String,
+    object: String,
+    created: i64,
+    model: String,
+    choices: Vec<OpenAIStreamChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<OpenAIUsage>,
 }
 
-/// OpenAI stream choice
+/// OpenAI streaming choice
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpenAIStreamChoice {
-    pub index: u32,
-    pub delta: OpenAIDelta,
-    pub finish_reason: Option<String>,
+struct OpenAIStreamChoice {
+    index: u32,
+    delta: OpenAIDelta,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finish_reason: Option<String>,
 }
 
-/// OpenAI delta
+/// OpenAI delta (streaming content)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpenAIDelta {
+struct OpenAIDelta {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
+    role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAIToolCallDelta>>,
+}
+
+/// OpenAI tool call delta
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OpenAIToolCallDelta {
+    index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
+    tool_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function: Option<OpenAIFunctionCallDelta>,
+}
+
+/// OpenAI function call delta
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OpenAIFunctionCallDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arguments: Option<String>,
 }
 
 /// OpenAI tool definition
@@ -468,31 +500,194 @@ pub fn from_normalized(resp: NormalizedResponse) -> OpenAIChatResponse {
     }
 }
 
+/// Convert normalized stream event to OpenAI SSE chunk
+fn stream_event_to_openai_chunk(
+    event: NormalizedStreamEvent,
+    stream_id: &str,
+    model: &str,
+) -> Option<OpenAIStreamChunk> {
+    match event {
+        NormalizedStreamEvent::Start { .. } => {
+            // OpenAI doesn't send a separate start event, it's implicit in the first delta
+            None
+        }
+        NormalizedStreamEvent::Delta { index, delta } => Some(OpenAIStreamChunk {
+            id: stream_id.to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+                .as_secs() as i64,
+            model: model.to_string(),
+            choices: vec![OpenAIStreamChoice {
+                index,
+                delta: OpenAIDelta {
+                    role: delta.role.map(|r| match r {
+                        Role::System => "system",
+                        Role::User => "user",
+                        Role::Assistant => "assistant",
+                        Role::Tool => "tool",
+                    }.to_string()),
+                    content: delta.content,
+                    tool_calls: None,
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+        }),
+        NormalizedStreamEvent::ToolCallDelta {
+            index,
+            tool_call_index,
+            id,
+            function,
+        } => Some(OpenAIStreamChunk {
+            id: stream_id.to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+                .as_secs() as i64,
+            model: model.to_string(),
+            choices: vec![OpenAIStreamChoice {
+                index,
+                delta: OpenAIDelta {
+                    role: None,
+                    content: None,
+                    tool_calls: Some(vec![OpenAIToolCallDelta {
+                        index: tool_call_index,
+                        id,
+                        tool_type: Some("function".to_string()),
+                        function: function.map(|f| OpenAIFunctionCallDelta {
+                            name: f.name,
+                            arguments: f.arguments,
+                        }),
+                    }]),
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+        }),
+        NormalizedStreamEvent::Usage { usage } => Some(OpenAIStreamChunk {
+            id: stream_id.to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+                .as_secs() as i64,
+            model: model.to_string(),
+            choices: vec![],
+            usage: Some(OpenAIUsage {
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+                total_tokens: usage.total_tokens,
+            }),
+        }),
+        NormalizedStreamEvent::End { finish_reason } => {
+            let finish_reason_str = match finish_reason {
+                FinishReason::Stop => "stop",
+                FinishReason::Length => "length",
+                FinishReason::ToolCalls => "tool_calls",
+                FinishReason::ContentFilter => "content_filter",
+                FinishReason::Error => "error",
+            };
+            Some(OpenAIStreamChunk {
+                id: stream_id.to_string(),
+                object: "chat.completion.chunk".to_string(),
+                created: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+                    .as_secs() as i64,
+                model: model.to_string(),
+                choices: vec![OpenAIStreamChoice {
+                    index: 0,
+                    delta: OpenAIDelta {
+                        role: None,
+                        content: None,
+                        tool_calls: None,
+                    },
+                    finish_reason: Some(finish_reason_str.to_string()),
+                }],
+                usage: None,
+            })
+        }
+        NormalizedStreamEvent::Error { .. } => {
+            // Errors are handled separately, don't convert to chunk
+            None
+        }
+    }
+}
+
 /// Chat completion handler
 pub async fn chat_completions(
     State(provider): State<Arc<dyn Provider>>,
     Json(req): Json<OpenAIChatRequest>,
 ) -> Result<Response, IngressError> {
-    // Check if streaming is requested
-    if req.stream.unwrap_or(false) {
-        return Err(IngressError::UnsupportedFeature(
-            "Streaming not yet implemented".to_string()
-        ));
-    }
+    let is_streaming = req.stream.unwrap_or(false);
+    let model = req.model.clone();
 
     // Convert to normalized format
     let normalized = to_normalized(req)?;
 
-    // Call provider
-    let normalized_response = provider
-        .send(normalized)
-        .await
-        .map_err(|e| IngressError::ProviderError(e.to_string()))?;
+    if is_streaming {
+        // Handle streaming response
+        let stream = provider
+            .stream(normalized)
+            .await
+            .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
-    // Convert back to OpenAI format
-    let response = from_normalized(normalized_response);
+        // Generate a stream ID
+        let stream_id = format!("chatcmpl-{}", Uuid::new_v4().simple());
 
-    Ok(Json(response).into_response())
+        // Convert normalized stream to OpenAI SSE format
+        let sse_stream = stream.filter_map(move |result| {
+            let stream_id = stream_id.clone();
+            let model = model.clone();
+            async move {
+                match result {
+                    Ok(event) => {
+                        // Convert normalized event to OpenAI chunk
+                        if let Some(chunk) = stream_event_to_openai_chunk(event, &stream_id, &model) {
+                            // Serialize to JSON
+                            match serde_json::to_string(&chunk) {
+                                Ok(json) => Some(Ok(Event::default().data(json))),
+                                Err(e) => Some(Err(IngressError::Internal(format!(
+                                    "Failed to serialize SSE chunk: {}",
+                                    e
+                                )))),
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    Err(e) => {
+                        // Send error event
+                        let error_msg = format!("{{\"error\":{{\"message\":\"{}\"}}}}", e);
+                        Some(Ok(Event::default().data(error_msg)))
+                    }
+                }
+            }
+        });
+
+        // Add [DONE] message at the end
+        let sse_stream = sse_stream.chain(futures::stream::once(async {
+            Ok::<_, IngressError>(Event::default().data("[DONE]"))
+        }));
+
+        Ok(Sse::new(sse_stream)
+            .keep_alive(KeepAlive::default())
+            .into_response())
+    } else {
+        // Handle non-streaming response
+        let normalized_response = provider
+            .send(normalized)
+            .await
+            .map_err(|e| IngressError::ProviderError(e.to_string()))?;
+
+        // Convert back to OpenAI format
+        let response = from_normalized(normalized_response);
+
+        Ok(Json(response).into_response())
+    }
 }
 
 /// Create OpenAI router with provider state

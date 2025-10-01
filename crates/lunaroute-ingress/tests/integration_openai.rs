@@ -268,8 +268,8 @@ async fn test_chat_completions_provider_error() {
 }
 
 #[tokio::test]
-async fn test_chat_completions_streaming_not_supported() {
-    let provider = Arc::new(MockProvider::new("Should not be called"));
+async fn test_chat_completions_streaming_basic() {
+    let provider = Arc::new(MockProvider::new("Hello from stream"));
     let app = openai::router(provider);
 
     // Request with streaming enabled
@@ -291,17 +291,12 @@ async fn test_chat_completions_streaming_not_supported() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    // Streaming returns 200 OK with text/event-stream content type
+    assert_eq!(response.status(), StatusCode::OK);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-    assert!(json["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Streaming not yet implemented"));
+    // Check content type is SSE
+    let content_type = response.headers().get("content-type").unwrap();
+    assert!(content_type.to_str().unwrap().contains("text/event-stream"));
 }
 
 #[tokio::test]
