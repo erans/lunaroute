@@ -50,6 +50,7 @@ use lunaroute_egress::{
     openai::{OpenAIConfig, OpenAIConnector},
 };
 use lunaroute_ingress::openai;
+use lunaroute_observability::{health_router, HealthState, Metrics};
 use lunaroute_routing::{Router, RouteTable, RoutingRule, RuleMatcher};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -160,8 +161,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("   Circuit breaker: 3 failures → open, 1 success → close");
     info!("   Health monitor: tracks success rate and recent failures");
 
+    // Initialize observability
+    info!("📊 Initializing observability (metrics, health endpoints)");
+    let metrics = Arc::new(Metrics::new()?);
+    let health_state = HealthState::new(metrics.clone());
+
     // Create OpenAI ingress router with the intelligent router
-    let app = openai::router(router);
+    let api_router = openai::router(router);
+
+    // Create health/metrics router
+    let health_router = health_router(health_state);
+
+    // Combine routers
+    let app = api_router.merge(health_router);
 
     // Start server
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
@@ -169,9 +181,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("");
     info!("✅ LunaRoute gateway listening on http://{}", addr);
-    info!("   OpenAI-compatible endpoint: http://{}/v1/chat/completions", addr);
+    info!("   API endpoints:");
+    info!("   - OpenAI-compatible: http://{}/v1/chat/completions", addr);
+    info!("   Observability endpoints:");
+    info!("   - Health check:      http://{}/healthz", addr);
+    info!("   - Readiness check:   http://{}/readyz", addr);
+    info!("   - Prometheus metrics: http://{}/metrics", addr);
     info!("   Supported models: GPT-5 (gpt-5-mini), Claude Sonnet 4.5 (claude-sonnet-4-5)");
-    info!("   Features: Intelligent routing, automatic fallback, circuit breakers");
+    info!("   Features: Intelligent routing, automatic fallback, circuit breakers, observability");
     info!("");
 
     axum::serve(listener, app).await?;

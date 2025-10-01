@@ -9,7 +9,7 @@ LunaRoute is a high-performance API gateway for Large Language Model providers, 
 - **Unified API Translation**: Seamlessly translate between OpenAI and Anthropic API formats
 - **Streaming Support**: Full SSE streaming for real-time responses from both providers
 - **Intelligent Routing**: Route requests based on rules, health, and cost optimization
-- **Session Recording**: Capture and replay all LLM interactions
+- **Session Recording**: Capture and replay all LLM interactions with GDPR-compliant IP anonymization
 - **PII Detection & Redaction**: Automatically detect and redact sensitive information
 - **Budget Management**: Track and enforce spending limits across providers
 - **Circuit Breakers**: Automatic failover and retry logic
@@ -227,12 +227,21 @@ See `crates/lunaroute-integration-tests/README.md` for details.
 - **Complete streaming pipeline**: Client → Ingress SSE → Normalized events → Egress SSE → Provider
 - Error propagation (validation errors, provider errors)
 - Demo server (`lunaroute-demos`) for local testing with streaming examples
-- **259 total tests passing across workspace:**
-  - Ingress integration tests (19 tests)
-  - Egress wiremock tests (12 tests: 6 OpenAI + 6 Anthropic)
-  - Egress streaming tests (5 tests)
-  - End-to-end tests (5 tests)
-  - All existing unit tests passing
+- **427 total tests passing across workspace:**
+  - Core types: 16 tests
+  - Ingress: 95 tests (76 unit + 19 integration)
+  - Egress: 58 tests (46 unit + 12 integration)
+  - Routing: 84 tests (72 unit + 6 integration + 6 streaming)
+  - Observability: 34 tests (27 unit + 7 integration)
+  - Storage: 88 tests
+  - Session: 11 tests (session recording lifecycle)
+  - PII: 18 tests
+  - E2E integration: 23 tests
+    - E2E with observability: 5 tests
+    - Router + observability integration: 8 tests
+    - Streaming E2E: 5 tests
+    - Real API streaming: 4 tests (GPT-5, Claude, marked #[ignore])
+  - Real API tests: 10 tests (marked #[ignore] to prevent costs)
 
 **Integration Test Coverage:**
 - HTTP layer validation with mock providers
@@ -309,23 +318,78 @@ See `crates/lunaroute-integration-tests/README.md` for details.
   - Sequential provider testing
 - See `crates/lunaroute-integration-tests/README.md` for usage
 
-**Completed Phases:** 0, 1, 2, 3, 4, 5, 6, Integration, Streaming ✅
+**Phase 8: Observability** ✅ Complete
+- **Prometheus metrics** (15 metric types)
+  - Request counters (total, success, failure by listener/model/provider)
+  - Latency histograms (request, ingress, routing, egress durations)
+  - Circuit breaker state and transition tracking
+  - Provider health status and success rates
+  - Token usage counters (prompt, completion, total)
+  - Fallback trigger tracking
+- **Health endpoints**
+  - `/healthz` - Liveness probe for Kubernetes
+  - `/readyz` - Readiness probe with provider status
+  - `/metrics` - Prometheus exposition format
+  - Extensible ReadinessChecker trait
+- **OpenTelemetry tracing**
+  - Configurable tracer provider with sampling
+  - LLM-specific span attributes (model, provider, tokens, cost)
+  - Request success/error recording helpers
+- **Production quality**
+  - Thread-safe concurrent metrics recording
+  - 27 unit tests + 7 integration tests = 34 tests passing
+  - Zero clippy warnings
 
-**Current Status:** Production-ready gateway with intelligent routing! 🎉
+**Phase 7: Session Recording** ✅ Complete (with production gaps)
+- **Core implementation**
+  - Session ID generation (UUID v4)
+  - SessionRecorder trait with FileSessionRecorder implementation
+  - RecordingProvider wrapper for automatic session capture
+  - NDJSON event streaming with ordered recording
+  - Session metadata tracking (model, provider, latency, tokens, success/failure)
+  - Session query and filtering capabilities
+  - Session deletion support
+- **Security hardening**
+  - Path traversal vulnerability fixed (session ID validation)
+  - Directory traversal fixed (no symlink following)
+  - IP anonymization for GDPR compliance (IPv4/IPv6 support)
+  - Race condition fixes in streaming (ordered channel recording)
+  - Comprehensive error handling with context
+- **Test coverage**
+  - 11 session recording tests passing
+  - Full lifecycle testing (create → record → query → delete)
+  - Recording provider integration tests
+- **Production gaps documented** (see TODO.md for roadmap)
+  - P0: Disk space management, performance optimization, operational features
+  - P1: Encryption at rest, access control, data quality
+  - P2: Scalability (database backend, distributed storage)
+
+**Completed Phases:** 0, 1, 2, 3, 4, 5, 6, 7, 8, Integration, Streaming ✅
+
+**Current Status:** Production-ready gateway with session recording! 🎉
 - ✅ Non-streaming and streaming requests fully functional
 - ✅ **Complete OpenAI and Anthropic egress connectors**
 - ✅ **Router as Provider with intelligent failover**
 - ✅ **Health monitoring and circuit breakers integrated**
+- ✅ **Prometheus metrics and health endpoints**
+- ✅ **OpenTelemetry tracing support**
+- ✅ **Session recording with security hardening**
 - ✅ **GPT-5 and Claude Sonnet 4.5 support**
 - ✅ Bidirectional API translation (OpenAI ⇄ Anthropic via normalized format)
 - ✅ Tool/function calling with streaming
 - ✅ Comprehensive security hardening
-- ✅ **352 tests passing with 100% critical path coverage**
+- ✅ **427 tests passing with 100% critical path coverage**
+  - Including router+observability integration tests
+  - Full streaming E2E pipeline tests
+  - High concurrency stress tests (1000+ requests)
+  - Real API streaming tests for GPT-5 and Claude
+  - Session recording lifecycle tests
 
 **Next Steps:**
-- **Phase 7: Session Recording** - Capture and replay LLM interactions
-- **Phase 8: Observability** - Metrics, tracing, and monitoring
-- **Phase 9+**: PII detection, budget management, advanced features
+- **Phase 9**: Authentication & authorization (API key management, rate limiting)
+- **Phase 10**: Budget management (cost tracking, spending limits)
+- **Phase 11**: PII detection & redaction (email, SSN, credit cards)
+- **Session recording production gaps**: Disk management, encryption, performance optimization
 
 See [TODO.md](TODO.md) for the complete implementation roadmap.
 

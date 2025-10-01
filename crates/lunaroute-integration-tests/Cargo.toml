@@ -13,6 +13,7 @@ lunaroute-core = { path = "../lunaroute-core" }
 lunaroute-ingress = { path = "../lunaroute-ingress" }
 lunaroute-egress = { path = "../lunaroute-egress" }
 lunaroute-routing = { path = "../lunaroute-routing" }
+lunaroute-observability = { path = "../lunaroute-observability" }
 
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -21,6 +22,8 @@ serde_json = { workspace = true }
 wiremock = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 dotenv = "0.15"

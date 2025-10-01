@@ -17,3 +17,10 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

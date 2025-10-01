@@ -335,3 +335,259 @@ async fn test_both_providers_sequential() {
     let anthropic_response = anthropic_connector.send(anthropic_request).await.unwrap();
     assert!(anthropic_response.choices.len() > 0);
 }
+
+#[tokio::test]
+#[ignore]
+async fn test_openai_streaming_basic() {
+    use futures::StreamExt;
+
+    init_tracing();
+
+    let config = OpenAIConfig {
+        api_key: get_openai_key(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        organization: None,
+        client_config: Default::default(),
+    };
+    let connector = OpenAIConnector::new(config).unwrap();
+
+    let request = NormalizedRequest {
+        messages: vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Count from 1 to 5, each number on a new line.".to_string()),
+            name: None,
+            tool_calls: vec![],
+            tool_call_id: None,
+        }],
+        system: None,
+        model: "gpt-5-mini".to_string(),
+        max_tokens: Some(50),
+        temperature: None,
+        top_p: None,
+        top_k: None,
+        stop_sequences: vec![],
+        stream: true,
+        tools: vec![],
+        tool_choice: None,
+        metadata: std::collections::HashMap::new(),
+    };
+
+    let mut stream = connector.stream(request).await.unwrap();
+
+    let mut event_count = 0;
+    let mut content_chunks = vec![];
+
+    while let Some(event_result) = stream.next().await {
+        let event = event_result.unwrap();
+        event_count += 1;
+
+        match event {
+            lunaroute_core::normalized::NormalizedStreamEvent::Start { id, model } => {
+                assert!(!id.is_empty());
+                assert!(model.contains("gpt"));
+            }
+            lunaroute_core::normalized::NormalizedStreamEvent::Delta { delta, .. } => {
+                if let Some(content) = delta.content {
+                    content_chunks.push(content);
+                }
+            }
+            lunaroute_core::normalized::NormalizedStreamEvent::Usage { usage } => {
+                assert!(usage.total_tokens > 0);
+            }
+            lunaroute_core::normalized::NormalizedStreamEvent::End { finish_reason } => {
+                assert_eq!(finish_reason, lunaroute_core::normalized::FinishReason::Stop);
+            }
+            _ => {}
+        }
+    }
+
+    // Should have received multiple events
+    assert!(event_count > 3);
+
+    // Should have received content
+    let full_content: String = content_chunks.join("");
+    assert!(!full_content.is_empty());
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_anthropic_streaming_basic() {
+    use futures::StreamExt;
+
+    init_tracing();
+
+    let config = AnthropicConfig {
+        api_key: get_anthropic_key(),
+        base_url: "https://api.anthropic.com".to_string(),
+        api_version: "2023-06-01".to_string(),
+        client_config: Default::default(),
+    };
+    let connector = AnthropicConnector::new(config).unwrap();
+
+    let request = NormalizedRequest {
+        messages: vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Count from 1 to 5, each number on a new line.".to_string()),
+            name: None,
+            tool_calls: vec![],
+            tool_call_id: None,
+        }],
+        system: None,
+        model: "claude-sonnet-4-5".to_string(),
+        max_tokens: Some(50),
+        temperature: Some(0.0),
+        top_p: None,
+        top_k: None,
+        stop_sequences: vec![],
+        stream: true,
+        tools: vec![],
+        tool_choice: None,
+        metadata: std::collections::HashMap::new(),
+    };
+
+    let mut stream = connector.stream(request).await.unwrap();
+
+    let mut event_count = 0;
+    let mut content_chunks = vec![];
+
+    while let Some(event_result) = stream.next().await {
+        let event = event_result.unwrap();
+        event_count += 1;
+
+        match event {
+            lunaroute_core::normalized::NormalizedStreamEvent::Start { id, model } => {
+                assert!(!id.is_empty());
+                assert!(model.contains("claude"));
+            }
+            lunaroute_core::normalized::NormalizedStreamEvent::Delta { delta, .. } => {
+                if let Some(content) = delta.content {
+                    content_chunks.push(content);
+                }
+            }
+            lunaroute_core::normalized::NormalizedStreamEvent::Usage { usage } => {
+                assert!(usage.total_tokens > 0);
+            }
+            lunaroute_core::normalized::NormalizedStreamEvent::End { finish_reason } => {
+                assert_eq!(finish_reason, lunaroute_core::normalized::FinishReason::Stop);
+            }
+            _ => {}
+        }
+    }
+
+    // Should have received multiple events
+    assert!(event_count > 3);
+
+    // Should have received content
+    let full_content: String = content_chunks.join("");
+    assert!(!full_content.is_empty());
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_openai_streaming_with_system_prompt() {
+    use futures::StreamExt;
+
+    init_tracing();
+
+    let config = OpenAIConfig {
+        api_key: get_openai_key(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        organization: None,
+        client_config: Default::default(),
+    };
+    let connector = OpenAIConnector::new(config).unwrap();
+
+    let request = NormalizedRequest {
+        messages: vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("What is 2+2?".to_string()),
+            name: None,
+            tool_calls: vec![],
+            tool_call_id: None,
+        }],
+        system: Some("You are a helpful math tutor. Always answer in exactly one word or number.".to_string()),
+        model: "gpt-5-mini".to_string(),
+        max_tokens: Some(10),
+        temperature: None,
+        top_p: None,
+        top_k: None,
+        stop_sequences: vec![],
+        stream: true,
+        tools: vec![],
+        tool_choice: None,
+        metadata: std::collections::HashMap::new(),
+    };
+
+    let mut stream = connector.stream(request).await.unwrap();
+
+    let mut content = String::new();
+
+    while let Some(event_result) = stream.next().await {
+        let event = event_result.unwrap();
+
+        if let lunaroute_core::normalized::NormalizedStreamEvent::Delta { delta, .. } = event {
+            if let Some(chunk) = delta.content {
+                content.push_str(&chunk);
+            }
+        }
+    }
+
+    // Response should be very short due to system prompt
+    assert!(content.len() < 20);
+    assert!(!content.is_empty());
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_anthropic_streaming_with_system_prompt() {
+    use futures::StreamExt;
+
+    init_tracing();
+
+    let config = AnthropicConfig {
+        api_key: get_anthropic_key(),
+        base_url: "https://api.anthropic.com".to_string(),
+        api_version: "2023-06-01".to_string(),
+        client_config: Default::default(),
+    };
+    let connector = AnthropicConnector::new(config).unwrap();
+
+    let request = NormalizedRequest {
+        messages: vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("What is 2+2?".to_string()),
+            name: None,
+            tool_calls: vec![],
+            tool_call_id: None,
+        }],
+        system: Some("You are a helpful math tutor. Always answer in exactly one word or number.".to_string()),
+        model: "claude-sonnet-4-5".to_string(),
+        max_tokens: Some(10),
+        temperature: Some(0.0),
+        top_p: None,
+        top_k: None,
+        stop_sequences: vec![],
+        stream: true,
+        tools: vec![],
+        tool_choice: None,
+        metadata: std::collections::HashMap::new(),
+    };
+
+    let mut stream = connector.stream(request).await.unwrap();
+
+    let mut content = String::new();
+
+    while let Some(event_result) = stream.next().await {
+        let event = event_result.unwrap();
+
+        if let lunaroute_core::normalized::NormalizedStreamEvent::Delta { delta, .. } = event {
+            if let Some(chunk) = delta.content {
+                content.push_str(&chunk);
+            }
+        }
+    }
+
+    // Response should be very short due to system prompt
+    assert!(content.len() < 20);
+    assert!(!content.is_empty());
+}
