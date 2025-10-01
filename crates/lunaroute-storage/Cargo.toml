@@ -21,3 +21,7 @@ lz4 = { workspace = true }
 aes-gcm = { workspace = true }
 bytes = { workspace = true }
 async-trait = "0.1"
+rand = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.13"
