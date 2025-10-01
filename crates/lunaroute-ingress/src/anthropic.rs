@@ -8,12 +8,34 @@ use axum::{
     Router,
 };
 use lunaroute_core::normalized::{
-    FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent, NormalizedRequest,
-    NormalizedResponse, Role, Tool, ToolCall,
+    ContentPart, FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent,
+    NormalizedRequest, NormalizedResponse, Role, Tool, ToolCall,
 };
 #[cfg(test)]
 use lunaroute_core::normalized::{Choice, Usage};
 use serde::{Deserialize, Serialize};
+
+/// Maximum size for tool arguments (1MB)
+const MAX_TOOL_ARGS_SIZE: usize = 1_000_000;
+
+/// Validate tool input schema (must be valid JSON Schema)
+fn validate_tool_schema(schema: &serde_json::Value, tool_name: &str) -> IngressResult<()> {
+    // Ensure it's a valid JSON Schema object
+    if !schema.is_object() {
+        return Err(IngressError::InvalidRequest(
+            format!("Tool '{}': input_schema must be a valid JSON Schema object", tool_name)
+        ));
+    }
+
+    // Check for required "type" field (common JSON Schema requirement)
+    if schema.get("type").is_none() {
+        return Err(IngressError::InvalidRequest(
+            format!("Tool '{}': schema must have 'type' field", tool_name)
+        ));
+    }
+
+    Ok(())
+}
 
 /// Anthropic messages request
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,13 +255,28 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
                                 text_parts.push(text);
                             },
                             AnthropicContentBlock::ToolUse { id, name, input } => {
+                                let arguments = serde_json::to_string(&input)
+                                    .map_err(|e| {
+                                        tracing::warn!("Failed to serialize tool input: {}", e);
+                                        IngressError::InvalidRequest(format!(
+                                            "Invalid tool input for '{}': {}", name, e
+                                        ))
+                                    })?;
+
+                                // Validate tool arguments size
+                                if arguments.len() > MAX_TOOL_ARGS_SIZE {
+                                    return Err(IngressError::InvalidRequest(
+                                        format!("Tool arguments too large for '{}': {} bytes (max 1MB)",
+                                                name, arguments.len())
+                                    ));
+                                }
+
                                 tool_calls_vec.push(ToolCall {
                                     id,
                                     tool_type: "function".to_string(),
                                     function: FunctionCall {
                                         name,
-                                        arguments: serde_json::to_string(&input)
-                                            .unwrap_or_else(|_| "{}".to_string()),
+                                        arguments,
                                     },
                                 });
                             },
@@ -264,19 +301,25 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
         })
         .collect();
 
-    // Convert tools
-    let tools = req.tools.map(|tools| {
-        tools.into_iter().map(|tool| {
-            Tool {
+    // Convert tools with validation
+    let tools = if let Some(tools) = req.tools {
+        let result: Result<Vec<Tool>, IngressError> = tools.into_iter().map(|tool| {
+            // Validate tool input schema
+            validate_tool_schema(&tool.input_schema, &tool.name)?;
+
+            Ok(Tool {
                 tool_type: "function".to_string(),
                 function: FunctionDefinition {
                     name: tool.name,
                     description: tool.description,
                     parameters: tool.input_schema,
                 },
-            }
-        }).collect()
-    }).unwrap_or_default();
+            })
+        }).collect();
+        result?
+    } else {
+        vec![]
+    };
 
     Ok(NormalizedRequest {
         messages: messages?,
@@ -311,16 +354,40 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
                         });
                     }
                 },
-                MessageContent::Parts(_) => {
-                    // TODO: Handle multimodal Parts
+                MessageContent::Parts(parts) => {
+                    // Extract text parts from multimodal content
+                    // Anthropic responses with images would need specific handling,
+                    // but for now we extract text parts
+                    for part in parts {
+                        match part {
+                            ContentPart::Text { text } => {
+                                if !text.is_empty() {
+                                    content_blocks.push(AnthropicContent::Text {
+                                        text: text.clone(),
+                                    });
+                                }
+                            },
+                            ContentPart::Image { .. } => {
+                                tracing::warn!("Image content in response not supported for Anthropic format, skipping");
+                            }
+                        }
+                    }
                 },
             }
 
             // Add tool_use blocks
             for tool_call in &choice.message.tool_calls {
                 // Parse arguments back to JSON
-                let input = serde_json::from_str(&tool_call.function.arguments)
-                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                let input = match serde_json::from_str(&tool_call.function.arguments) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to parse tool call arguments for '{}': {}. Using empty object.",
+                            tool_call.function.name, e
+                        );
+                        serde_json::Value::Object(serde_json::Map::new())
+                    }
+                };
 
                 content_blocks.push(AnthropicContent::ToolUse {
                     id: tool_call.id.clone(),
@@ -654,8 +721,13 @@ mod tests {
         };
 
         let anthropic = from_normalized(resp);
-        // Currently returns empty vec for Parts - this is a known limitation
-        assert_eq!(anthropic.content.len(), 0);
+        // Now properly extracts text from multimodal Parts
+        assert_eq!(anthropic.content.len(), 1);
+        if let AnthropicContent::Text { text } = &anthropic.content[0] {
+            assert_eq!(text, "I see an image");
+        } else {
+            panic!("Expected Text content block");
+        }
     }
 
     #[test]

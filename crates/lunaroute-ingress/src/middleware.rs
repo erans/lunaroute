@@ -142,18 +142,24 @@ pub async fn cors_middleware_with_config(
                     .unwrap_or("http://localhost:3000")
             };
 
-            headers.insert(
-                header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                allowed_origin.parse().unwrap(),
-            );
-            headers.insert(
-                header::ACCESS_CONTROL_ALLOW_METHODS,
-                config.allowed_methods.parse().unwrap(),
-            );
-            headers.insert(
-                header::ACCESS_CONTROL_ALLOW_HEADERS,
-                config.allowed_headers.parse().unwrap(),
-            );
+            // Parse header values with error handling
+            if let Ok(origin) = allowed_origin.parse() {
+                headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+            } else {
+                tracing::warn!("Invalid CORS origin: {}", allowed_origin);
+            }
+
+            if let Ok(methods) = config.allowed_methods.parse() {
+                headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, methods);
+            } else {
+                tracing::warn!("Invalid CORS methods: {}", config.allowed_methods);
+            }
+
+            if let Ok(allowed_headers) = config.allowed_headers.parse() {
+                headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, allowed_headers);
+            } else {
+                tracing::warn!("Invalid CORS headers: {}", config.allowed_headers);
+            }
 
             response
         })
@@ -176,19 +182,19 @@ pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
     let headers = response.headers_mut();
     headers.insert(
         "x-content-type-options",
-        "nosniff".parse().unwrap(),
+        "nosniff".parse().expect("Failed to parse static header value"),
     );
     headers.insert(
         "x-frame-options",
-        "DENY".parse().unwrap(),
+        "DENY".parse().expect("Failed to parse static header value"),
     );
     headers.insert(
         "x-xss-protection",
-        "1; mode=block".parse().unwrap(),
+        "1; mode=block".parse().expect("Failed to parse static header value"),
     );
     headers.insert(
         "strict-transport-security",
-        "max-age=31536000; includeSubDomains".parse().unwrap(),
+        "max-age=31536000; includeSubDomains".parse().expect("Failed to parse static header value"),
     );
 
     response

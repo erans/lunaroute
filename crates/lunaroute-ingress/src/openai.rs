@@ -8,12 +8,34 @@ use axum::{
     Router,
 };
 use lunaroute_core::normalized::{
-    FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent, NormalizedRequest,
-    NormalizedResponse, Role, Tool, ToolCall, ToolChoice,
+    ContentPart, FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent,
+    NormalizedRequest, NormalizedResponse, Role, Tool, ToolCall, ToolChoice,
 };
 #[cfg(test)]
 use lunaroute_core::normalized::{Choice, Usage};
 use serde::{Deserialize, Serialize};
+
+/// Maximum size for tool arguments (1MB)
+const MAX_TOOL_ARGS_SIZE: usize = 1_000_000;
+
+/// Validate tool parameter schema (must be valid JSON Schema)
+fn validate_tool_schema(schema: &serde_json::Value, tool_name: &str) -> IngressResult<()> {
+    // Ensure it's a valid JSON Schema object
+    if !schema.is_object() {
+        return Err(IngressError::InvalidRequest(
+            format!("Tool '{}': parameters must be a valid JSON Schema object", tool_name)
+        ));
+    }
+
+    // Check for required "type" field (common JSON Schema requirement)
+    if schema.get("type").is_none() {
+        return Err(IngressError::InvalidRequest(
+            format!("Tool '{}': schema must have 'type' field", tool_name)
+        ));
+    }
+
+    Ok(())
+}
 
 /// OpenAI chat completion request
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,18 +295,28 @@ pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest>
             }
 
             // Convert tool_calls
-            let tool_calls = msg.tool_calls.map(|calls| {
+            let tool_calls = if let Some(calls) = msg.tool_calls {
                 calls.into_iter().map(|call| {
-                    ToolCall {
+                    // Validate tool arguments size
+                    if call.function.arguments.len() > MAX_TOOL_ARGS_SIZE {
+                        return Err(IngressError::InvalidRequest(
+                            format!("Tool arguments too large for '{}': {} bytes (max 1MB)",
+                                    call.function.name, call.function.arguments.len())
+                        ));
+                    }
+
+                    Ok(ToolCall {
                         id: call.id,
                         tool_type: call.tool_type,
                         function: FunctionCall {
                             name: call.function.name,
                             arguments: call.function.arguments,
                         },
-                    }
-                }).collect()
-            }).unwrap_or_default();
+                    })
+                }).collect::<Result<Vec<_>, _>>()?
+            } else {
+                vec![]
+            };
 
             Ok(Message {
                 role,
@@ -296,19 +328,25 @@ pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest>
         })
         .collect();
 
-    // Convert tools
-    let tools = req.tools.map(|tools| {
-        tools.into_iter().map(|tool| {
-            Tool {
+    // Convert tools with validation
+    let tools = if let Some(tools) = req.tools {
+        let result: Result<Vec<Tool>, IngressError> = tools.into_iter().map(|tool| {
+            // Validate tool parameter schema
+            validate_tool_schema(&tool.function.parameters, &tool.function.name)?;
+
+            Ok(Tool {
                 tool_type: tool.tool_type,
                 function: FunctionDefinition {
                     name: tool.function.name,
                     description: tool.function.description,
                     parameters: tool.function.parameters,
                 },
-            }
-        }).collect()
-    }).unwrap_or_default();
+            })
+        }).collect();
+        result?
+    } else {
+        vec![]
+    };
 
     // Convert tool_choice
     let tool_choice = req.tool_choice.and_then(|choice| {
@@ -357,10 +395,26 @@ pub fn from_normalized(resp: NormalizedResponse) -> OpenAIChatResponse {
                         Some(text)
                     }
                 },
-                MessageContent::Parts(_parts) => {
-                    // For now, just return empty string for Parts
-                    // TODO: Handle multimodal content properly
-                    Some(String::new())
+                MessageContent::Parts(parts) => {
+                    // Extract text parts from multimodal content
+                    let text_parts: Vec<String> = parts.iter()
+                        .filter_map(|part| match part {
+                            ContentPart::Text { text } => Some(text.clone()),
+                            ContentPart::Image { .. } => {
+                                tracing::warn!("Image content in response not supported for OpenAI format, skipping");
+                                None
+                            }
+                        })
+                        .collect();
+
+                    if text_parts.is_empty() {
+                        if choice.message.tool_calls.is_empty() {
+                            tracing::warn!("No text content in multimodal response");
+                        }
+                        None
+                    } else {
+                        Some(text_parts.join("\n"))
+                    }
                 }
             };
 
@@ -754,8 +808,8 @@ mod tests {
         };
 
         let openai = from_normalized(resp);
-        // Currently returns empty string for Parts - this is a known limitation
-        assert_eq!(openai.choices[0].message.content, Some("".to_string()));
+        // Extracts text from multimodal Parts
+        assert_eq!(openai.choices[0].message.content, Some("I see an image".to_string()));
     }
 
     #[test]
