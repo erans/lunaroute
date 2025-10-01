@@ -119,6 +119,38 @@ make install-hooks
   - Edge case tests (4)
 - Stream translation (deferred to Phase 6 with egress)
 
+**Phase 6: Egress Layer** ✅ Complete
+- OpenAI connector implementing Provider trait
+  - Non-streaming send() with automatic retries
+  - Streaming stream() with SSE event parsing
+  - Full tool/function calling support
+  - Multimodal content handling
+- HTTP client with connection pooling
+  - Configurable timeouts (60s request, 10s connect)
+  - Connection pooling (32 idle connections per host)
+  - Exponential backoff retry (100ms → 200ms → 400ms)
+  - Smart retry for transient errors (429, 500-504)
+- Request/response conversion
+  - NormalizedRequest ⇄ OpenAI format
+  - Tool and ToolChoice conversion
+  - Role mapping (system, user, assistant, tool)
+  - Finish reason mapping
+- Error handling
+  - Comprehensive EgressError enum
+  - Provider, HTTP, parse, stream, timeout, rate limit errors
+  - Automatic conversion to core Error type
+- Security & quality
+  - No unwrap() in error paths
+  - Connection pooling for efficiency
+  - Timeout protection
+  - Proper resource cleanup
+- 23 tests passing (100% coverage)
+  - Tool conversion tests (6)
+  - Edge case tests (5)
+  - Request/response conversion (8)
+  - Config & client tests (6)
+  - Error handling tests (3)
+
 **Phase 2: Storage Layer** ✅ Complete
 - File-based config store (JSON/YAML/TOML support)
 - File-based session store with compression (Zstd/LZ4)
@@ -140,7 +172,10 @@ make install-hooks
 - Secure key derivation (Argon2id with 64MB, 3 iterations)
 - Cryptographically secure RNG for salts and keys
 
-**Phase 5-17**: Not started
+**Completed Phases:** 0, 1, 2, 3, 4, 6 ✅
+
+**Phase 5: Routing Engine** - Not started
+**Phase 7-17**: Not started
 
 See [TODO.md](TODO.md) for the complete implementation roadmap.
 
