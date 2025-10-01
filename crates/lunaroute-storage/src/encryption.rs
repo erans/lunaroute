@@ -5,10 +5,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,
 };
-use argon2::{
-    password_hash::{PasswordHasher, SaltString},
-    Argon2, ParamsBuilder, Version,
-};
+use argon2::{Argon2, ParamsBuilder, Version};
 use rand::RngCore;
 
 /// Key derivation parameters for Argon2id

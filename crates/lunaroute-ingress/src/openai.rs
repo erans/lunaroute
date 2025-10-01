@@ -188,22 +188,20 @@ pub struct OpenAIFunctionCall {
 /// Validate OpenAI request parameters
 fn validate_request(req: &OpenAIChatRequest) -> IngressResult<()> {
     // Validate temperature (0.0 to 2.0 for OpenAI)
-    if let Some(temp) = req.temperature {
-        if temp < 0.0 || temp > 2.0 {
+    if let Some(temp) = req.temperature
+        && !(0.0..=2.0).contains(&temp) {
             return Err(IngressError::InvalidRequest(
                 format!("temperature must be between 0.0 and 2.0, got {}", temp)
             ));
         }
-    }
 
     // Validate top_p (0.0 to 1.0)
-    if let Some(top_p) = req.top_p {
-        if top_p < 0.0 || top_p > 1.0 {
+    if let Some(top_p) = req.top_p
+        && !(0.0..=1.0).contains(&top_p) {
             return Err(IngressError::InvalidRequest(
                 format!("top_p must be between 0.0 and 1.0, got {}", top_p)
             ));
         }
-    }
 
     // Validate max_tokens (positive integer)
     if let Some(max_tokens) = req.max_tokens {
@@ -220,31 +218,28 @@ fn validate_request(req: &OpenAIChatRequest) -> IngressResult<()> {
     }
 
     // Validate presence_penalty (-2.0 to 2.0)
-    if let Some(penalty) = req.presence_penalty {
-        if penalty < -2.0 || penalty > 2.0 {
+    if let Some(penalty) = req.presence_penalty
+        && !(-2.0..=2.0).contains(&penalty) {
             return Err(IngressError::InvalidRequest(
                 format!("presence_penalty must be between -2.0 and 2.0, got {}", penalty)
             ));
         }
-    }
 
     // Validate frequency_penalty (-2.0 to 2.0)
-    if let Some(penalty) = req.frequency_penalty {
-        if penalty < -2.0 || penalty > 2.0 {
+    if let Some(penalty) = req.frequency_penalty
+        && !(-2.0..=2.0).contains(&penalty) {
             return Err(IngressError::InvalidRequest(
                 format!("frequency_penalty must be between -2.0 and 2.0, got {}", penalty)
             ));
         }
-    }
 
     // Validate n (number of completions)
-    if let Some(n) = req.n {
-        if n == 0 || n > 10 {
+    if let Some(n) = req.n
+        && !(1..=10).contains(&n) {
             return Err(IngressError::InvalidRequest(
                 format!("n must be between 1 and 10, got {}", n)
             ));
         }
-    }
 
     // Validate model name is not empty
     if req.model.is_empty() {
@@ -286,13 +281,12 @@ pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest>
             };
 
             // Validate message content length if present
-            if let Some(ref content) = msg.content {
-                if content.len() > 1_000_000 {
+            if let Some(ref content) = msg.content
+                && content.len() > 1_000_000 {
                     return Err(IngressError::InvalidRequest(
                         format!("Message content too large: {} bytes (max 1MB)", content.len())
                     ));
                 }
-            }
 
             // Convert tool_calls
             let tool_calls = if let Some(calls) = msg.tool_calls {

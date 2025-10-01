@@ -142,31 +142,28 @@ pub struct AnthropicTool {
 /// Validate Anthropic request parameters
 fn validate_request(req: &AnthropicMessagesRequest) -> IngressResult<()> {
     // Validate temperature (0.0 to 1.0 for Anthropic)
-    if let Some(temp) = req.temperature {
-        if temp < 0.0 || temp > 1.0 {
+    if let Some(temp) = req.temperature
+        && !(0.0..=1.0).contains(&temp) {
             return Err(IngressError::InvalidRequest(
                 format!("temperature must be between 0.0 and 1.0, got {}", temp)
             ));
         }
-    }
 
     // Validate top_p (0.0 to 1.0)
-    if let Some(top_p) = req.top_p {
-        if top_p < 0.0 || top_p > 1.0 {
+    if let Some(top_p) = req.top_p
+        && !(0.0..=1.0).contains(&top_p) {
             return Err(IngressError::InvalidRequest(
                 format!("top_p must be between 0.0 and 1.0, got {}", top_p)
             ));
         }
-    }
 
     // Validate top_k (positive integer)
-    if let Some(top_k) = req.top_k {
-        if top_k == 0 {
+    if let Some(top_k) = req.top_k
+        && top_k == 0 {
             return Err(IngressError::InvalidRequest(
                 "top_k must be greater than 0".to_string()
             ));
         }
-    }
 
     // Validate max_tokens (required and positive for Anthropic)
     if let Some(max_tokens) = req.max_tokens {

@@ -29,6 +29,7 @@ impl FileLock {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&lock_path)?;
 
         // Acquire exclusive lock (platform-specific)
@@ -58,6 +59,7 @@ impl FileLock {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&lock_path)?;
 
         // Try to acquire exclusive lock
