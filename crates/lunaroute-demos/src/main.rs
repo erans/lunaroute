@@ -1,11 +1,13 @@
-//! LunaRoute Demo Server with Intelligent Routing
+//! LunaRoute Demo Server with Intelligent Routing and Session Recording
 //!
-//! This example demonstrates LunaRoute's intelligent routing features:
+//! This example demonstrates LunaRoute's features:
 //! - Accepts OpenAI-compatible requests on /v1/chat/completions
 //! - Routes to OpenAI or Anthropic based on model name
 //! - Automatic fallback if primary provider fails
 //! - Circuit breakers prevent repeated failures
 //! - Health monitoring tracks provider status
+//! - Session recording captures all requests/responses with GDPR-compliant IP anonymization
+//! - Session query endpoints for debugging and analytics
 //!
 //! Usage:
 //! ```bash
@@ -44,6 +46,13 @@
 //!   }'
 //! ```
 
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Json},
+    routing::get,
+    Router as AxumRouter,
+};
 use lunaroute_core::provider::Provider;
 use lunaroute_egress::{
     anthropic::{AnthropicConfig, AnthropicConnector},
@@ -52,12 +61,81 @@ use lunaroute_egress::{
 use lunaroute_ingress::openai;
 use lunaroute_observability::{health_router, HealthState, Metrics};
 use lunaroute_routing::{Router, RouteTable, RoutingRule, RuleMatcher};
+use lunaroute_session::{FileSessionRecorder, RecordingProvider, SessionQuery, SessionRecorder};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
+
+// Query parameters for session list
+#[derive(Deserialize)]
+struct SessionQueryParams {
+    provider: Option<String>,
+    model: Option<String>,
+    success: Option<bool>,
+    streaming: Option<bool>,
+    limit: Option<usize>,
+}
+
+// Handler for listing sessions
+async fn list_sessions(
+    State(recorder): State<Arc<FileSessionRecorder>>,
+    Query(params): Query<SessionQueryParams>,
+) -> impl IntoResponse {
+    let mut query = SessionQuery::new();
+
+    if let Some(provider) = params.provider {
+        query = query.provider(provider);
+    }
+    if let Some(model) = params.model {
+        query = query.model(model);
+    }
+    if let Some(success) = params.success {
+        query = query.success(success);
+    }
+    if let Some(streaming) = params.streaming {
+        query = query.streaming(streaming);
+    }
+    if let Some(limit) = params.limit {
+        query = query.limit(limit);
+    }
+
+    match recorder.query_sessions(&query).await {
+        Ok(sessions) => (StatusCode::OK, Json(sessions)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to query sessions: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+// Handler for getting a specific session
+async fn get_session(
+    State(recorder): State<Arc<FileSessionRecorder>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match recorder.get_session(&session_id).await {
+        Ok(Some(session)) => (StatusCode::OK, Json(session)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "Session not found").into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get session: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+// Create session router
+fn session_router(recorder: Arc<FileSessionRecorder>) -> AxumRouter {
+    AxumRouter::new()
+        .route("/sessions", get(list_sessions))
+        .route("/sessions/:session_id", get(get_session))
+        .with_state(recorder)
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -69,6 +147,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🚀 Initializing LunaRoute Gateway with Intelligent Routing");
 
+    // Setup session recording
+    let sessions_dir = std::env::var("SESSIONS_DIR")
+        .unwrap_or_else(|_| "./sessions".to_string());
+    info!("📝 Session recording enabled: {}", sessions_dir);
+    let recorder = Arc::new(FileSessionRecorder::new(&sessions_dir));
+
     // Setup providers
     let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
 
@@ -76,8 +160,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
         info!("✓ OpenAI API key found - enabling OpenAI provider");
         let config = OpenAIConfig::new(api_key);
-        let connector = OpenAIConnector::new(config)?;
-        providers.insert("openai".to_string(), Arc::new(connector));
+        let connector = Arc::new(OpenAIConnector::new(config)?);
+
+        // Wrap with session recording
+        let recording_provider = RecordingProvider::new(
+            connector,
+            recorder.clone(),
+            "openai".to_string(),
+            "openai".to_string(),
+        );
+        providers.insert("openai".to_string(), Arc::new(recording_provider));
     } else {
         warn!("✗ OPENAI_API_KEY not set - OpenAI provider disabled");
     }
@@ -91,8 +183,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             api_version: "2023-06-01".to_string(),
             client_config: Default::default(),
         };
-        let connector = AnthropicConnector::new(config)?;
-        providers.insert("anthropic".to_string(), Arc::new(connector));
+        let connector = Arc::new(AnthropicConnector::new(config)?);
+
+        // Wrap with session recording
+        let recording_provider = RecordingProvider::new(
+            connector,
+            recorder.clone(),
+            "anthropic".to_string(),
+            "openai".to_string(), // Listener is OpenAI (ingress format)
+        );
+        providers.insert("anthropic".to_string(), Arc::new(recording_provider));
     } else {
         warn!("✗ ANTHROPIC_API_KEY not set - Anthropic provider disabled");
     }
@@ -172,8 +272,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create health/metrics router
     let health_router = health_router(health_state);
 
+    // Create session query router
+    let session_router = session_router(recorder.clone());
+
     // Combine routers
-    let app = api_router.merge(health_router);
+    let app = api_router.merge(health_router).merge(session_router);
 
     // Start server
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
@@ -184,11 +287,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("   API endpoints:");
     info!("   - OpenAI-compatible: http://{}/v1/chat/completions", addr);
     info!("   Observability endpoints:");
-    info!("   - Health check:      http://{}/healthz", addr);
-    info!("   - Readiness check:   http://{}/readyz", addr);
+    info!("   - Health check:       http://{}/healthz", addr);
+    info!("   - Readiness check:    http://{}/readyz", addr);
     info!("   - Prometheus metrics: http://{}/metrics", addr);
+    info!("   Session endpoints:");
+    info!("   - List sessions:      http://{}/sessions?provider=openai&limit=10", addr);
+    info!("   - Get session:        http://{}/sessions/<session-id>", addr);
     info!("   Supported models: GPT-5 (gpt-5-mini), Claude Sonnet 4.5 (claude-sonnet-4-5)");
-    info!("   Features: Intelligent routing, automatic fallback, circuit breakers, observability");
+    info!("   Features: Intelligent routing, automatic fallback, circuit breakers, session recording");
     info!("");
 
     axum::serve(listener, app).await?;

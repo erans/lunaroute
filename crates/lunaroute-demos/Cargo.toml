@@ -14,8 +14,10 @@ lunaroute-ingress = { path = "../lunaroute-ingress" }
 lunaroute-egress = { path = "../lunaroute-egress" }
 lunaroute-routing = { path = "../lunaroute-routing" }
 lunaroute-observability = { path = "../lunaroute-observability" }
+lunaroute-session = { path = "../lunaroute-session" }
 
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+serde = { workspace = true }
