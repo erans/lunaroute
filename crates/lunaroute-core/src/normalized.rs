@@ -133,7 +133,7 @@ pub struct FunctionDefinition {
 }
 
 /// Tool choice configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ToolChoice {
     /// Auto mode - model decides
