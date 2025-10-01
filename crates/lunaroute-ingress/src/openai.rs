@@ -102,8 +102,89 @@ pub struct OpenAIDelta {
     pub content: Option<String>,
 }
 
+/// Validate OpenAI request parameters
+fn validate_request(req: &OpenAIChatRequest) -> IngressResult<()> {
+    // Validate temperature (0.0 to 2.0 for OpenAI)
+    if let Some(temp) = req.temperature {
+        if temp < 0.0 || temp > 2.0 {
+            return Err(IngressError::InvalidRequest(
+                format!("temperature must be between 0.0 and 2.0, got {}", temp)
+            ));
+        }
+    }
+
+    // Validate top_p (0.0 to 1.0)
+    if let Some(top_p) = req.top_p {
+        if top_p < 0.0 || top_p > 1.0 {
+            return Err(IngressError::InvalidRequest(
+                format!("top_p must be between 0.0 and 1.0, got {}", top_p)
+            ));
+        }
+    }
+
+    // Validate max_tokens (positive integer)
+    if let Some(max_tokens) = req.max_tokens {
+        if max_tokens == 0 {
+            return Err(IngressError::InvalidRequest(
+                "max_tokens must be greater than 0".to_string()
+            ));
+        }
+        if max_tokens > 100000 {
+            return Err(IngressError::InvalidRequest(
+                format!("max_tokens must be <= 100000, got {}", max_tokens)
+            ));
+        }
+    }
+
+    // Validate presence_penalty (-2.0 to 2.0)
+    if let Some(penalty) = req.presence_penalty {
+        if penalty < -2.0 || penalty > 2.0 {
+            return Err(IngressError::InvalidRequest(
+                format!("presence_penalty must be between -2.0 and 2.0, got {}", penalty)
+            ));
+        }
+    }
+
+    // Validate frequency_penalty (-2.0 to 2.0)
+    if let Some(penalty) = req.frequency_penalty {
+        if penalty < -2.0 || penalty > 2.0 {
+            return Err(IngressError::InvalidRequest(
+                format!("frequency_penalty must be between -2.0 and 2.0, got {}", penalty)
+            ));
+        }
+    }
+
+    // Validate n (number of completions)
+    if let Some(n) = req.n {
+        if n == 0 || n > 10 {
+            return Err(IngressError::InvalidRequest(
+                format!("n must be between 1 and 10, got {}", n)
+            ));
+        }
+    }
+
+    // Validate model name is not empty
+    if req.model.is_empty() {
+        return Err(IngressError::InvalidRequest(
+            "model field cannot be empty".to_string()
+        ));
+    }
+
+    // Validate messages array is not empty
+    if req.messages.is_empty() {
+        return Err(IngressError::InvalidRequest(
+            "messages array cannot be empty".to_string()
+        ));
+    }
+
+    Ok(())
+}
+
 /// Convert OpenAI request to normalized request
 pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest> {
+    // Validate request parameters first
+    validate_request(&req)?;
+
     let messages: Result<Vec<Message>, IngressError> = req
         .messages
         .into_iter()
@@ -120,6 +201,13 @@ pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest>
                     )))
                 }
             };
+
+            // Validate message content length
+            if msg.content.len() > 1_000_000 {
+                return Err(IngressError::InvalidRequest(
+                    format!("Message content too large: {} bytes (max 1MB)", msg.content.len())
+                ));
+            }
 
             Ok(Message {
                 role,
@@ -210,7 +298,7 @@ pub async fn chat_completions(
         object: "chat.completion".to_string(),
         created: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
             .as_secs() as i64,
         model: normalized.model.clone(),
         choices: vec![OpenAIChoice {
@@ -560,8 +648,10 @@ mod tests {
             user: None,
         };
 
-        let normalized = to_normalized(req).unwrap();
-        assert_eq!(normalized.messages.len(), 0);
+        // Validation should reject empty messages array
+        let result = to_normalized(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("messages array cannot be empty"));
     }
 
     #[test]

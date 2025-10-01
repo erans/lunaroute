@@ -72,8 +72,83 @@ pub struct AnthropicUsage {
     pub output_tokens: u32,
 }
 
+/// Validate Anthropic request parameters
+fn validate_request(req: &AnthropicMessagesRequest) -> IngressResult<()> {
+    // Validate temperature (0.0 to 1.0 for Anthropic)
+    if let Some(temp) = req.temperature {
+        if temp < 0.0 || temp > 1.0 {
+            return Err(IngressError::InvalidRequest(
+                format!("temperature must be between 0.0 and 1.0, got {}", temp)
+            ));
+        }
+    }
+
+    // Validate top_p (0.0 to 1.0)
+    if let Some(top_p) = req.top_p {
+        if top_p < 0.0 || top_p > 1.0 {
+            return Err(IngressError::InvalidRequest(
+                format!("top_p must be between 0.0 and 1.0, got {}", top_p)
+            ));
+        }
+    }
+
+    // Validate top_k (positive integer)
+    if let Some(top_k) = req.top_k {
+        if top_k == 0 {
+            return Err(IngressError::InvalidRequest(
+                "top_k must be greater than 0".to_string()
+            ));
+        }
+    }
+
+    // Validate max_tokens (required and positive for Anthropic)
+    if let Some(max_tokens) = req.max_tokens {
+        if max_tokens == 0 {
+            return Err(IngressError::InvalidRequest(
+                "max_tokens must be greater than 0".to_string()
+            ));
+        }
+        if max_tokens > 100000 {
+            return Err(IngressError::InvalidRequest(
+                format!("max_tokens must be <= 100000, got {}", max_tokens)
+            ));
+        }
+    }
+
+    // Validate model name is not empty and length
+    if req.model.is_empty() {
+        return Err(IngressError::InvalidRequest(
+            "model field cannot be empty".to_string()
+        ));
+    }
+    if req.model.len() > 256 {
+        return Err(IngressError::InvalidRequest(
+            format!("model name too long: {} chars (max 256)", req.model.len())
+        ));
+    }
+
+    // Validate messages array is not empty
+    if req.messages.is_empty() {
+        return Err(IngressError::InvalidRequest(
+            "messages array cannot be empty".to_string()
+        ));
+    }
+
+    // Validate messages array length (max 100,000 per Anthropic spec)
+    if req.messages.len() > 100_000 {
+        return Err(IngressError::InvalidRequest(
+            format!("messages array too large: {} messages (max 100,000)", req.messages.len())
+        ));
+    }
+
+    Ok(())
+}
+
 /// Convert Anthropic request to normalized request
 pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedRequest> {
+    // Validate request parameters first
+    validate_request(&req)?;
+
     let messages: Result<Vec<Message>, IngressError> = req
         .messages
         .into_iter()
@@ -83,11 +158,18 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
                 "assistant" => Role::Assistant,
                 _ => {
                     return Err(IngressError::InvalidRequest(format!(
-                        "Invalid role: {}",
+                        "Invalid role: {} (Anthropic only supports 'user' and 'assistant')",
                         msg.role
                     )))
                 }
             };
+
+            // Validate message content length
+            if msg.content.len() > 1_000_000 {
+                return Err(IngressError::InvalidRequest(
+                    format!("Message content too large: {} bytes (max 1MB)", msg.content.len())
+                ));
+            }
 
             Ok(Message {
                 role,
@@ -349,8 +431,10 @@ mod tests {
             stop_sequences: None,
         };
 
-        let normalized = to_normalized(req).unwrap();
-        assert_eq!(normalized.messages.len(), 0);
+        // Validation should reject empty messages array
+        let result = to_normalized(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("messages array cannot be empty"));
     }
 
     #[test]

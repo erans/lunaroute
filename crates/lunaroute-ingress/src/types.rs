@@ -16,7 +16,7 @@ impl RequestId {
         let count = COUNTER.fetch_add(1, Ordering::Relaxed);
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
             .as_micros();
 
         Self(format!("req_{:x}_{:x}", timestamp, count))
@@ -58,15 +58,18 @@ impl TraceContext {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let _count = COUNTER.fetch_add(1, Ordering::Relaxed);
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
             .as_micros();
 
+        // Use cryptographically secure RNG for trace and span IDs
+        let random_component = rand::random::<u64>() as u128;
+
         Self {
-            trace_id: format!("{:032x}", timestamp ^ (count as u128)),
-            span_id: format!("{:016x}", count),
+            trace_id: format!("{:032x}", timestamp ^ random_component),
+            span_id: format!("{:016x}", rand::random::<u64>()),
             parent_span_id: None,
             trace_flags: 1, // Sampled
         }
@@ -83,9 +86,13 @@ impl TraceContext {
         let parent_span_id = parts[2].to_string();
         let trace_flags = u8::from_str_radix(parts[3], 16).ok()?;
 
+        // Use cryptographically secure RNG for span ID generation
+        // rand::random() uses thread_rng() internally which is cryptographically secure
+        let span_id = format!("{:016x}", rand::random::<u64>());
+
         Some(Self {
             trace_id,
-            span_id: format!("{:016x}", rand::random::<u64>()),
+            span_id,
             parent_span_id: Some(parent_span_id),
             trace_flags,
         })
@@ -193,7 +200,7 @@ impl RequestMetadata {
             auth_id: None,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                 .as_secs() as i64,
         }
     }

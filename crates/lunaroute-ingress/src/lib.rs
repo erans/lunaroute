@@ -9,6 +9,7 @@ pub mod middleware;
 pub mod openai;
 pub mod types;
 
+pub use middleware::CorsConfig;
 pub use types::{
     IngressError, IngressResult, RequestId, RequestMetadata, StreamEvent, TraceContext,
 };

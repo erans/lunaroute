@@ -53,10 +53,10 @@ pub async fn request_context_middleware(mut req: Request, next: Next) -> Respons
     let mut response = next.run(req).await;
 
     // Add request ID to response headers
-    response.headers_mut().insert(
-        "x-request-id",
-        request_id.to_string().parse().unwrap(),
-    );
+    // Safe to expect here: request_id format is always valid ASCII
+    if let Ok(header_value) = request_id.to_string().parse() {
+        response.headers_mut().insert("x-request-id", header_value);
+    }
 
     response
 }
@@ -78,25 +78,95 @@ pub async fn body_size_limit_middleware(
     Ok(next.run(req).await)
 }
 
-/// Middleware for CORS headers
+/// CORS configuration
+#[derive(Clone, Debug)]
+pub struct CorsConfig {
+    /// Allowed origins (use vec!["*"] for wildcard, but this is discouraged for production)
+    pub allowed_origins: Vec<String>,
+    /// Allowed HTTP methods
+    pub allowed_methods: String,
+    /// Allowed headers
+    pub allowed_headers: String,
+}
+
+impl Default for CorsConfig {
+    fn default() -> Self {
+        Self {
+            // Default to localhost for development
+            allowed_origins: vec!["http://localhost:3000".to_string()],
+            allowed_methods: "GET, POST, OPTIONS".to_string(),
+            allowed_headers: "Content-Type, Authorization, X-Request-ID".to_string(),
+        }
+    }
+}
+
+impl CorsConfig {
+    /// Create a permissive CORS config for development (WARNING: Not for production!)
+    pub fn permissive() -> Self {
+        Self {
+            allowed_origins: vec!["*".to_string()],
+            allowed_methods: "GET, POST, PUT, PATCH, DELETE, OPTIONS".to_string(),
+            allowed_headers: "Content-Type, Authorization, X-Request-ID".to_string(),
+        }
+    }
+}
+
+/// Middleware for CORS headers with configurable origins
+pub async fn cors_middleware_with_config(
+    config: CorsConfig,
+) -> impl Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> + Clone {
+    move |req: Request, next: Next| {
+        let config = config.clone();
+        Box::pin(async move {
+            let request_origin = req.headers().get(header::ORIGIN)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            let mut response = next.run(req).await;
+            let headers = response.headers_mut();
+
+            // Determine which origin to allow
+            let allowed_origin = if config.allowed_origins.contains(&"*".to_string()) {
+                "*"
+            } else if let Some(ref origin) = request_origin {
+                if config.allowed_origins.contains(origin) {
+                    origin.as_str()
+                } else {
+                    // Origin not allowed, don't set CORS headers
+                    return response;
+                }
+            } else {
+                // No origin header, use first allowed origin
+                config.allowed_origins.first()
+                    .map(|s| s.as_str())
+                    .unwrap_or("http://localhost:3000")
+            };
+
+            headers.insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                allowed_origin.parse().unwrap(),
+            );
+            headers.insert(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                config.allowed_methods.parse().unwrap(),
+            );
+            headers.insert(
+                header::ACCESS_CONTROL_ALLOW_HEADERS,
+                config.allowed_headers.parse().unwrap(),
+            );
+
+            response
+        })
+    }
+}
+
+/// Middleware for CORS headers (default configuration - localhost only)
+///
+/// **WARNING**: This middleware only allows localhost by default for security.
+/// For production, use `cors_middleware_with_config` with specific allowed origins.
 pub async fn cors_middleware(req: Request, next: Next) -> Response {
-    let mut response = next.run(req).await;
-
-    let headers = response.headers_mut();
-    headers.insert(
-        header::ACCESS_CONTROL_ALLOW_ORIGIN,
-        "*".parse().unwrap(),
-    );
-    headers.insert(
-        header::ACCESS_CONTROL_ALLOW_METHODS,
-        "GET, POST, OPTIONS".parse().unwrap(),
-    );
-    headers.insert(
-        header::ACCESS_CONTROL_ALLOW_HEADERS,
-        "Content-Type, Authorization, X-Request-ID".parse().unwrap(),
-    );
-
-    response
+    let config = CorsConfig::default();
+    cors_middleware_with_config(config).await(req, next).await
 }
 
 /// Middleware to add security headers
