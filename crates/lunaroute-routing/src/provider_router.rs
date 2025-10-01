@@ -77,6 +77,16 @@ impl Router {
         )
     }
 
+    /// Get health metrics for a provider
+    pub fn get_health_metrics(&self, provider_id: &str) -> Option<crate::health::HealthMetrics> {
+        self.health_monitor.get_metrics(provider_id)
+    }
+
+    /// Get health status for a provider
+    pub fn get_health_status(&self, provider_id: &str) -> crate::health::HealthStatus {
+        self.health_monitor.get_status(provider_id)
+    }
+
     /// Get or create circuit breaker for a provider
     async fn get_circuit_breaker(&self, provider_id: &str) -> Arc<CircuitBreaker> {
         let breakers = self.circuit_breakers.read().await;

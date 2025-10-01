@@ -12,6 +12,7 @@ publish = false
 lunaroute-core = { path = "../lunaroute-core" }
 lunaroute-ingress = { path = "../lunaroute-ingress" }
 lunaroute-egress = { path = "../lunaroute-egress" }
+lunaroute-routing = { path = "../lunaroute-routing" }
 
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true }
