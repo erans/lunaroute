@@ -45,13 +45,28 @@ fn validate_tool_schema(schema: &serde_json::Value, tool_name: &str) -> IngressR
     Ok(())
 }
 
+/// Anthropic system parameter (can be string or array of blocks)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AnthropicSystem {
+    Text(String),
+    Blocks(Vec<AnthropicSystemBlock>),
+}
+
+/// Anthropic system content block
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicSystemBlock {
+    Text { text: String },
+}
+
 /// Anthropic messages request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicMessagesRequest {
     pub model: String,
     pub messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
+    pub system: Option<AnthropicSystem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -393,9 +408,24 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
         vec![]
     };
 
+    // Convert system parameter to string (supports both string and array formats)
+    let system = req.system.map(|sys| match sys {
+        AnthropicSystem::Text(text) => text,
+        AnthropicSystem::Blocks(blocks) => {
+            // Concatenate all text blocks
+            blocks
+                .into_iter()
+                .filter_map(|block| match block {
+                    AnthropicSystemBlock::Text { text } => Some(text),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    });
+
     Ok(NormalizedRequest {
         messages: messages?,
-        system: req.system,
+        system,
         model: req.model,
         max_tokens: req.max_tokens,
         temperature: req.temperature,
@@ -808,7 +838,7 @@ mod tests {
                     content: Some(AnthropicMessageContent::Text("Hello!".to_string())),
                 },
             ],
-            system: Some("You are a helpful assistant".to_string()),
+            system: Some(AnthropicSystem::Text("You are a helpful assistant".to_string())),
             max_tokens: Some(1024),
             temperature: Some(0.7),
             top_p: None,
@@ -973,7 +1003,7 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(AnthropicMessageContent::Text("Hello!".to_string())),
             }],
-            system: Some("You are a helpful assistant".to_string()),
+            system: Some(AnthropicSystem::Text("You are a helpful assistant".to_string())),
             max_tokens: Some(1024),
             temperature: Some(0.7),
             top_p: Some(0.9),
@@ -1071,5 +1101,66 @@ mod tests {
         // Just verify it creates without panicking
         // The router is properly configured with /v1/messages endpoint
         drop(router);
+    }
+
+    #[test]
+    fn test_anthropic_system_array_format() {
+        // Test the array format for system parameter (used by Claude Code)
+        let req = AnthropicMessagesRequest {
+            model: "claude-3-opus".to_string(),
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: Some(AnthropicMessageContent::Text("Hello!".to_string())),
+            }],
+            system: Some(AnthropicSystem::Blocks(vec![
+                AnthropicSystemBlock::Text {
+                    text: "You are a helpful assistant.".to_string(),
+                },
+                AnthropicSystemBlock::Text {
+                    text: "You are concise.".to_string(),
+                },
+            ])),
+            max_tokens: Some(1024),
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stream: Some(false),
+            stop_sequences: None,
+            tools: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        // Multiple blocks should be joined with newlines
+        assert_eq!(
+            normalized.system,
+            Some("You are a helpful assistant.\nYou are concise.".to_string())
+        );
+    }
+
+    #[test]
+    fn test_anthropic_system_deserialize_string() {
+        // Test that string format still works
+        let json = r#"{"model":"claude-3-opus","messages":[],"system":"You are helpful"}"#;
+        let req: AnthropicMessagesRequest = serde_json::from_str(json).unwrap();
+        match req.system {
+            Some(AnthropicSystem::Text(text)) => assert_eq!(text, "You are helpful"),
+            _ => panic!("Expected Text variant"),
+        }
+    }
+
+    #[test]
+    fn test_anthropic_system_deserialize_array() {
+        // Test that array format works (Claude Code format)
+        let json = r#"{"model":"claude-3-opus","messages":[],"system":[{"type":"text","text":"You are helpful"}]}"#;
+        let req: AnthropicMessagesRequest = serde_json::from_str(json).unwrap();
+        match req.system {
+            Some(AnthropicSystem::Blocks(blocks)) => {
+                assert_eq!(blocks.len(), 1);
+                match &blocks[0] {
+                    AnthropicSystemBlock::Text { text } => assert_eq!(text, "You are helpful"),
+                }
+            }
+            _ => panic!("Expected Blocks variant"),
+        }
     }
 }
