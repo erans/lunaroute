@@ -78,20 +78,43 @@ impl Provider for OpenAIConnector {
 
         let openai_req = to_openai_request(request)?;
 
+        // Log request headers at debug level
+        debug!("┌─────────────────────────────────────────────────────────");
+        debug!("│ OpenAI Request Headers");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ Authorization: Bearer <api_key>");
+        debug!("│ Content-Type: application/json");
+        if let Some(ref org) = self.config.organization {
+            debug!("│ OpenAI-Organization: {}", org);
+        }
+        debug!("└─────────────────────────────────────────────────────────");
+
         let max_retries = self.config.client_config.max_retries;
         let result = with_retry(max_retries, || {
             let openai_req = openai_req.clone();
             async move {
-                self.client
+                let response = self.client
                     .post(format!("{}/chat/completions", self.config.base_url))
                     .header("Authorization", format!("Bearer {}", self.config.api_key))
                     .header("Content-Type", "application/json")
                     .apply_organization_header(&self.config)
                     .json(&openai_req)
                     .send()
-                    .await?
-                    .handle_openai_response()
-                    .await
+                    .await?;
+
+                // Log response headers at debug level
+                debug!("┌─────────────────────────────────────────────────────────");
+                debug!("│ OpenAI Response Headers");
+                debug!("├─────────────────────────────────────────────────────────");
+                debug!("│ Status: {}", response.status());
+                for (name, value) in response.headers() {
+                    if let Ok(val_str) = value.to_str() {
+                        debug!("│ {}: {}", name, val_str);
+                    }
+                }
+                debug!("└─────────────────────────────────────────────────────────");
+
+                response.handle_openai_response().await
             }
         })
         .await?;
@@ -109,6 +132,17 @@ impl Provider for OpenAIConnector {
         let mut openai_req = to_openai_request(request)?;
         openai_req.stream = Some(true);
 
+        // Log request headers at debug level
+        debug!("┌─────────────────────────────────────────────────────────");
+        debug!("│ OpenAI Streaming Request Headers");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ Authorization: Bearer <api_key>");
+        debug!("│ Content-Type: application/json");
+        if let Some(ref org) = self.config.organization {
+            debug!("│ OpenAI-Organization: {}", org);
+        }
+        debug!("└─────────────────────────────────────────────────────────");
+
         let response = self
             .client
             .post(format!("{}/chat/completions", self.config.base_url))
@@ -119,6 +153,18 @@ impl Provider for OpenAIConnector {
             .send()
             .await
             .map_err(EgressError::from)?;
+
+        // Log response headers at debug level
+        debug!("┌─────────────────────────────────────────────────────────");
+        debug!("│ OpenAI Streaming Response Headers");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ Status: {}", response.status());
+        for (name, value) in response.headers() {
+            if let Ok(val_str) = value.to_str() {
+                debug!("│ {}: {}", name, val_str);
+            }
+        }
+        debug!("└─────────────────────────────────────────────────────────");
 
         if !response.status().is_success() {
             let status = response.status().as_u16();

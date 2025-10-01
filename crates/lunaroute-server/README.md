@@ -92,6 +92,8 @@ lunaroute-server --config config.yaml --dialect anthropic
 | `LUNAROUTE_LOG_REQUESTS` | Log requests to stdout | false |
 | `LUNAROUTE_LOG_LEVEL` | Log level (trace/debug/info/warn/error) | info |
 
+**Note**: When `LUNAROUTE_LOG_LEVEL=debug`, HTTP request and response headers to/from providers will also be logged.
+
 ### Config File Format
 
 Supports both YAML and TOML. Extension determines format (`.yaml`/`.yml` or `.toml`).
@@ -108,6 +110,13 @@ To proxy Claude Code through LunaRoute:
 ANTHROPIC_API_KEY=your-key \
 LUNAROUTE_DIALECT=anthropic \
 LUNAROUTE_LOG_REQUESTS=true \
+cargo run --package lunaroute-server
+
+# For more verbose logging including HTTP headers:
+ANTHROPIC_API_KEY=your-key \
+LUNAROUTE_DIALECT=anthropic \
+LUNAROUTE_LOG_REQUESTS=true \
+LUNAROUTE_LOG_LEVEL=debug \
 cargo run --package lunaroute-server
 ```
 

@@ -84,20 +84,41 @@ impl Provider for AnthropicConnector {
 
         let anthropic_req = to_anthropic_request(request)?;
 
+        // Log request headers at debug level
+        debug!("┌─────────────────────────────────────────────────────────");
+        debug!("│ Anthropic Request Headers");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ x-api-key: <api_key>");
+        debug!("│ anthropic-version: {}", self.config.api_version);
+        debug!("│ Content-Type: application/json");
+        debug!("└─────────────────────────────────────────────────────────");
+
         let max_retries = self.config.client_config.max_retries;
         let result = with_retry(max_retries, || {
             let anthropic_req = anthropic_req.clone();
             async move {
-                self.client
+                let response = self.client
                     .post(format!("{}/v1/messages", self.config.base_url))
                     .header("x-api-key", &self.config.api_key)
                     .header("anthropic-version", &self.config.api_version)
                     .header("Content-Type", "application/json")
                     .json(&anthropic_req)
                     .send()
-                    .await?
-                    .handle_anthropic_response()
-                    .await
+                    .await?;
+
+                // Log response headers at debug level
+                debug!("┌─────────────────────────────────────────────────────────");
+                debug!("│ Anthropic Response Headers");
+                debug!("├─────────────────────────────────────────────────────────");
+                debug!("│ Status: {}", response.status());
+                for (name, value) in response.headers() {
+                    if let Ok(val_str) = value.to_str() {
+                        debug!("│ {}: {}", name, val_str);
+                    }
+                }
+                debug!("└─────────────────────────────────────────────────────────");
+
+                response.handle_anthropic_response().await
             }
         })
         .await?;
@@ -117,6 +138,15 @@ impl Provider for AnthropicConnector {
         let mut anthropic_req = to_anthropic_request(request)?;
         anthropic_req.stream = Some(true);
 
+        // Log request headers at debug level
+        debug!("┌─────────────────────────────────────────────────────────");
+        debug!("│ Anthropic Streaming Request Headers");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ x-api-key: <api_key>");
+        debug!("│ anthropic-version: {}", self.config.api_version);
+        debug!("│ Content-Type: application/json");
+        debug!("└─────────────────────────────────────────────────────────");
+
         let response = self
             .client
             .post(format!("{}/v1/messages", self.config.base_url))
@@ -127,6 +157,18 @@ impl Provider for AnthropicConnector {
             .send()
             .await
             .map_err(EgressError::from)?;
+
+        // Log response headers at debug level
+        debug!("┌─────────────────────────────────────────────────────────");
+        debug!("│ Anthropic Streaming Response Headers");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ Status: {}", response.status());
+        for (name, value) in response.headers() {
+            if let Ok(val_str) = value.to_str() {
+                debug!("│ {}: {}", name, val_str);
+            }
+        }
+        debug!("└─────────────────────────────────────────────────────────");
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
