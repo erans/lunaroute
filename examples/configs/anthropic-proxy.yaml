@@ -1,0 +1,16 @@
+host: "127.0.0.1"
+port: 8081
+
+api_dialect: "anthropic"
+
+providers:
+  anthropic:
+    enabled: true
+    # API key will be read from ANTHROPIC_API_KEY env var
+
+session_recording:
+  enabled: false  # No disk writes
+
+logging:
+  level: "debug"
+  log_requests: true  # Print to stdout

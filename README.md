@@ -28,6 +28,7 @@ LunaRoute is organized as a Rust workspace with the following crates:
 - **lunaroute-storage**: Storage abstractions (config, sessions, state)
 - **lunaroute-pii**: PII detection and redaction
 - **lunaroute-observability**: Metrics, tracing, and health endpoints
+- **lunaroute-server**: Production server binary with configuration file support
 - **lunaroute-cli**: Command-line interface (`lunaroute`)
 - **lunaroute-demos**: Demo server for testing the gateway
 - **lunaroute-integration-tests**: End-to-end integration tests
@@ -63,6 +64,23 @@ make run ARGS="--help"
 # Install git hooks
 make install-hooks
 ```
+
+### Running the Production Server
+
+Run the dedicated server for production use:
+
+```bash
+# Quick start with environment variables
+ANTHROPIC_API_KEY=your-key \
+LUNAROUTE_DIALECT=anthropic \
+LUNAROUTE_LOG_REQUESTS=true \
+cargo run --package lunaroute-server
+
+# Or use a configuration file
+cargo run --package lunaroute-server -- --config config.example.yaml
+```
+
+See `crates/lunaroute-server/README.md` for complete configuration options and Claude Code integration guide.
 
 ### Running the Demo Server
 

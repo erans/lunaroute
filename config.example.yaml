@@ -1,0 +1,43 @@
+# LunaRoute Server Configuration
+# This example shows how to proxy Claude Code through LunaRoute
+# The server accepts both OpenAI and Anthropic API formats
+
+# Server settings
+host: "127.0.0.1"
+port: 3000
+
+# API dialect - which API format to accept
+# Options: "anthropic" or "openai"
+api_dialect: "anthropic"  # For Claude Code
+
+# Provider configuration
+providers:
+  # Anthropic (Claude) provider
+  anthropic:
+    enabled: true
+    api_key: "${ANTHROPIC_API_KEY}"  # Will be read from environment variable
+    # base_url: "https://api.anthropic.com"  # Optional: override API base URL
+
+  # OpenAI provider (disabled for Claude Code)
+  # openai:
+  #   enabled: true
+  #   api_key: "${OPENAI_API_KEY}"
+
+# Session recording (disabled for passthrough logging)
+session_recording:
+  enabled: false  # No file recording
+  directory: "./sessions"
+
+# Logging configuration
+logging:
+  level: "info"  # Options: trace, debug, info, warn, error
+  log_requests: true  # Print all requests/responses to stdout
+
+# Routing rules (optional - will auto-route based on model)
+# routing:
+#   rules:
+#     - name: "claude-to-anthropic"
+#       model_pattern: "^claude-.*"
+#       primary: "anthropic"
+#       fallbacks: []
+#       priority: 10

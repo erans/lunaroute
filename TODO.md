@@ -13,6 +13,7 @@
   - [x] `lunaroute-storage` - Storage abstraction
   - [x] `lunaroute-pii` - PII detection/redaction
   - [x] `lunaroute-observability` - Metrics and tracing
+  - [x] `lunaroute-server` - Production server binary
   - [x] `lunaroute-cli` - CLI tool
 - [x] Setup development environment:
   - [x] Configure rustfmt and clippy

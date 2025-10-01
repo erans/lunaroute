@@ -147,11 +147,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🚀 Initializing LunaRoute Gateway with Intelligent Routing");
 
-    // Setup session recording
-    let sessions_dir = std::env::var("SESSIONS_DIR")
-        .unwrap_or_else(|_| "./sessions".to_string());
-    info!("📝 Session recording enabled: {}", sessions_dir);
-    let recorder = Arc::new(FileSessionRecorder::new(&sessions_dir));
+    // Check if session recording is enabled
+    let enable_session_recording = std::env::var("ENABLE_SESSION_RECORDING")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse::<bool>()
+        .unwrap_or(true);
+
+    let log_requests = std::env::var("LOG_REQUESTS")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .unwrap_or(false);
+
+    // Setup session recording if enabled
+    let recorder = if enable_session_recording {
+        let sessions_dir = std::env::var("SESSIONS_DIR")
+            .unwrap_or_else(|_| "./sessions".to_string());
+        info!("📝 Session recording enabled: {}", sessions_dir);
+        Some(Arc::new(FileSessionRecorder::new(&sessions_dir)))
+    } else {
+        info!("📝 Session recording disabled");
+        None
+    };
+
+    if log_requests {
+        info!("📋 Request/response logging enabled (stdout)");
+    }
 
     // Setup providers
     let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
