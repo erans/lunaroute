@@ -7,13 +7,15 @@ LunaRoute is a high-performance API gateway for Large Language Model providers, 
 ## Features
 
 - **Unified API Translation**: Seamlessly translate between OpenAI and Anthropic API formats
+- **Passthrough Mode**: Zero-copy routing for Anthropic→Anthropic with 100% API fidelity (preserves extended thinking)
 - **Streaming Support**: Full SSE streaming for real-time responses from both providers
 - **Intelligent Routing**: Route requests based on rules, health, and cost optimization
 - **Session Recording**: Capture and replay all LLM interactions with GDPR-compliant IP anonymization
+- **Session Statistics**: Track per-session tokens (input/output/thinking), request counts, and proxy overhead
 - **PII Detection & Redaction**: Automatically detect and redact sensitive information
 - **Budget Management**: Track and enforce spending limits across providers
 - **Circuit Breakers**: Automatic failover and retry logic
-- **High Performance**: Built in Rust for minimal latency overhead (p95 < 35ms)
+- **High Performance**: Built in Rust for minimal latency overhead (p95 < 35ms), with detailed timing metrics
 - **Observability**: Comprehensive metrics, tracing, and logging
 
 ## Architecture

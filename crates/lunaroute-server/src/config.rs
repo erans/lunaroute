@@ -36,6 +36,9 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub routing: RoutingConfig,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_stats_max_sessions: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -101,6 +104,7 @@ impl Default for ServerConfig {
             session_recording: SessionRecordingConfig::default(),
             logging: LoggingConfig::default(),
             routing: RoutingConfig::default(),
+            session_stats_max_sessions: Some(100),
         }
     }
 }

@@ -286,6 +286,21 @@ impl StreamEvent {
     }
 }
 
+/// Session statistics tracker trait
+/// Allows recording per-session request statistics for monitoring proxy overhead
+pub trait SessionStatsTracker: Send + Sync {
+    /// Record statistics for a request
+    fn record_request(
+        &self,
+        session_id: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        thinking_tokens: u64,
+        pre_proxy_time: std::time::Duration,
+        post_proxy_time: std::time::Duration,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -75,22 +75,45 @@ impl AnthropicConnector {
     /// Send a raw JSON request directly to Anthropic (passthrough mode)
     /// This skips normalization for Anthropic→Anthropic routing, preserving 100% API fidelity.
     /// Still parses the response to extract metrics (tokens, model, etc.)
-    #[instrument(skip(self, request_json))]
+    #[instrument(skip(self, request_json, headers))]
     pub async fn send_passthrough(
         &self,
         request_json: serde_json::Value,
+        headers: std::collections::HashMap<String, String>,
     ) -> Result<serde_json::Value> {
         debug!("Sending passthrough request to Anthropic (no normalization)");
+
+        // Log request headers and body at debug level
+        debug!("┌─────────────────────────────────────────────────────────");
+        debug!("│ Anthropic Passthrough Request Headers");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ x-api-key: <api_key>");
+        for (name, value) in &headers {
+            debug!("│ {}: {}", name, value);
+        }
+        debug!("│ Content-Type: application/json");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ Anthropic Passthrough Request Body");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ {}", serde_json::to_string_pretty(&request_json).unwrap_or_else(|_| "Failed to serialize".to_string()));
+        debug!("└─────────────────────────────────────────────────────────");
 
         let max_retries = self.config.client_config.max_retries;
         let result = with_retry(max_retries, || {
             let request_json = request_json.clone();
+            let headers = headers.clone();
             async move {
-                let response = self.client
+                let mut request_builder = self.client
                     .post(format!("{}/v1/messages", self.config.base_url))
                     .header("x-api-key", &self.config.api_key)
-                    .header("anthropic-version", &self.config.api_version)
-                    .header("Content-Type", "application/json")
+                    .header("Content-Type", "application/json");
+
+                // Add all passthrough headers
+                for (name, value) in &headers {
+                    request_builder = request_builder.header(name, value);
+                }
+
+                let response = request_builder
                     .json(&request_json)
                     .send()
                     .await?;
@@ -151,19 +174,41 @@ impl AnthropicConnector {
 
     /// Stream raw Anthropic request (passthrough mode - no normalization)
     /// Returns raw response for direct SSE forwarding
-    #[instrument(skip(self, request_json))]
+    #[instrument(skip(self, request_json, headers))]
     pub async fn stream_passthrough(
         &self,
         request_json: serde_json::Value,
+        headers: std::collections::HashMap<String, String>,
     ) -> Result<reqwest::Response> {
         debug!("Sending passthrough streaming request to Anthropic (no normalization)");
 
-        let response = self
+        // Log request headers and body at debug level
+        debug!("┌─────────────────────────────────────────────────────────");
+        debug!("│ Anthropic Streaming Passthrough Request Headers");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ x-api-key: <api_key>");
+        for (name, value) in &headers {
+            debug!("│ {}: {}", name, value);
+        }
+        debug!("│ Content-Type: application/json");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ Anthropic Streaming Passthrough Request Body");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ {}", serde_json::to_string_pretty(&request_json).unwrap_or_else(|_| "Failed to serialize".to_string()));
+        debug!("└─────────────────────────────────────────────────────────");
+
+        let mut request_builder = self
             .client
             .post(format!("{}/v1/messages", self.config.base_url))
             .header("x-api-key", &self.config.api_key)
-            .header("anthropic-version", &self.config.api_version)
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+
+        // Add all passthrough headers
+        for (name, value) in &headers {
+            request_builder = request_builder.header(name, value);
+        }
+
+        let response = request_builder
             .json(&request_json)
             .send()
             .await

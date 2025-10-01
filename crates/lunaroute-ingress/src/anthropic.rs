@@ -669,6 +669,7 @@ pub async fn messages(
     State(provider): State<Arc<dyn Provider>>,
     Json(req): Json<AnthropicMessagesRequest>,
 ) -> Result<Response, IngressError> {
+    let start_time = std::time::Instant::now();
     let is_streaming = req.stream.unwrap_or(false);
     let model = req.model.clone();
 
@@ -755,27 +756,86 @@ pub async fn messages(
             .keep_alive(KeepAlive::default())
             .into_response())
     } else {
+        let before_provider = std::time::Instant::now();
+        let pre_provider_overhead = before_provider.duration_since(start_time);
+        tracing::debug!(
+            "Proxy overhead before provider call (normalization): {:.2}ms",
+            pre_provider_overhead.as_secs_f64() * 1000.0
+        );
+
         // Call provider
         let normalized_response = provider
             .send(normalized)
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
+        let after_provider = std::time::Instant::now();
+        let provider_time = after_provider.duration_since(before_provider);
+        tracing::debug!(
+            "Provider response time: {:.2}ms",
+            provider_time.as_secs_f64() * 1000.0
+        );
+
         // Convert back to Anthropic format
         let response = from_normalized(normalized_response);
 
-        Ok(Json(response).into_response())
+        let response_result = Ok(Json(response).into_response());
+
+        let total_time = std::time::Instant::now().duration_since(start_time);
+        let post_provider_overhead = total_time - provider_time - pre_provider_overhead;
+        tracing::debug!(
+            "Proxy overhead after provider response (denormalization): {:.2}ms",
+            post_provider_overhead.as_secs_f64() * 1000.0
+        );
+        tracing::debug!(
+            "Total proxy overhead: {:.2}ms (pre: {:.2}ms + post: {:.2}ms), provider: {:.2}ms, total: {:.2}ms",
+            (pre_provider_overhead + post_provider_overhead).as_secs_f64() * 1000.0,
+            pre_provider_overhead.as_secs_f64() * 1000.0,
+            post_provider_overhead.as_secs_f64() * 1000.0,
+            provider_time.as_secs_f64() * 1000.0,
+            total_time.as_secs_f64() * 1000.0
+        );
+
+        response_result
     }
+}
+
+/// State for passthrough handler (connector + optional stats tracker)
+pub struct PassthroughState {
+    pub connector: Arc<lunaroute_egress::anthropic::AnthropicConnector>,
+    pub stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
 }
 
 /// Passthrough handler for Anthropic→Anthropic routing (no normalization)
 /// Takes raw JSON, sends directly to Anthropic, returns raw JSON
 /// Preserves 100% API fidelity while still extracting metrics
 pub async fn messages_passthrough(
-    State(connector): State<Arc<lunaroute_egress::anthropic::AnthropicConnector>>,
+    State(state): State<Arc<PassthroughState>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<serde_json::Value>,
 ) -> Result<Response, IngressError> {
-    tracing::info!("Anthropic passthrough mode: skipping normalization");
+    let start_time = std::time::Instant::now();
+    tracing::debug!("Anthropic passthrough mode: skipping normalization");
+
+    // Extract session ID from metadata
+    let session_id = req
+        .get("metadata")
+        .and_then(|m| m.get("user_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Pass through all Anthropic-specific headers from the client
+    let mut passthrough_headers = std::collections::HashMap::new();
+
+    for (name, value) in headers.iter() {
+        let name_str = name.as_str();
+        // Pass through anthropic-* headers (version, beta, etc.)
+        if name_str.starts_with("anthropic-") {
+            if let Ok(value_str) = value.to_str() {
+                passthrough_headers.insert(name_str.to_string(), value_str.to_string());
+            }
+        }
+    }
 
     let is_streaming = req.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -785,28 +845,92 @@ pub async fn messages_passthrough(
         ));
     }
 
+    let before_provider = std::time::Instant::now();
+    let pre_provider_overhead = before_provider.duration_since(start_time);
+    tracing::debug!(
+        "Proxy overhead before provider call: {:.2}ms",
+        pre_provider_overhead.as_secs_f64() * 1000.0
+    );
+
     // Send directly to Anthropic API
-    let response = connector
-        .send_passthrough(req)
+    let response = state.connector
+        .send_passthrough(req, passthrough_headers)
         .await
         .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
+    let after_provider = std::time::Instant::now();
+    let provider_time = after_provider.duration_since(before_provider);
+    tracing::debug!(
+        "Provider response time: {:.2}ms",
+        provider_time.as_secs_f64() * 1000.0
+    );
+
     // Extract metrics for observability (optional: log tokens, model, etc.)
-    if let Some(usage) = response.get("usage") {
-        if let (Some(input_tokens), Some(output_tokens)) = (
-            usage.get("input_tokens").and_then(|v| v.as_u64()),
-            usage.get("output_tokens").and_then(|v| v.as_u64()),
-        ) {
-            tracing::debug!(
-                "Passthrough metrics: input_tokens={}, output_tokens={}, total={}",
-                input_tokens,
-                output_tokens,
-                input_tokens + output_tokens
-            );
+    let (input_tokens, output_tokens, thinking_tokens) = if let Some(usage) = response.get("usage") {
+        let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        // Extract thinking tokens - check multiple possible field names
+        // The actual field name depends on API version and features used
+        let thinking = usage.get("thinking_tokens")
+            .and_then(|v| v.as_u64())
+            .or_else(|| usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()))
+            .or_else(|| usage.get("extended_thinking_tokens").and_then(|v| v.as_u64()))
+            .unwrap_or(0);
+
+        if input > 0 || output > 0 {
+            if thinking > 0 {
+                tracing::debug!(
+                    "Passthrough metrics: input_tokens={}, output_tokens={}, thinking_tokens={}, total={}",
+                    input,
+                    output,
+                    thinking,
+                    input + output + thinking
+                );
+            } else {
+                tracing::debug!(
+                    "Passthrough metrics: input_tokens={}, output_tokens={}, total={}",
+                    input,
+                    output,
+                    input + output
+                );
+            }
         }
+        (input, output, thinking)
+    } else {
+        (0, 0, 0)
+    };
+
+    let response_result = Ok(Json(response).into_response());
+
+    let total_time = std::time::Instant::now().duration_since(start_time);
+    let post_provider_overhead = total_time - provider_time - pre_provider_overhead;
+    tracing::debug!(
+        "Proxy overhead after provider response: {:.2}ms",
+        post_provider_overhead.as_secs_f64() * 1000.0
+    );
+    tracing::debug!(
+        "Total proxy overhead: {:.2}ms (pre: {:.2}ms + post: {:.2}ms), provider: {:.2}ms, total: {:.2}ms",
+        (pre_provider_overhead + post_provider_overhead).as_secs_f64() * 1000.0,
+        pre_provider_overhead.as_secs_f64() * 1000.0,
+        post_provider_overhead.as_secs_f64() * 1000.0,
+        provider_time.as_secs_f64() * 1000.0,
+        total_time.as_secs_f64() * 1000.0
+    );
+
+    // Record stats if tracker is available and we have a session ID
+    if let (Some(tracker), Some(sid)) = (state.stats_tracker.as_ref(), session_id) {
+        tracker.record_request(
+            sid,
+            input_tokens,
+            output_tokens,
+            thinking_tokens,
+            pre_provider_overhead,
+            post_provider_overhead,
+        );
     }
 
-    Ok(Json(response).into_response())
+    response_result
 }
 
 /// Create Anthropic router with provider state
@@ -819,10 +943,16 @@ pub fn router(provider: Arc<dyn Provider>) -> Router {
 /// Create Anthropic passthrough router (for Anthropic→Anthropic direct routing)
 pub fn passthrough_router(
     connector: Arc<lunaroute_egress::anthropic::AnthropicConnector>,
+    stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
 ) -> Router {
+    let state = Arc::new(PassthroughState {
+        connector,
+        stats_tracker,
+    });
+
     Router::new()
         .route("/v1/messages", post(messages_passthrough))
-        .with_state(connector)
+        .with_state(state)
 }
 
 #[cfg(test)]

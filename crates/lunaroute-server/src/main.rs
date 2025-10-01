@@ -50,6 +50,7 @@
 //! ```
 
 mod config;
+mod session_stats;
 
 use axum::{
     extract::{Path, Query, State},
@@ -542,6 +543,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metrics = Arc::new(Metrics::new()?);
     let health_state = HealthState::new(metrics.clone());
 
+    // Initialize session statistics tracker
+    let stats_tracker = Arc::new(session_stats::SessionStatsTracker::new(
+        session_stats::SessionStatsConfig {
+            max_sessions: config.session_stats_max_sessions.unwrap_or(100),
+        },
+    ));
+    let stats_tracker_clone = stats_tracker.clone();
+    info!("📊 Session statistics tracking enabled (max {} sessions)", config.session_stats_max_sessions.unwrap_or(100));
+
     // Create ingress router based on selected dialect
     let api_router = match config.api_dialect {
         ApiDialect::OpenAI => {
@@ -559,7 +569,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if is_anthropic_passthrough {
                 if let Some(connector) = anthropic_connector {
                     info!("⚡ Passthrough mode: Anthropic→Anthropic (no normalization)");
-                    anthropic_ingress::passthrough_router(connector)
+                    anthropic_ingress::passthrough_router(connector, Some(stats_tracker_clone))
                 } else {
                     anthropic_ingress::router(router)
                 }
@@ -610,7 +620,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     info!("");
 
-    axum::serve(listener, app).await?;
+    // Setup graceful shutdown handler
+    let stats_tracker_for_shutdown = stats_tracker.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        // Only print stats if debug logging is enabled
+        if tracing::level_filters::LevelFilter::current() >= tracing::level_filters::LevelFilter::DEBUG {
+            info!("Shutdown signal received, printing session statistics...");
+            stats_tracker_for_shutdown.print_summary();
+        }
+    });
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    // Print stats one final time in case the shutdown handler didn't run
+    // Only print if debug logging is enabled
+    if tracing::level_filters::LevelFilter::current() >= tracing::level_filters::LevelFilter::DEBUG {
+        info!("Server stopped, printing final session statistics...");
+        stats_tracker.print_summary();
+    }
 
     Ok(())
+}
+
+/// Wait for shutdown signal (SIGINT or SIGTERM)
+async fn shutdown_signal() {
+    use tokio::signal;
+
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    info!("Shutdown signal received");
 }

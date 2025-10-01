@@ -92,7 +92,7 @@ lunaroute-server --config config.yaml --dialect anthropic
 | `LUNAROUTE_LOG_REQUESTS` | Log requests to stdout | false |
 | `LUNAROUTE_LOG_LEVEL` | Log level (trace/debug/info/warn/error) | info |
 
-**Note**: When `LUNAROUTE_LOG_LEVEL=debug`, HTTP request and response headers to/from providers will also be logged.
+**Note**: When `LUNAROUTE_LOG_LEVEL=debug`, HTTP request and response headers to/from providers will be logged, along with detailed timing metrics and session statistics on shutdown.
 
 ### Config File Format
 
@@ -145,12 +145,29 @@ If session recording is enabled:
 ## Features
 
 - ✅ **Zero-downtime routing**: Automatic failover between providers
+- ✅ **Passthrough mode**: When dialect matches provider, zero-copy routing with 100% API fidelity
 - ✅ **Circuit breakers**: Prevent cascading failures
 - ✅ **Health monitoring**: Track provider availability
 - ✅ **Session recording**: Optional request/response capture
+- ✅ **Session statistics**: Per-session tracking of tokens (input/output/thinking), requests, and proxy overhead
 - ✅ **Request logging**: Print all traffic to stdout
+- ✅ **Detailed timing metrics**: Pre/post proxy overhead, provider response time (DEBUG level)
 - ✅ **Prometheus metrics**: Request rates, latencies, tokens
 - ✅ **OpenTelemetry tracing**: Distributed tracing support
+
+### Session Statistics
+
+When running with `LUNAROUTE_LOG_LEVEL=debug`, detailed session statistics are printed on shutdown:
+
+- **Per-session metrics**: Request count, input/output/thinking tokens, processing overhead
+- **Aggregate statistics**: Total tokens across sessions, average processing time
+- **Thinking token tracking**: Separate tracking for Anthropic extended thinking usage
+- **Proxy overhead analysis**: Exact time spent in pre/post processing vs provider response
+
+Configure max sessions tracked in config file:
+```yaml
+session_stats_max_sessions: 100  # Default: 100
+```
 
 ## Building
 

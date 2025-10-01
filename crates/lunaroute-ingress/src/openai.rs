@@ -622,6 +622,7 @@ pub async fn chat_completions(
     State(provider): State<Arc<dyn Provider>>,
     Json(req): Json<OpenAIChatRequest>,
 ) -> Result<Response, IngressError> {
+    let start_time = std::time::Instant::now();
     let is_streaming = req.stream.unwrap_or(false);
     let model = req.model.clone();
 
@@ -699,16 +700,47 @@ pub async fn chat_completions(
             .keep_alive(KeepAlive::default())
             .into_response())
     } else {
+        let before_provider = std::time::Instant::now();
+        let pre_provider_overhead = before_provider.duration_since(start_time);
+        tracing::debug!(
+            "Proxy overhead before provider call (normalization): {:.2}ms",
+            pre_provider_overhead.as_secs_f64() * 1000.0
+        );
+
         // Handle non-streaming response
         let normalized_response = provider
             .send(normalized)
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
+        let after_provider = std::time::Instant::now();
+        let provider_time = after_provider.duration_since(before_provider);
+        tracing::debug!(
+            "Provider response time: {:.2}ms",
+            provider_time.as_secs_f64() * 1000.0
+        );
+
         // Convert back to OpenAI format
         let response = from_normalized(normalized_response);
 
-        Ok(Json(response).into_response())
+        let response_result = Ok(Json(response).into_response());
+
+        let total_time = std::time::Instant::now().duration_since(start_time);
+        let post_provider_overhead = total_time - provider_time - pre_provider_overhead;
+        tracing::debug!(
+            "Proxy overhead after provider response (denormalization): {:.2}ms",
+            post_provider_overhead.as_secs_f64() * 1000.0
+        );
+        tracing::debug!(
+            "Total proxy overhead: {:.2}ms (pre: {:.2}ms + post: {:.2}ms), provider: {:.2}ms, total: {:.2}ms",
+            (pre_provider_overhead + post_provider_overhead).as_secs_f64() * 1000.0,
+            pre_provider_overhead.as_secs_f64() * 1000.0,
+            post_provider_overhead.as_secs_f64() * 1000.0,
+            provider_time.as_secs_f64() * 1000.0,
+            total_time.as_secs_f64() * 1000.0
+        );
+
+        response_result
     }
 }
 
