@@ -1,0 +1,19 @@
+[package]
+name = "lunaroute-session"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lunaroute-core = { path = "../lunaroute-core" }
+lunaroute-storage = { path = "../lunaroute-storage" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }

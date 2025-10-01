@@ -1,0 +1,22 @@
+[package]
+name = "lunaroute-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+notify = { workspace = true }
+zstd = { workspace = true }
+lz4 = { workspace = true }
+aes-gcm = { workspace = true }
+bytes = { workspace = true }

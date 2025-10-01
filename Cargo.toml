@@ -1,0 +1,86 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lunaroute-core",
+    "crates/lunaroute-ingress",
+    "crates/lunaroute-egress",
+    "crates/lunaroute-routing",
+    "crates/lunaroute-session",
+    "crates/lunaroute-storage",
+    "crates/lunaroute-pii",
+    "crates/lunaroute-observability",
+    "crates/lunaroute-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["LunaRoute Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/lunaroute"
+rust-version = "1.90"
+
+[workspace.dependencies]
+# Async Runtime
+tokio = { version = "1.40", features = ["full"] }
+futures = "0.3"
+
+# HTTP Server & Client
+axum = { version = "0.7", features = ["macros", "ws"] }
+hyper = { version = "1.0", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+tower = { version = "0.4", features = ["full"] }
+tower-http = { version = "0.5", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Tracing & Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+opentelemetry = { version = "0.23", features = ["trace"] }
+opentelemetry-otlp = "0.16"
+opentelemetry_sdk = { version = "0.23", features = ["rt-tokio"] }
+prometheus = "0.13"
+
+# Compression & Encoding
+zstd = "0.13"
+lz4 = "1.24"
+base64 = "0.22"
+
+# Cryptography
+aes-gcm = "0.10"
+argon2 = "0.5"
+sha2 = "0.10"
+hmac = "0.12"
+rand = "0.8"
+
+# Utilities
+anyhow = "1.0"
+thiserror = "1.0"
+bytes = "1.5"
+regex = "1.10"
+aho-corasick = "1.1"
+once_cell = "1.19"
+
+# Config & File Watching
+notify = "6.1"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Testing
+mockall = "0.12"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true

@@ -1,0 +1,16 @@
+# Clippy configuration for LunaRoute
+
+# Warn on all clippy lints by default
+warn-on-all-wildcard-imports = true
+disallowed-macros = []
+disallowed-methods = []
+disallowed-types = []
+
+# Set cognitive complexity threshold
+cognitive-complexity-threshold = 30
+
+# Type complexity threshold
+type-complexity-threshold = 500
+
+# Documentation requirements
+missing-docs-in-crate-items = false

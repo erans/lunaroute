@@ -1,0 +1,29 @@
+#!/bin/bash
+# Pre-commit hook for LunaRoute
+
+set -e
+
+echo "Running pre-commit checks..."
+
+# Check formatting
+echo "Checking code formatting..."
+if ! cargo fmt --all -- --check; then
+    echo "❌ Code formatting check failed. Run 'make fmt' to fix."
+    exit 1
+fi
+
+# Run clippy
+echo "Running clippy..."
+if ! cargo clippy --workspace --all-features -- -D warnings; then
+    echo "❌ Clippy check failed. Fix the warnings and try again."
+    exit 1
+fi
+
+# Run tests
+echo "Running tests..."
+if ! cargo test --workspace --all-features; then
+    echo "❌ Tests failed. Fix the tests and try again."
+    exit 1
+fi
+
+echo "✅ All pre-commit checks passed!"
