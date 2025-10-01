@@ -68,6 +68,127 @@ impl OpenAIConnector {
         let client = create_client(&config.client_config)?;
         Ok(Self { config, client })
     }
+
+    /// Send a raw JSON request directly to OpenAI (passthrough mode)
+    /// This skips normalization for OpenAI→OpenAI routing, preserving 100% API fidelity.
+    /// Still parses the response to extract metrics (tokens, model, etc.)
+    #[instrument(skip(self, request_json))]
+    pub async fn send_passthrough(
+        &self,
+        request_json: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        debug!("Sending passthrough request to OpenAI (no normalization)");
+
+        let max_retries = self.config.client_config.max_retries;
+        let result = with_retry(max_retries, || {
+            let request_json = request_json.clone();
+            async move {
+                let response = self.client
+                    .post(format!("{}/chat/completions", self.config.base_url))
+                    .header("Authorization", format!("Bearer {}", self.config.api_key))
+                    .header("Content-Type", "application/json")
+                    .apply_organization_header(&self.config)
+                    .json(&request_json)
+                    .send()
+                    .await?;
+
+                // Log response headers at debug level
+                debug!("┌─────────────────────────────────────────────────────────");
+                debug!("│ OpenAI Passthrough Response Headers");
+                debug!("├─────────────────────────────────────────────────────────");
+                debug!("│ Status: {}", response.status());
+                for (name, value) in response.headers() {
+                    if let Ok(val_str) = value.to_str() {
+                        debug!("│ {}: {}", name, val_str);
+                    }
+                }
+                debug!("└─────────────────────────────────────────────────────────");
+
+                self.handle_openai_passthrough_response(response).await
+            }
+        })
+        .await?;
+
+        Ok(result)
+    }
+
+    /// Handle passthrough response (for send_passthrough)
+    async fn handle_openai_passthrough_response(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<serde_json::Value> {
+        let status = response.status();
+
+        if !status.is_success() {
+            let status_code = status.as_u16();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read error body".to_string());
+
+            return Err(if status_code == 429 {
+                EgressError::RateLimitExceeded {
+                    retry_after_secs: None,
+                }
+            } else {
+                EgressError::ProviderError {
+                    status_code,
+                    message: body,
+                }
+            });
+        }
+
+        response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| {
+                EgressError::ParseError(format!("Failed to parse OpenAI passthrough response: {}", e))
+            })
+    }
+
+    /// Stream raw OpenAI request (passthrough mode - no normalization)
+    /// Returns raw response for direct SSE forwarding
+    #[instrument(skip(self, request_json))]
+    pub async fn stream_passthrough(
+        &self,
+        request_json: serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        debug!("Sending passthrough streaming request to OpenAI (no normalization)");
+
+        let response = self
+            .client
+            .post(format!("{}/chat/completions", self.config.base_url))
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header("Content-Type", "application/json")
+            .apply_organization_header(&self.config)
+            .json(&request_json)
+            .send()
+            .await
+            .map_err(EgressError::from)?;
+
+        // Log response headers at debug level
+        debug!("┌─────────────────────────────────────────────────────────");
+        debug!("│ OpenAI Streaming Passthrough Response Headers");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ Status: {}", response.status());
+        for (name, value) in response.headers() {
+            if let Ok(val_str) = value.to_str() {
+                debug!("│ {}: {}", name, val_str);
+            }
+        }
+        debug!("└─────────────────────────────────────────────────────────");
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
+            return Err(EgressError::ProviderError {
+                status_code: status,
+                message: body,
+            });
+        }
+
+        Ok(response)
+    }
 }
 
 #[async_trait]
