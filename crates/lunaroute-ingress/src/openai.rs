@@ -392,4 +392,175 @@ mod tests {
         let response = chat_completions(Json(req)).await;
         assert!(response.is_ok());
     }
+
+    #[test]
+    fn test_all_finish_reasons() {
+        // Test all finish reason mappings
+        let finish_reasons = vec![
+            (FinishReason::Stop, "stop"),
+            (FinishReason::Length, "length"),
+            (FinishReason::ToolCalls, "tool_calls"),
+            (FinishReason::ContentFilter, "content_filter"),
+            (FinishReason::Error, "error"),
+        ];
+
+        for (reason, expected) in finish_reasons {
+            let resp = NormalizedResponse {
+                id: "test".to_string(),
+                model: "gpt-4".to_string(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: Message {
+                        role: Role::Assistant,
+                        content: MessageContent::Text("test".to_string()),
+                        name: None,
+                        tool_calls: vec![],
+                        tool_call_id: None,
+                    },
+                    finish_reason: Some(reason),
+                }],
+                usage: Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                },
+                created: 1234567890,
+                metadata: std::collections::HashMap::new(),
+            };
+
+            let openai = from_normalized(resp);
+            assert_eq!(openai.choices[0].finish_reason, Some(expected.to_string()));
+        }
+    }
+
+    #[test]
+    fn test_multiple_choices() {
+        let resp = NormalizedResponse {
+            id: "test".to_string(),
+            model: "gpt-4".to_string(),
+            choices: vec![
+                Choice {
+                    index: 0,
+                    message: Message {
+                        role: Role::Assistant,
+                        content: MessageContent::Text("First choice".to_string()),
+                        name: None,
+                        tool_calls: vec![],
+                        tool_call_id: None,
+                    },
+                    finish_reason: Some(FinishReason::Stop),
+                },
+                Choice {
+                    index: 1,
+                    message: Message {
+                        role: Role::Assistant,
+                        content: MessageContent::Text("Second choice".to_string()),
+                        name: None,
+                        tool_calls: vec![],
+                        tool_call_id: None,
+                    },
+                    finish_reason: Some(FinishReason::Stop),
+                },
+            ],
+            usage: Usage {
+                prompt_tokens: 10,
+                completion_tokens: 10,
+                total_tokens: 20,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai = from_normalized(resp);
+        assert_eq!(openai.choices.len(), 2);
+        assert_eq!(openai.choices[0].index, 0);
+        assert_eq!(openai.choices[1].index, 1);
+        assert_eq!(openai.choices[0].message.content, "First choice");
+        assert_eq!(openai.choices[1].message.content, "Second choice");
+    }
+
+    #[test]
+    fn test_multimodal_parts_content() {
+        use lunaroute_core::normalized::ContentPart;
+
+        let resp = NormalizedResponse {
+            id: "test".to_string(),
+            model: "gpt-4-vision".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Parts(vec![
+                        ContentPart::Text {
+                            text: "I see an image".to_string(),
+                        },
+                    ]),
+                    name: None,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                },
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let openai = from_normalized(resp);
+        // Currently returns empty string for Parts - this is a known limitation
+        assert_eq!(openai.choices[0].message.content, "");
+    }
+
+    #[test]
+    fn test_message_with_all_optional_fields() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+                name: Some("Alice".to_string()),
+            }],
+            temperature: Some(0.8),
+            top_p: Some(0.9),
+            max_tokens: Some(500),
+            stream: Some(true),
+            stop: Some(vec!["END".to_string()]),
+            n: Some(3),
+            presence_penalty: Some(0.5),
+            frequency_penalty: Some(0.3),
+            user: Some("user_123".to_string()),
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.temperature, Some(0.8));
+        assert_eq!(normalized.top_p, Some(0.9));
+        assert_eq!(normalized.max_tokens, Some(500));
+        assert_eq!(normalized.stream, true);
+        assert_eq!(normalized.stop_sequences, vec!["END".to_string()]);
+        assert_eq!(normalized.messages[0].name, Some("Alice".to_string()));
+    }
+
+    #[test]
+    fn test_empty_messages_array() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.messages.len(), 0);
+    }
 }

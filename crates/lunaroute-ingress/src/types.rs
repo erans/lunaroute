@@ -337,4 +337,96 @@ mod tests {
         assert!(sse.contains("id: 1\n"));
         assert!(sse.contains("data: {"));
     }
+
+    #[test]
+    fn test_error_invalid_request_response() {
+        use axum::response::IntoResponse;
+
+        let error = IngressError::InvalidRequest("Missing field 'model'".to_string());
+        let response = error.into_response();
+
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_error_missing_header_response() {
+        use axum::response::IntoResponse;
+
+        let error = IngressError::MissingHeader("Authorization".to_string());
+        let response = error.into_response();
+
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_error_authentication_failed_response() {
+        use axum::response::IntoResponse;
+
+        let error = IngressError::AuthenticationFailed("Invalid API key".to_string());
+        let response = error.into_response();
+
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_error_request_too_large_response() {
+        use axum::response::IntoResponse;
+
+        let error = IngressError::RequestTooLarge(10485760);
+        let response = error.into_response();
+
+        assert_eq!(response.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn test_error_timeout_response() {
+        use axum::response::IntoResponse;
+
+        let error = IngressError::Timeout;
+        let response = error.into_response();
+
+        assert_eq!(response.status(), axum::http::StatusCode::REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn test_error_serialization_response() {
+        use axum::response::IntoResponse;
+
+        // Create a serialization error by trying to serialize invalid JSON
+        let json_str = "{invalid json}";
+        let result: Result<serde_json::Value, _> = serde_json::from_str(json_str);
+        let error = IngressError::Serialization(result.unwrap_err());
+        let response = error.into_response();
+
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_error_internal_response() {
+        use axum::response::IntoResponse;
+
+        let error = IngressError::Internal("Database connection failed".to_string());
+        let response = error.into_response();
+
+        assert_eq!(response.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_trace_context_malformed_traceparent() {
+        // Missing parts
+        let ctx = TraceContext::from_traceparent("00-invalid");
+        assert!(ctx.is_none());
+
+        // Wrong number of parts
+        let ctx = TraceContext::from_traceparent("00-trace-span");
+        assert!(ctx.is_none());
+
+        // Invalid hex in trace_flags (only trace_flags is validated)
+        let ctx = TraceContext::from_traceparent("00-validtrace-validspan-ZZ");
+        assert!(ctx.is_none());
+
+        // Empty string
+        let ctx = TraceContext::from_traceparent("");
+        assert!(ctx.is_none());
+    }
 }

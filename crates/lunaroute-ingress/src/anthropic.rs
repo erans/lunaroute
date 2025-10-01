@@ -293,4 +293,120 @@ mod tests {
         let response = messages(Json(req)).await;
         assert!(response.is_ok());
     }
+
+    #[test]
+    fn test_all_anthropic_finish_reasons() {
+        // Test all finish reason mappings for Anthropic
+        let finish_reasons = vec![
+            (FinishReason::Stop, "end_turn"),
+            (FinishReason::Length, "max_tokens"),
+            (FinishReason::ToolCalls, "tool_use"),
+            // ContentFilter and Error both map to end_turn for Anthropic
+            (FinishReason::ContentFilter, "end_turn"),
+            (FinishReason::Error, "end_turn"),
+        ];
+
+        for (reason, expected) in finish_reasons {
+            let resp = NormalizedResponse {
+                id: "test".to_string(),
+                model: "claude-3-opus".to_string(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: Message {
+                        role: Role::Assistant,
+                        content: MessageContent::Text("test".to_string()),
+                        name: None,
+                        tool_calls: vec![],
+                        tool_call_id: None,
+                    },
+                    finish_reason: Some(reason),
+                }],
+                usage: Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                },
+                created: 1234567890,
+                metadata: std::collections::HashMap::new(),
+            };
+
+            let anthropic = from_normalized(resp);
+            assert_eq!(anthropic.stop_reason, Some(expected.to_string()));
+        }
+    }
+
+    #[test]
+    fn test_anthropic_empty_messages() {
+        let req = AnthropicMessagesRequest {
+            model: "claude-3-opus".to_string(),
+            messages: vec![],
+            system: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stream: None,
+            stop_sequences: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.messages.len(), 0);
+    }
+
+    #[test]
+    fn test_anthropic_with_system_prompt() {
+        let req = AnthropicMessagesRequest {
+            model: "claude-3-opus".to_string(),
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: "Hello!".to_string(),
+            }],
+            system: Some("You are a helpful assistant".to_string()),
+            max_tokens: Some(1024),
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+            top_k: Some(40),
+            stream: Some(true),
+            stop_sequences: Some(vec!["STOP".to_string()]),
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.system, Some("You are a helpful assistant".to_string()));
+        assert_eq!(normalized.max_tokens, Some(1024));
+        assert_eq!(normalized.temperature, Some(0.7));
+        assert_eq!(normalized.top_p, Some(0.9));
+        assert_eq!(normalized.top_k, Some(40));
+        assert_eq!(normalized.stream, true);
+        assert_eq!(normalized.stop_sequences, vec!["STOP".to_string()]);
+    }
+
+    #[test]
+    fn test_anthropic_stop_sequence_field() {
+        let resp = NormalizedResponse {
+            id: "test".to_string(),
+            model: "claude-3-opus".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Text("test".to_string()),
+                    name: None,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                },
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let anthropic = from_normalized(resp);
+        // Currently returns None - will be populated when tracking is implemented
+        assert_eq!(anthropic.stop_sequence, None);
+    }
 }
