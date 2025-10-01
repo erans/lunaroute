@@ -4,7 +4,7 @@ use crate::traits::{ConfigStore, StorageError, StorageResult};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Trait for validating configuration values
 pub trait ConfigValidator<T> {
@@ -16,6 +16,7 @@ pub trait ConfigValidator<T> {
 pub struct FileConfigStore {
     path: PathBuf,
     format: ConfigFormat,
+    watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
 }
 
 /// File-based configuration store with schema validation
@@ -45,7 +46,11 @@ impl FileConfigStore {
         let path = path.as_ref().to_path_buf();
         let format = Self::detect_format(&path);
 
-        Self { path, format }
+        Self {
+            path,
+            format,
+            watcher: Arc::new(Mutex::new(None)),
+        }
     }
 
     /// Detect config format from file extension
@@ -153,8 +158,10 @@ impl ConfigStore for FileConfigStore {
             .watch(&path, RecursiveMode::NonRecursive)
             .map_err(|e| StorageError::Config(format!("Watch error: {}", e)))?;
 
-        // Keep watcher alive
-        std::mem::forget(watcher);
+        // Store watcher to keep it alive (prevents memory leak from std::mem::forget)
+        let mut watcher_guard = self.watcher.lock()
+            .map_err(|e| StorageError::Config(format!("Failed to acquire watcher lock: {}", e)))?;
+        *watcher_guard = Some(watcher);
 
         Ok(())
     }

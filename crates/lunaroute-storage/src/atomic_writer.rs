@@ -50,12 +50,24 @@ impl AtomicWriter {
         // Get paths before consuming self
         let temp_path = self.temp_path.clone();
         let final_path = self.final_path.clone();
+        let parent = final_path.parent().map(|p| p.to_path_buf());
 
         // Prevent Drop from running (which would delete the temp file)
         std::mem::forget(self);
 
         // Atomic rename
         fs::rename(&temp_path, &final_path)?;
+
+        // Fsync parent directory to ensure rename is durable
+        // This is critical for crash recovery on most filesystems
+        if let Some(parent_dir) = parent {
+            // Try to open and sync parent directory (best effort)
+            // On Unix, this ensures directory metadata is persisted
+            if let Ok(dir) = File::open(&parent_dir) {
+                // Ignore errors from sync_all on directories as some platforms don't support it
+                let _ = dir.sync_all();
+            }
+        }
 
         Ok(())
     }

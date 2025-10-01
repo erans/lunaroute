@@ -21,6 +21,40 @@ pub struct FileSessionStore {
 }
 
 impl FileSessionStore {
+    /// Validate session ID to prevent path traversal attacks
+    fn validate_session_id(id: &str) -> StorageResult<()> {
+        // Check for empty or too long IDs
+        if id.is_empty() {
+            return Err(StorageError::InvalidData("Session ID cannot be empty".into()));
+        }
+
+        if id.len() > 255 {
+            return Err(StorageError::InvalidData(format!(
+                "Session ID too long: {} chars (max 255)",
+                id.len()
+            )));
+        }
+
+        // Check for path traversal characters
+        if id.contains("..") || id.contains('/') || id.contains('\\') {
+            return Err(StorageError::InvalidData(format!(
+                "Invalid session ID '{}': contains path traversal characters",
+                id
+            )));
+        }
+
+        // Only allow alphanumeric, dash, underscore
+        let is_valid = id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_');
+        if !is_valid {
+            return Err(StorageError::InvalidData(format!(
+                "Invalid session ID '{}': only alphanumeric, dash, and underscore allowed",
+                id
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Create a new file session store
     pub fn new<P: AsRef<Path>>(base_path: P) -> StorageResult<Self> {
         let base_path = base_path.as_ref().to_path_buf();
@@ -116,6 +150,9 @@ impl FileSessionStore {
 #[async_trait::async_trait]
 impl SessionStore for FileSessionStore {
     async fn create_session(&self, id: &str, metadata: SessionMetadata) -> StorageResult<()> {
+        // Validate session ID to prevent path traversal
+        Self::validate_session_id(id)?;
+
         let session_dir = self.session_dir(id);
         fs::create_dir_all(&session_dir)?;
 
@@ -134,16 +171,25 @@ impl SessionStore for FileSessionStore {
     }
 
     async fn append_request(&self, session_id: &str, request: &[u8]) -> StorageResult<()> {
+        // Validate session ID to prevent path traversal
+        Self::validate_session_id(session_id)?;
+
         self.write_compressed(&self.request_path(session_id), request)?;
         Ok(())
     }
 
     async fn append_response(&self, session_id: &str, response: &[u8]) -> StorageResult<()> {
+        // Validate session ID to prevent path traversal
+        Self::validate_session_id(session_id)?;
+
         self.write_compressed(&self.response_path(session_id), response)?;
         Ok(())
     }
 
     async fn append_stream_event(&self, session_id: &str, event: &[u8]) -> StorageResult<()> {
+        // Validate session ID to prevent path traversal
+        Self::validate_session_id(session_id)?;
+
         let path = self.stream_events_path(session_id);
 
         // Use rolling writer for stream events
@@ -156,6 +202,9 @@ impl SessionStore for FileSessionStore {
     }
 
     async fn get_metadata(&self, session_id: &str) -> StorageResult<SessionMetadata> {
+        // Validate session ID to prevent path traversal
+        Self::validate_session_id(session_id)?;
+
         // Try index first (O(1) lookup)
         if let Some(metadata) = self.index.get(session_id) {
             return Ok(metadata);
@@ -236,6 +285,9 @@ impl SessionStore for FileSessionStore {
     }
 
     async fn read_session(&self, session_id: &str) -> StorageResult<SessionData> {
+        // Validate session ID to prevent path traversal
+        Self::validate_session_id(session_id)?;
+
         let metadata = self.get_metadata(session_id).await?;
 
         let request = self.read_compressed(&self.request_path(session_id))?;
@@ -264,6 +316,9 @@ impl SessionStore for FileSessionStore {
     }
 
     async fn delete_session(&self, session_id: &str) -> StorageResult<()> {
+        // Validate session ID to prevent path traversal
+        Self::validate_session_id(session_id)?;
+
         let session_dir = self.session_dir(session_id);
         if session_dir.exists() {
             fs::remove_dir_all(&session_dir)?;
@@ -468,5 +523,91 @@ mod tests {
 
             store.delete_session("test_compression").await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_session_id_validation_path_traversal() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileSessionStore::new(temp_dir.path()).unwrap();
+        let metadata = create_test_metadata("invalid");
+
+        // Test path traversal attempts
+        let invalid_ids = vec![
+            "../etc/passwd",
+            "../../secret",
+            "session/../../../etc",
+            "session/../../test",
+            "./test",
+        ];
+
+        for id in invalid_ids {
+            let result = store.create_session(id, metadata.clone()).await;
+            assert!(result.is_err(), "Should reject path traversal ID: {}", id);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session_id_validation_invalid_chars() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileSessionStore::new(temp_dir.path()).unwrap();
+        let metadata = create_test_metadata("invalid");
+
+        // Test invalid characters
+        let invalid_ids = vec![
+            "session/id",
+            "session\\id",
+            "session id",
+            "session@id",
+            "session#id",
+        ];
+
+        for id in invalid_ids {
+            let result = store.create_session(id, metadata.clone()).await;
+            assert!(result.is_err(), "Should reject invalid chars in ID: {}", id);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session_id_validation_valid() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileSessionStore::new(temp_dir.path()).unwrap();
+        let metadata = create_test_metadata("valid_123");
+
+        // Test valid IDs
+        let valid_ids = vec![
+            "session_123",
+            "session-456",
+            "ABC_xyz_123",
+            "test-session_001",
+        ];
+
+        for id in valid_ids {
+            let mut meta = metadata.clone();
+            meta.id = id.to_string();
+            let result = store.create_session(id, meta).await;
+            assert!(result.is_ok(), "Should accept valid ID: {}", id);
+            store.delete_session(id).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session_id_validation_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileSessionStore::new(temp_dir.path()).unwrap();
+        let metadata = create_test_metadata("empty");
+
+        let result = store.create_session("", metadata).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_id_validation_too_long() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileSessionStore::new(temp_dir.path()).unwrap();
+        let metadata = create_test_metadata("toolong");
+
+        let long_id = "a".repeat(300);
+        let result = store.create_session(&long_id, metadata).await;
+        assert!(result.is_err());
     }
 }
