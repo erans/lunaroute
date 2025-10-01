@@ -68,3 +68,6 @@ pub struct TypeRedactionOverride {
     /// Replacement text (for mask mode)
     pub replacement: Option<String>,
 }
+
+#[cfg(test)]
+mod tests;

@@ -104,3 +104,6 @@ pub struct CustomPattern {
     /// Confidence score for matches
     pub confidence: f32,
 }
+
+#[cfg(test)]
+mod tests;

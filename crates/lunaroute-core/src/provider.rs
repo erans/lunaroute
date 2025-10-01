@@ -27,3 +27,6 @@ pub struct ProviderCapabilities {
     pub supports_tools: bool,
     pub supports_vision: bool,
 }
+
+#[cfg(test)]
+mod tests;

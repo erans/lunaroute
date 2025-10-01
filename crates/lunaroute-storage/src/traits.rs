@@ -201,3 +201,6 @@ pub struct RetentionPolicy {
     /// Maximum total size in bytes
     pub max_total_size_bytes: Option<u64>,
 }
+
+#[cfg(test)]
+mod tests;

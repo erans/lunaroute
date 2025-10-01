@@ -300,3 +300,7 @@ pub struct FunctionCallDelta {
     /// Arguments delta
     pub arguments: Option<String>,
 }
+
+#[cfg(test)]
+mod tests;
+
