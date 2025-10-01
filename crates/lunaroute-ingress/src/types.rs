@@ -137,6 +137,14 @@ pub enum IngressError {
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(String),
+
+    /// Unsupported feature
+    #[error("Unsupported feature: {0}")]
+    UnsupportedFeature(String),
+
+    /// Provider error
+    #[error("Provider error: {0}")]
+    ProviderError(String),
 }
 
 impl axum::response::IntoResponse for IngressError {
@@ -155,6 +163,8 @@ impl axum::response::IntoResponse for IngressError {
                 (StatusCode::BAD_REQUEST, format!("Serialization error: {}", err))
             }
             IngressError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            IngressError::UnsupportedFeature(msg) => (StatusCode::NOT_IMPLEMENTED, msg),
+            IngressError::ProviderError(msg) => (StatusCode::BAD_GATEWAY, msg),
         };
 
         let body = serde_json::json!({

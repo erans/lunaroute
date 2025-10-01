@@ -73,7 +73,7 @@ pub enum Role {
 }
 
 /// Content of a message (text or multimodal)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MessageContent {
     /// Simple text content
@@ -84,7 +84,7 @@ pub enum MessageContent {
 }
 
 /// A part of multimodal content
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
     Text {
@@ -96,7 +96,7 @@ pub enum ContentPart {
 }
 
 /// Source of an image
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ImageSource {
     Url {

@@ -1,0 +1,19 @@
+[package]
+name = "lunaroute-demos"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+lunaroute-core = { path = "../lunaroute-core" }
+lunaroute-ingress = { path = "../lunaroute-ingress" }
+lunaroute-egress = { path = "../lunaroute-egress" }
+
+tokio = { workspace = true, features = ["full"] }
+axum = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

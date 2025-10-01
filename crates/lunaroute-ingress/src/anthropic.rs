@@ -2,18 +2,22 @@
 
 use crate::types::{IngressError, IngressResult};
 use axum::{
-    extract::Json,
+    extract::{Json, State},
     response::{IntoResponse, Response},
     routing::post,
     Router,
 };
-use lunaroute_core::normalized::{
-    ContentPart, FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent,
-    NormalizedRequest, NormalizedResponse, Role, Tool, ToolCall,
+use lunaroute_core::{
+    normalized::{
+        ContentPart, FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent,
+        NormalizedRequest, NormalizedResponse, Role, Tool, ToolCall,
+    },
+    provider::Provider,
 };
 #[cfg(test)]
 use lunaroute_core::normalized::{Choice, Usage};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Maximum size for tool arguments (1MB)
 const MAX_TOOL_ARGS_SIZE: usize = 1_000_000;
@@ -412,7 +416,8 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
         });
 
     AnthropicResponse {
-        id: format!("msg_{}", resp.id),
+        // Use ID as-is (egress already has proper format from provider)
+        id: resp.id,
         type_: "message".to_string(),
         role: "assistant".to_string(),
         content,
@@ -426,41 +431,92 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
     }
 }
 
-/// Messages handler (placeholder - actual routing will be implemented later)
+/// Messages handler
 pub async fn messages(
+    State(provider): State<Arc<dyn Provider>>,
     Json(req): Json<AnthropicMessagesRequest>,
 ) -> Result<Response, IngressError> {
-    // Convert to normalized format
-    let normalized = to_normalized(req.clone())?;
+    // Check if streaming is requested
+    if req.stream.unwrap_or(false) {
+        return Err(IngressError::UnsupportedFeature(
+            "Streaming not yet implemented".to_string()
+        ));
+    }
 
-    // For now, return a placeholder response
-    let response = AnthropicResponse {
-        id: "msg_placeholder".to_string(),
-        type_: "message".to_string(),
-        role: "assistant".to_string(),
-        content: vec![AnthropicContent::Text {
-            text: "This is a placeholder response".to_string(),
-        }],
-        model: normalized.model.clone(),
-        stop_reason: Some("end_turn".to_string()),
-        stop_sequence: None,
-        usage: AnthropicUsage {
-            input_tokens: 10,
-            output_tokens: 5,
-        },
-    };
+    // Convert to normalized format
+    let normalized = to_normalized(req)?;
+
+    // Call provider
+    let normalized_response = provider
+        .send(normalized)
+        .await
+        .map_err(|e| IngressError::ProviderError(e.to_string()))?;
+
+    // Convert back to Anthropic format
+    let response = from_normalized(normalized_response);
 
     Ok(Json(response).into_response())
 }
 
-/// Create Anthropic router
-pub fn router() -> Router {
-    Router::new().route("/v1/messages", post(messages))
+/// Create Anthropic router with provider state
+pub fn router(provider: Arc<dyn Provider>) -> Router {
+    Router::new()
+        .route("/v1/messages", post(messages))
+        .with_state(provider)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use lunaroute_core::provider::ProviderCapabilities;
+    use futures::stream;
+
+    // Mock provider for testing
+    struct MockProvider;
+
+    #[async_trait]
+    impl Provider for MockProvider {
+        async fn send(&self, _request: NormalizedRequest) -> lunaroute_core::Result<NormalizedResponse> {
+            Ok(NormalizedResponse {
+                id: "test-123".to_string(),
+                model: "claude-3-opus".to_string(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: Message {
+                        role: Role::Assistant,
+                        content: MessageContent::Text("Hello from mock".to_string()),
+                        name: None,
+                        tool_calls: vec![],
+                        tool_call_id: None,
+                    },
+                    finish_reason: Some(FinishReason::Stop),
+                }],
+                usage: Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                },
+                created: 1234567890,
+                metadata: std::collections::HashMap::new(),
+            })
+        }
+
+        async fn stream(
+            &self,
+            _request: NormalizedRequest,
+        ) -> lunaroute_core::Result<Box<dyn futures::Stream<Item = lunaroute_core::Result<lunaroute_core::normalized::NormalizedStreamEvent>> + Send + Unpin>> {
+            Ok(Box::new(stream::empty()))
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                supports_streaming: false,
+                supports_tools: false,
+                supports_vision: false,
+            }
+        }
+    }
 
     #[test]
     fn test_to_normalized() {
@@ -546,6 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_messages_endpoint() {
+        let provider = Arc::new(MockProvider);
         let req = AnthropicMessagesRequest {
             model: "claude-3-opus".to_string(),
             messages: vec![AnthropicMessage {
@@ -562,7 +619,7 @@ mod tests {
             tools: None,
         };
 
-        let response = messages(Json(req)).await;
+        let response = messages(State(provider), Json(req)).await;
         assert!(response.is_ok());
     }
 
@@ -729,7 +786,8 @@ mod tests {
 
     #[test]
     fn test_anthropic_router_creation() {
-        let router = router();
+        let provider = Arc::new(MockProvider);
+        let router = router(provider);
         // Just verify it creates without panicking
         // The router is properly configured with /v1/messages endpoint
         drop(router);

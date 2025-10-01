@@ -28,6 +28,8 @@ LunaRoute is organized as a Rust workspace with the following crates:
 - **lunaroute-pii**: PII detection and redaction
 - **lunaroute-observability**: Metrics, tracing, and health endpoints
 - **lunaroute-cli**: Command-line interface (`luna`)
+- **lunaroute-demos**: Demo server for testing the gateway
+- **lunaroute-integration-tests**: End-to-end integration tests
 
 ## Quick Start
 
@@ -60,6 +62,28 @@ make run ARGS="--help"
 # Install git hooks
 make install-hooks
 ```
+
+### Running the Demo Server
+
+Try the working gateway with the included demo:
+
+```bash
+# Set your OpenAI API key
+export OPENAI_API_KEY=sk-your-key-here
+
+# Run the demo server
+cargo run --package lunaroute-demos
+
+# In another terminal, test it:
+curl http://localhost:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-3.5-turbo",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+The demo server accepts OpenAI-compatible requests and proxies them through the LunaRoute gateway.
 
 ## Development Status
 
@@ -151,6 +175,26 @@ make install-hooks
   - Config & client tests (6)
   - Error handling tests (3)
 
+**Integration Layer** ✅ Complete
+- Ingress ↔ Egress wiring with Provider trait injection
+- Axum state-based dependency injection
+- Full end-to-end request flow (HTTP → Normalize → Provider → Response)
+- Error propagation (validation errors, provider errors)
+- Demo server (`lunaroute-demos`) for local testing
+- 247 total tests passing across workspace:
+  - Ingress integration tests (15 tests)
+  - Egress wiremock tests (6 tests)
+  - End-to-end tests (5 tests)
+  - All existing unit tests passing
+
+**Integration Test Coverage:**
+- HTTP layer validation with mock providers
+- OpenAI API mocking with wiremock
+- Full stack testing (ingress → egress → mocked provider)
+- Error scenarios (rate limits, timeouts, validation)
+- Tool/function calling end-to-end
+- Non-streaming requests fully functional
+
 **Phase 2: Storage Layer** ✅ Complete
 - File-based config store (JSON/YAML/TOML support)
 - File-based session store with compression (Zstd/LZ4)
@@ -172,10 +216,14 @@ make install-hooks
 - Secure key derivation (Argon2id with 64MB, 3 iterations)
 - Cryptographically secure RNG for salts and keys
 
-**Completed Phases:** 0, 1, 2, 3, 4, 6 ✅
+**Completed Phases:** 0, 1, 2, 3, 4, 6, Integration ✅
 
-**Phase 5: Routing Engine** - Not started
-**Phase 7-17**: Not started
+**Current Status:** Working end-to-end gateway for non-streaming requests! 🎉
+
+**Next Steps:**
+- **Phase 5: Routing Engine** - Not started
+- **Streaming Support** - Deferred (ingress ready, egress has streaming)
+- **Phase 7-17**: Not started
 
 See [TODO.md](TODO.md) for the complete implementation roadmap.
 
