@@ -85,6 +85,136 @@ impl Provider for MockProvider {
     }
 }
 
+/// Mock streaming provider that returns real stream events
+struct StreamingMockProvider {
+    events: Vec<NormalizedStreamEvent>,
+}
+
+impl StreamingMockProvider {
+    fn new_text_stream() -> Self {
+        use lunaroute_core::normalized::Delta;
+
+        Self {
+            events: vec![
+                NormalizedStreamEvent::Start {
+                    id: "stream-123".to_string(),
+                    model: "gpt-4".to_string(),
+                },
+                NormalizedStreamEvent::Delta {
+                    index: 0,
+                    delta: Delta {
+                        role: Some(Role::Assistant),
+                        content: Some("Hello".to_string()),
+                    },
+                },
+                NormalizedStreamEvent::Delta {
+                    index: 0,
+                    delta: Delta {
+                        role: None,
+                        content: Some(" world".to_string()),
+                    },
+                },
+                NormalizedStreamEvent::Delta {
+                    index: 0,
+                    delta: Delta {
+                        role: None,
+                        content: Some("!".to_string()),
+                    },
+                },
+                NormalizedStreamEvent::Usage {
+                    usage: Usage {
+                        prompt_tokens: 10,
+                        completion_tokens: 15,
+                        total_tokens: 25,
+                    },
+                },
+                NormalizedStreamEvent::End {
+                    finish_reason: FinishReason::Stop,
+                },
+            ],
+        }
+    }
+
+    fn new_tool_call_stream() -> Self {
+        use lunaroute_core::normalized::FunctionCallDelta;
+
+        Self {
+            events: vec![
+                NormalizedStreamEvent::Start {
+                    id: "stream-456".to_string(),
+                    model: "gpt-4".to_string(),
+                },
+                NormalizedStreamEvent::ToolCallDelta {
+                    index: 0,
+                    tool_call_index: 0,
+                    id: Some("call_abc123".to_string()),
+                    function: Some(FunctionCallDelta {
+                        name: Some("get_weather".to_string()),
+                        arguments: None,
+                    }),
+                },
+                NormalizedStreamEvent::ToolCallDelta {
+                    index: 0,
+                    tool_call_index: 0,
+                    id: None,
+                    function: Some(FunctionCallDelta {
+                        name: None,
+                        arguments: Some("{\"location\"".to_string()),
+                    }),
+                },
+                NormalizedStreamEvent::ToolCallDelta {
+                    index: 0,
+                    tool_call_index: 0,
+                    id: None,
+                    function: Some(FunctionCallDelta {
+                        name: None,
+                        arguments: Some(": \"San Francisco\"}".to_string()),
+                    }),
+                },
+                NormalizedStreamEvent::End {
+                    finish_reason: FinishReason::ToolCalls,
+                },
+            ],
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for StreamingMockProvider {
+    async fn send(
+        &self,
+        _request: NormalizedRequest,
+    ) -> lunaroute_core::Result<NormalizedResponse> {
+        Err(lunaroute_core::Error::Provider(
+            "Streaming provider - use stream() instead".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: NormalizedRequest,
+    ) -> lunaroute_core::Result<
+        Box<
+            dyn futures::Stream<Item = lunaroute_core::Result<NormalizedStreamEvent>>
+                + Send
+                + Unpin,
+        >,
+    > {
+        let events = self.events.clone();
+        Ok(Box::new(stream::iter(
+            events.into_iter().map(Ok),
+        )))
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            supports_streaming: true,
+            supports_tools: false,
+            supports_vision: false,
+        }
+    }
+}
+
 /// Mock provider that returns an error
 struct ErrorProvider;
 
@@ -115,6 +245,62 @@ impl Provider for ErrorProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             supports_streaming: false,
+            supports_tools: false,
+            supports_vision: false,
+        }
+    }
+}
+
+/// Mock streaming provider that returns an error in the stream
+struct StreamingErrorProvider;
+
+#[async_trait]
+impl Provider for StreamingErrorProvider {
+    async fn send(
+        &self,
+        _request: NormalizedRequest,
+    ) -> lunaroute_core::Result<NormalizedResponse> {
+        Err(lunaroute_core::Error::Provider(
+            "Use stream() instead".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: NormalizedRequest,
+    ) -> lunaroute_core::Result<
+        Box<
+            dyn futures::Stream<Item = lunaroute_core::Result<NormalizedStreamEvent>>
+                + Send
+                + Unpin,
+        >,
+    > {
+        use lunaroute_core::normalized::Delta;
+
+        // Return a stream that has some events then an error
+        let events: Vec<lunaroute_core::Result<NormalizedStreamEvent>> = vec![
+            Ok(NormalizedStreamEvent::Start {
+                id: "stream-err".to_string(),
+                model: "gpt-4".to_string(),
+            }),
+            Ok(NormalizedStreamEvent::Delta {
+                index: 0,
+                delta: Delta {
+                    role: Some(Role::Assistant),
+                    content: Some("Starting to respond...".to_string()),
+                },
+            }),
+            Err(lunaroute_core::Error::Provider(
+                "Connection lost midstream".to_string(),
+            )),
+        ];
+
+        Ok(Box::new(stream::iter(events)))
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            supports_streaming: true,
             supports_tools: false,
             supports_vision: false,
         }
@@ -297,6 +483,246 @@ async fn test_chat_completions_streaming_basic() {
     // Check content type is SSE
     let content_type = response.headers().get("content-type").unwrap();
     assert!(content_type.to_str().unwrap().contains("text/event-stream"));
+}
+
+#[tokio::test]
+async fn test_chat_completions_streaming_content() {
+    use futures::StreamExt;
+
+    let provider = Arc::new(StreamingMockProvider::new_text_stream());
+    let app = openai::router(provider);
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "model": "gpt-4",
+                "messages": [
+                    {"role": "user", "content": "Hello!"}
+                ],
+                "stream": true
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Read and parse SSE events
+    let body = response.into_body();
+    let mut stream = body.into_data_stream();
+    let mut events = Vec::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.unwrap();
+        let text = String::from_utf8(chunk.to_vec()).unwrap();
+
+        // Parse SSE events (format: "data: {json}\n\n")
+        for line in text.lines() {
+            if line.starts_with("data: ") {
+                let data = &line[6..]; // Skip "data: "
+                if data != "[DONE]" {
+                    let json: serde_json::Value = serde_json::from_str(data).unwrap();
+                    events.push(json);
+                }
+            }
+        }
+    }
+
+    // Verify we got events
+    assert!(!events.is_empty(), "Should have received stream events");
+
+    // Verify first event has role
+    let first = &events[0];
+    assert_eq!(first["object"], "chat.completion.chunk");
+    assert_eq!(first["choices"][0]["delta"]["role"], "assistant");
+
+    // Verify we got content deltas
+    let content_events: Vec<_> = events
+        .iter()
+        .filter(|e| e["choices"][0]["delta"]["content"].is_string())
+        .collect();
+    assert!(!content_events.is_empty(), "Should have content deltas");
+
+    // Verify final event has finish_reason
+    let last = events.last().unwrap();
+    assert_eq!(last["choices"][0]["finish_reason"], "stop");
+
+    // Verify accumulated content
+    let mut accumulated = String::new();
+    for event in &events {
+        if let Some(content) = event["choices"][0]["delta"]["content"].as_str() {
+            accumulated.push_str(content);
+        }
+    }
+    assert_eq!(accumulated, "Hello world!", "Content should be accumulated correctly");
+}
+
+#[tokio::test]
+async fn test_chat_completions_streaming_tool_calls() {
+    use futures::StreamExt;
+
+    let provider = Arc::new(StreamingMockProvider::new_tool_call_stream());
+    let app = openai::router(provider);
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "model": "gpt-4",
+                "messages": [
+                    {"role": "user", "content": "What's the weather?"}
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "description": "Get weather info",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "location": {"type": "string"}
+                                }
+                            }
+                        }
+                    }
+                ],
+                "stream": true
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Read and parse SSE events
+    let body = response.into_body();
+    let mut stream = body.into_data_stream();
+    let mut events = Vec::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.unwrap();
+        let text = String::from_utf8(chunk.to_vec()).unwrap();
+
+        for line in text.lines() {
+            if line.starts_with("data: ") {
+                let data = &line[6..];
+                if data != "[DONE]" {
+                    let json: serde_json::Value = serde_json::from_str(data).unwrap();
+                    events.push(json);
+                }
+            }
+        }
+    }
+
+    // Verify we got events
+    assert!(!events.is_empty(), "Should have received stream events");
+
+    // Verify we have tool_calls in deltas
+    let tool_events: Vec<_> = events
+        .iter()
+        .filter(|e| !e["choices"][0]["delta"]["tool_calls"].is_null())
+        .collect();
+    assert!(!tool_events.is_empty(), "Should have tool call events");
+
+    // Verify tool call structure
+    let first_tool = &tool_events[0]["choices"][0]["delta"]["tool_calls"][0];
+    assert_eq!(first_tool["id"], "call_abc123");
+    assert_eq!(first_tool["function"]["name"], "get_weather");
+
+    // Verify finish_reason is tool_calls
+    let last = events.last().unwrap();
+    assert_eq!(last["choices"][0]["finish_reason"], "tool_calls");
+
+    // Verify accumulated arguments
+    let mut accumulated_args = String::new();
+    for event in &events {
+        if let Some(tool_calls) = event["choices"][0]["delta"]["tool_calls"].as_array() {
+            for tool_call in tool_calls {
+                if let Some(args) = tool_call["function"]["arguments"].as_str() {
+                    accumulated_args.push_str(args);
+                }
+            }
+        }
+    }
+    assert_eq!(accumulated_args, "{\"location\": \"San Francisco\"}");
+}
+
+#[tokio::test]
+async fn test_chat_completions_streaming_error_handling() {
+    use futures::StreamExt;
+
+    let provider = Arc::new(StreamingErrorProvider);
+    let app = openai::router(provider);
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "model": "gpt-4",
+                "messages": [
+                    {"role": "user", "content": "Hello!"}
+                ],
+                "stream": true
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Read and parse SSE events
+    let body = response.into_body();
+    let mut stream = body.into_data_stream();
+    let mut events = Vec::new();
+    let mut had_error = false;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.unwrap();
+        let text = String::from_utf8(chunk.to_vec()).unwrap();
+
+        for line in text.lines() {
+            if line.starts_with("data: ") {
+                let data = &line[6..];
+                if data != "[DONE]" {
+                    let json: serde_json::Value = serde_json::from_str(data).unwrap();
+
+                    // Check if it's an error event
+                    if json.get("error").is_some() {
+                        had_error = true;
+                        assert!(json["error"]["message"]
+                            .as_str()
+                            .unwrap()
+                            .contains("Connection lost midstream"));
+                    } else {
+                        events.push(json);
+                    }
+                }
+            }
+        }
+    }
+
+    // Verify we got some events before the error
+    assert!(!events.is_empty(), "Should have received events before error");
+
+    // Verify we got an error event
+    assert!(had_error, "Should have received an error event in stream");
+
+    // Verify we got at least one content delta before the error
+    let has_content = events
+        .iter()
+        .any(|e| e["choices"][0]["delta"]["content"].is_string());
+    assert!(has_content, "Should have gotten content before error");
 }
 
 #[tokio::test]
