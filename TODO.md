@@ -165,23 +165,24 @@
 - [x] Middleware tests (CORS, security headers, body limits)
 - [x] Error response formatting tests
 
-## Phase 4: Normalization Pipeline (Priority: Critical)
+## Phase 4: Normalization Pipeline (Priority: Critical) 🚧 In Progress
 
 ### Request Normalization
-- [ ] Implement OpenAI → Normalized converter
-  - [ ] Message role mapping
-  - [ ] Parameter extraction
-  - [ ] Tool/function handling
+- [x] Implement OpenAI → Normalized converter
+  - [x] Message role mapping (system, user, assistant, tool)
+  - [x] Parameter extraction (temperature, top_p, max_tokens, etc.)
+  - [x] Tool/function handling (tools, tool_choice, tool_calls)
 - [ ] Implement Anthropic → Normalized converter
   - [ ] Message format conversion
   - [ ] System message handling
   - [ ] Tool use mapping
 
 ### Response Normalization
-- [ ] Implement Normalized → OpenAI converter
-  - [ ] Response structure mapping
-  - [ ] Usage field unification
-  - [ ] Error code mapping
+- [x] Implement Normalized → OpenAI converter
+  - [x] Response structure mapping
+  - [x] Usage field unification
+  - [x] Error code mapping (finish_reason)
+  - [x] Tool call conversion
 - [ ] Implement Normalized → Anthropic converter
   - [ ] Response format conversion
   - [ ] Stream event mapping
@@ -191,6 +192,11 @@
 - [ ] Anthropic event stream ⇄ Normalized events
 - [ ] Implement chunk buffering and flushing
 - [ ] Handle keepalive behavior
+
+### Test Coverage
+- [x] 53 tests passing for OpenAI ingress (100% coverage)
+- [ ] Anthropic tool support tests
+- [ ] Stream translation tests
 
 ## Phase 5: Routing Engine (Priority: Critical)
 

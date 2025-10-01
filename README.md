@@ -90,6 +90,17 @@ make install-hooks
 - Request size limits (1MB per message, 100K max tokens)
 - API-specific validation (OpenAI vs Anthropic parameter ranges)
 
+**Phase 4: Normalization Pipeline** 🚧 In Progress
+- OpenAI ⇄ Normalized conversion (complete)
+  - Request/response mapping with full tool support
+  - Tool/function calling conversion
+  - Message role and content handling
+- Anthropic ⇄ Normalized conversion (in progress)
+  - Tool use mapping (pending)
+  - Multimodal content support (pending)
+- Stream translation (pending)
+- 53 tests passing for OpenAI converters
+
 **Phase 2: Storage Layer** ✅ Complete
 - File-based config store (JSON/YAML/TOML support)
 - File-based session store with compression (Zstd/LZ4)
@@ -111,7 +122,7 @@ make install-hooks
 - Secure key derivation (Argon2id with 64MB, 3 iterations)
 - Cryptographically secure RNG for salts and keys
 
-**Phase 4-17**: In progress
+**Phase 5-17**: Not started
 
 See [TODO.md](TODO.md) for the complete implementation roadmap.
 

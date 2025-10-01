@@ -8,7 +8,8 @@ use axum::{
     Router,
 };
 use lunaroute_core::normalized::{
-    FinishReason, Message, MessageContent, NormalizedRequest, NormalizedResponse, Role,
+    FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent, NormalizedRequest,
+    NormalizedResponse, Role, Tool, ToolCall, ToolChoice,
 };
 #[cfg(test)]
 use lunaroute_core::normalized::{Choice, Usage};
@@ -37,15 +38,24 @@ pub struct OpenAIChatRequest {
     pub frequency_penalty: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<OpenAITool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<OpenAIToolChoice>,
 }
 
 /// OpenAI message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIMessage {
     pub role: String,
-    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<OpenAIToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 /// OpenAI chat completion response
@@ -100,6 +110,57 @@ pub struct OpenAIDelta {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+}
+
+/// OpenAI tool definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAITool {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: OpenAIFunction,
+}
+
+/// OpenAI function definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIFunction {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub parameters: serde_json::Value,
+}
+
+/// OpenAI tool choice
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OpenAIToolChoice {
+    String(String), // "none", "auto", "required"
+    Object {
+        #[serde(rename = "type")]
+        tool_type: String,
+        function: OpenAIFunctionChoice
+    },
+}
+
+/// OpenAI function choice
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIFunctionChoice {
+    pub name: String,
+}
+
+/// OpenAI tool call
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: OpenAIFunctionCall,
+}
+
+/// OpenAI function call
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIFunctionCall {
+    pub name: String,
+    pub arguments: String,
 }
 
 /// Validate OpenAI request parameters
@@ -202,22 +263,69 @@ pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest>
                 }
             };
 
-            // Validate message content length
-            if msg.content.len() > 1_000_000 {
-                return Err(IngressError::InvalidRequest(
-                    format!("Message content too large: {} bytes (max 1MB)", msg.content.len())
-                ));
+            // Validate message content length if present
+            if let Some(ref content) = msg.content {
+                if content.len() > 1_000_000 {
+                    return Err(IngressError::InvalidRequest(
+                        format!("Message content too large: {} bytes (max 1MB)", content.len())
+                    ));
+                }
             }
+
+            // Convert tool_calls
+            let tool_calls = msg.tool_calls.map(|calls| {
+                calls.into_iter().map(|call| {
+                    ToolCall {
+                        id: call.id,
+                        tool_type: call.tool_type,
+                        function: FunctionCall {
+                            name: call.function.name,
+                            arguments: call.function.arguments,
+                        },
+                    }
+                }).collect()
+            }).unwrap_or_default();
 
             Ok(Message {
                 role,
-                content: MessageContent::Text(msg.content),
+                content: MessageContent::Text(msg.content.unwrap_or_default()),
                 name: msg.name,
-                tool_calls: vec![],
-                tool_call_id: None,
+                tool_calls,
+                tool_call_id: msg.tool_call_id,
             })
         })
         .collect();
+
+    // Convert tools
+    let tools = req.tools.map(|tools| {
+        tools.into_iter().map(|tool| {
+            Tool {
+                tool_type: tool.tool_type,
+                function: FunctionDefinition {
+                    name: tool.function.name,
+                    description: tool.function.description,
+                    parameters: tool.function.parameters,
+                },
+            }
+        }).collect()
+    }).unwrap_or_default();
+
+    // Convert tool_choice
+    let tool_choice = req.tool_choice.and_then(|choice| {
+        match choice {
+            OpenAIToolChoice::String(s) => {
+                match s.as_str() {
+                    "none" => Some(ToolChoice::None),
+                    "auto" => Some(ToolChoice::Auto),
+                    "required" => Some(ToolChoice::Required),
+                    _ => None,
+                }
+            },
+            OpenAIToolChoice::Object { function, .. } => {
+                Some(ToolChoice::Specific { name: function.name })
+            }
+        }
+    });
 
     Ok(NormalizedRequest {
         messages: messages?,
@@ -229,8 +337,8 @@ pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest>
         top_k: None,
         stop_sequences: req.stop.unwrap_or_default(),
         stream: req.stream.unwrap_or(false),
-        tools: vec![],
-        tool_choice: None,
+        tools,
+        tool_choice,
         metadata: std::collections::HashMap::new(),
     })
 }
@@ -242,12 +350,33 @@ pub fn from_normalized(resp: NormalizedResponse) -> OpenAIChatResponse {
         .into_iter()
         .map(|choice| {
             let content = match choice.message.content {
-                MessageContent::Text(text) => text,
+                MessageContent::Text(text) => {
+                    if text.is_empty() && !choice.message.tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(text)
+                    }
+                },
                 MessageContent::Parts(_parts) => {
                     // For now, just return empty string for Parts
                     // TODO: Handle multimodal content properly
-                    String::new()
+                    Some(String::new())
                 }
+            };
+
+            let tool_calls = if !choice.message.tool_calls.is_empty() {
+                Some(choice.message.tool_calls.into_iter().map(|call| {
+                    OpenAIToolCall {
+                        id: call.id,
+                        tool_type: call.tool_type,
+                        function: OpenAIFunctionCall {
+                            name: call.function.name,
+                            arguments: call.function.arguments,
+                        },
+                    }
+                }).collect())
+            } else {
+                None
             };
 
             let finish_reason = choice.finish_reason.map(|fr| match fr {
@@ -263,7 +392,9 @@ pub fn from_normalized(resp: NormalizedResponse) -> OpenAIChatResponse {
                 message: OpenAIMessage {
                     role: "assistant".to_string(),
                     content,
-                    name: None,
+                    name: choice.message.name,
+                    tool_calls,
+                    tool_call_id: choice.message.tool_call_id,
                 },
                 finish_reason,
             }
@@ -305,8 +436,10 @@ pub async fn chat_completions(
             index: 0,
             message: OpenAIMessage {
                 role: "assistant".to_string(),
-                content: "This is a placeholder response".to_string(),
+                content: Some("This is a placeholder response".to_string()),
                 name: None,
+                tool_calls: None,
+                tool_call_id: None,
             },
             finish_reason: Some("stop".to_string()),
         }],
@@ -336,13 +469,17 @@ mod tests {
             messages: vec![
                 OpenAIMessage {
                     role: "system".to_string(),
-                    content: "You are a helpful assistant".to_string(),
+                    content: Some("You are a helpful assistant".to_string()),
                     name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
                 OpenAIMessage {
                     role: "user".to_string(),
-                    content: "Hello!".to_string(),
+                    content: Some("Hello!".to_string()),
                     name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
             ],
             temperature: Some(0.7),
@@ -354,6 +491,8 @@ mod tests {
             presence_penalty: None,
             frequency_penalty: None,
             user: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let normalized = to_normalized(req).unwrap();
@@ -390,7 +529,7 @@ mod tests {
 
         let openai = from_normalized(resp);
         assert_eq!(openai.model, "gpt-4");
-        assert_eq!(openai.choices[0].message.content, "Hello, world!");
+        assert_eq!(openai.choices[0].message.content, Some("Hello, world!".to_string()));
         assert_eq!(openai.usage.total_tokens, 15);
         assert_eq!(openai.choices[0].finish_reason, Some("stop".to_string()));
     }
@@ -401,8 +540,10 @@ mod tests {
             model: "gpt-4".to_string(),
             messages: vec![OpenAIMessage {
                 role: "invalid".to_string(),
-                content: "test".to_string(),
+                content: Some("test".to_string()),
                 name: None,
+                tool_calls: None,
+                tool_call_id: None,
             }],
             temperature: None,
             top_p: None,
@@ -413,6 +554,8 @@ mod tests {
             presence_penalty: None,
             frequency_penalty: None,
             user: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let result = to_normalized(req);
@@ -426,18 +569,24 @@ mod tests {
             messages: vec![
                 OpenAIMessage {
                     role: "user".to_string(),
-                    content: "What's the weather?".to_string(),
+                    content: Some("What's the weather?".to_string()),
                     name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
                 OpenAIMessage {
                     role: "assistant".to_string(),
-                    content: "".to_string(),
+                    content: Some("".to_string()),
                     name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
                 OpenAIMessage {
                     role: "tool".to_string(),
-                    content: "Sunny, 72°F".to_string(),
+                    content: Some("Sunny, 72°F".to_string()),
                     name: Some("get_weather".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
             ],
             temperature: None,
@@ -449,6 +598,8 @@ mod tests {
             presence_penalty: None,
             frequency_penalty: None,
             user: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let normalized = to_normalized(req).unwrap();
@@ -463,8 +614,10 @@ mod tests {
             model: "gpt-4".to_string(),
             messages: vec![OpenAIMessage {
                 role: "user".to_string(),
-                content: "Hello!".to_string(),
+                content: Some("Hello!".to_string()),
                 name: None,
+                tool_calls: None,
+                tool_call_id: None,
             }],
             temperature: None,
             top_p: None,
@@ -475,6 +628,8 @@ mod tests {
             presence_penalty: None,
             frequency_penalty: None,
             user: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let response = chat_completions(Json(req)).await;
@@ -563,8 +718,8 @@ mod tests {
         assert_eq!(openai.choices.len(), 2);
         assert_eq!(openai.choices[0].index, 0);
         assert_eq!(openai.choices[1].index, 1);
-        assert_eq!(openai.choices[0].message.content, "First choice");
-        assert_eq!(openai.choices[1].message.content, "Second choice");
+        assert_eq!(openai.choices[0].message.content, Some("First choice".to_string()));
+        assert_eq!(openai.choices[1].message.content, Some("Second choice".to_string()));
     }
 
     #[test]
@@ -600,7 +755,7 @@ mod tests {
 
         let openai = from_normalized(resp);
         // Currently returns empty string for Parts - this is a known limitation
-        assert_eq!(openai.choices[0].message.content, "");
+        assert_eq!(openai.choices[0].message.content, Some("".to_string()));
     }
 
     #[test]
@@ -609,8 +764,10 @@ mod tests {
             model: "gpt-4".to_string(),
             messages: vec![OpenAIMessage {
                 role: "user".to_string(),
-                content: "Hello".to_string(),
+                content: Some("Hello".to_string()),
                 name: Some("Alice".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
             }],
             temperature: Some(0.8),
             top_p: Some(0.9),
@@ -621,6 +778,8 @@ mod tests {
             presence_penalty: Some(0.5),
             frequency_penalty: Some(0.3),
             user: Some("user_123".to_string()),
+            tools: None,
+            tool_choice: None,
         };
 
         let normalized = to_normalized(req).unwrap();
@@ -646,6 +805,8 @@ mod tests {
             presence_penalty: None,
             frequency_penalty: None,
             user: None,
+            tools: None,
+            tool_choice: None,
         };
 
         // Validation should reject empty messages array
