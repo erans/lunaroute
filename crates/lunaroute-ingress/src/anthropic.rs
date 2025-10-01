@@ -52,6 +52,8 @@ pub struct AnthropicResponse {
     pub content: Vec<AnthropicContent>,
     pub model: String,
     pub stop_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_sequence: Option<String>,
     pub usage: AnthropicUsage,
 }
 
@@ -134,8 +136,10 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
             FinishReason::Stop => "end_turn".to_string(),
             FinishReason::Length => "max_tokens".to_string(),
             FinishReason::ToolCalls => "tool_use".to_string(),
-            FinishReason::ContentFilter => "content_filter".to_string(),
-            FinishReason::Error => "error".to_string(),
+            // ContentFilter doesn't exist in Anthropic spec - map to end_turn
+            FinishReason::ContentFilter => "end_turn".to_string(),
+            // Error is not in spec but useful for debugging
+            FinishReason::Error => "end_turn".to_string(),
         });
 
     AnthropicResponse {
@@ -145,6 +149,7 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
         content,
         model: resp.model,
         stop_reason,
+        stop_sequence: None, // TODO: Track which stop sequence was hit
         usage: AnthropicUsage {
             input_tokens: resp.usage.prompt_tokens,
             output_tokens: resp.usage.completion_tokens,
@@ -169,6 +174,7 @@ pub async fn messages(
         }],
         model: normalized.model.clone(),
         stop_reason: Some("end_turn".to_string()),
+        stop_sequence: None,
         usage: AnthropicUsage {
             input_tokens: 10,
             output_tokens: 5,

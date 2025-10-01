@@ -112,6 +112,7 @@ pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest>
                 "system" => Role::System,
                 "user" => Role::User,
                 "assistant" => Role::Assistant,
+                "tool" => Role::Tool,
                 _ => {
                     return Err(IngressError::InvalidRequest(format!(
                         "Invalid role: {}",
@@ -328,6 +329,44 @@ mod tests {
 
         let result = to_normalized(req);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tool_role() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                OpenAIMessage {
+                    role: "user".to_string(),
+                    content: "What's the weather?".to_string(),
+                    name: None,
+                },
+                OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content: "".to_string(),
+                    name: None,
+                },
+                OpenAIMessage {
+                    role: "tool".to_string(),
+                    content: "Sunny, 72°F".to_string(),
+                    name: Some("get_weather".to_string()),
+                },
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.messages.len(), 3);
+        assert_eq!(normalized.messages[2].role, Role::Tool);
+        assert_eq!(normalized.messages[2].name, Some("get_weather".to_string()));
     }
 
     #[tokio::test]
