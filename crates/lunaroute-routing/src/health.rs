@@ -34,7 +34,7 @@ pub struct ProviderHealth {
     /// Last failed request timestamp
     last_failure: RwLock<Option<Instant>>,
     /// Time the provider was created/reset
-    created_at: Instant,
+    _created_at: Instant,
 }
 
 impl ProviderHealth {
@@ -45,7 +45,7 @@ impl ProviderHealth {
             failure_count: AtomicU64::new(0),
             last_success: RwLock::new(None),
             last_failure: RwLock::new(None),
-            created_at: Instant::now(),
+            _created_at: Instant::now(),
         }
     }
 
@@ -101,13 +101,8 @@ impl ProviderHealth {
             .map(|instant| instant.elapsed())
     }
 
-    /// Reset all metrics
-    fn reset(&mut self) {
-        self.success_count.store(0, Ordering::Relaxed);
-        self.failure_count.store(0, Ordering::Relaxed);
-        *self.last_success.write().unwrap() = None;
-        *self.last_failure.write().unwrap() = None;
-    }
+    // Note: reset() method removed - not used and would require interior mutability with Arc
+    // Consider adding back if needed for future reset functionality
 }
 
 /// Configuration for health monitoring
@@ -200,18 +195,18 @@ impl HealthMonitor {
         let success_rate = health.success_rate();
 
         // Check if we've had recent failures with no recent successes
-        if let Some(time_since_failure) = health.time_since_last_failure() {
-            if time_since_failure < self.config.failure_window {
-                // Recent failure - check if we've had any recent successes
-                if let Some(time_since_success) = health.time_since_last_success() {
-                    if time_since_success > self.config.failure_window {
-                        // No recent successes, but recent failures
-                        return HealthStatus::Unhealthy;
-                    }
-                } else {
-                    // Never had a success
+        if let Some(time_since_failure) = health.time_since_last_failure()
+            && time_since_failure < self.config.failure_window
+        {
+            // Recent failure - check if we've had any recent successes
+            if let Some(time_since_success) = health.time_since_last_success() {
+                if time_since_success > self.config.failure_window {
+                    // No recent successes, but recent failures
                     return HealthStatus::Unhealthy;
                 }
+            } else {
+                // Never had a success
+                return HealthStatus::Unhealthy;
             }
         }
 
@@ -248,7 +243,7 @@ impl HealthMonitor {
     /// Reset metrics for a provider
     pub fn reset_provider(&self, provider_id: &str) {
         let providers = self.providers.read().unwrap();
-        if let Some(health) = providers.get(provider_id) {
+        if let Some(_health) = providers.get(provider_id) {
             // Need to get mutable access - this is a bit awkward with Arc
             // In practice, we'd need to use interior mutability
             tracing::warn!(
@@ -569,5 +564,181 @@ mod tests {
         // Should have 1000 total requests (10 threads * 100 requests)
         let metrics = monitor.get_metrics("provider1").unwrap();
         assert_eq!(metrics.total_count, 1000);
+    }
+
+    #[test]
+    fn test_health_status_transitions() {
+        let config = HealthMonitorConfig {
+            min_requests: 10,
+            healthy_threshold: 0.9,
+            unhealthy_threshold: 0.7,
+            failure_window: Duration::from_secs(60),
+        };
+        let monitor = HealthMonitor::new(config);
+        monitor.register_provider("provider1");
+
+        // Start healthy: 10 successes
+        for _ in 0..10 {
+            monitor.record_success("provider1");
+        }
+        assert_eq!(monitor.get_status("provider1"), HealthStatus::Healthy);
+
+        // Degrade to degraded: 85% (17/20)
+        for _ in 0..3 {
+            monitor.record_failure("provider1");
+        }
+        for _ in 0..7 {
+            monitor.record_success("provider1");
+        }
+        let status = monitor.get_status("provider1");
+        assert_eq!(status, HealthStatus::Degraded);
+
+        // Further degrade to unhealthy: 65% (13/20)
+        for _ in 0..7 {
+            monitor.record_failure("provider1");
+        }
+        assert_eq!(monitor.get_status("provider1"), HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn test_get_metrics_includes_status() {
+        let config = HealthMonitorConfig {
+            min_requests: 10,
+            ..Default::default()
+        };
+        let monitor = HealthMonitor::new(config);
+        monitor.register_provider("provider1");
+
+        // Record enough requests
+        for _ in 0..19 {
+            monitor.record_success("provider1");
+        }
+        monitor.record_failure("provider1");
+
+        let metrics = monitor.get_metrics("provider1").unwrap();
+        assert_eq!(metrics.success_count, 19);
+        assert_eq!(metrics.failure_count, 1);
+        assert_eq!(metrics.total_count, 20);
+        assert_eq!(metrics.success_rate, 0.95);
+        assert_eq!(metrics.status, HealthStatus::Healthy);
+        assert!(metrics.time_since_last_success.is_some());
+        assert!(metrics.time_since_last_failure.is_some());
+    }
+
+    #[test]
+    fn test_unregister_provider_removes_from_healthy_list() {
+        let config = HealthMonitorConfig {
+            min_requests: 10,
+            ..Default::default()
+        };
+        let monitor = HealthMonitor::new(config);
+        monitor.register_provider("provider1");
+        monitor.register_provider("provider2");
+
+        // Make both healthy
+        for provider in &["provider1", "provider2"] {
+            for _ in 0..20 {
+                monitor.record_success(provider);
+            }
+        }
+
+        let healthy = monitor.get_healthy_providers();
+        assert_eq!(healthy.len(), 2);
+
+        // Unregister one
+        monitor.unregister_provider("provider1");
+
+        let healthy = monitor.get_healthy_providers();
+        assert_eq!(healthy.len(), 1);
+        assert!(healthy.contains(&"provider2".to_string()));
+    }
+
+    #[test]
+    fn test_success_rate_with_only_failures() {
+        let health = ProviderHealth::new();
+
+        for _ in 0..10 {
+            health.record_failure();
+        }
+
+        assert_eq!(health.success_rate(), 0.0);
+        assert_eq!(health.failure_count(), 10);
+        assert_eq!(health.success_count(), 0);
+    }
+
+    #[test]
+    fn test_success_rate_with_only_successes() {
+        let health = ProviderHealth::new();
+
+        for _ in 0..10 {
+            health.record_success();
+        }
+
+        assert_eq!(health.success_rate(), 1.0);
+        assert_eq!(health.success_count(), 10);
+        assert_eq!(health.failure_count(), 0);
+    }
+
+    #[test]
+    fn test_health_monitor_all_unknown_providers() {
+        let config = HealthMonitorConfig {
+            min_requests: 100, // Very high threshold
+            ..Default::default()
+        };
+        let monitor = HealthMonitor::new(config);
+
+        monitor.register_provider("provider1");
+        monitor.register_provider("provider2");
+        monitor.register_provider("provider3");
+
+        // Record a few requests (not enough for status)
+        for provider in &["provider1", "provider2", "provider3"] {
+            for _ in 0..5 {
+                monitor.record_success(provider);
+            }
+        }
+
+        // All should be unknown
+        assert_eq!(monitor.get_status("provider1"), HealthStatus::Unknown);
+        assert_eq!(monitor.get_status("provider2"), HealthStatus::Unknown);
+        assert_eq!(monitor.get_status("provider3"), HealthStatus::Unknown);
+
+        // Unknown providers are treated as healthy
+        let healthy = monitor.get_healthy_providers();
+        assert_eq!(healthy.len(), 3);
+    }
+
+    #[test]
+    fn test_recent_failure_window_expiry() {
+        let config = HealthMonitorConfig {
+            min_requests: 10,
+            failure_window: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let monitor = HealthMonitor::new(config);
+        monitor.register_provider("provider1");
+
+        // Many successes
+        for _ in 0..10 {
+            monitor.record_success("provider1");
+        }
+
+        // Wait to make successes "old"
+        thread::sleep(Duration::from_millis(60));
+
+        // Recent failure (with old successes)
+        monitor.record_failure("provider1");
+        assert_eq!(monitor.get_status("provider1"), HealthStatus::Unhealthy);
+
+        // Wait for failure window to expire
+        thread::sleep(Duration::from_millis(60));
+
+        // Need a recent success to pass the time_since_last_success check
+        monitor.record_success("provider1");
+
+        // Status should improve (old failure outside window)
+        // With 11 successes and 1 old failure = 91.7% success rate
+        let status = monitor.get_status("provider1");
+        assert_eq!(status, HealthStatus::Degraded); // Below 95% but above 75%
     }
 }
