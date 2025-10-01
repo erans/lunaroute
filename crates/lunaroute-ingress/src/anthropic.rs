@@ -8,7 +8,8 @@ use axum::{
     Router,
 };
 use lunaroute_core::normalized::{
-    FinishReason, Message, MessageContent, NormalizedRequest, NormalizedResponse, Role,
+    FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent, NormalizedRequest,
+    NormalizedResponse, Role, Tool, ToolCall,
 };
 #[cfg(test)]
 use lunaroute_core::normalized::{Choice, Usage};
@@ -33,13 +34,42 @@ pub struct AnthropicMessagesRequest {
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<AnthropicTool>>,
 }
 
 /// Anthropic message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicMessage {
     pub role: String,
-    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<AnthropicMessageContent>,
+}
+
+/// Anthropic message content (text string or array of content blocks)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AnthropicMessageContent {
+    Text(String),
+    Blocks(Vec<AnthropicContentBlock>),
+}
+
+/// Anthropic content block (for requests)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicContentBlock {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+    },
 }
 
 /// Anthropic response
@@ -57,12 +87,18 @@ pub struct AnthropicResponse {
     pub usage: AnthropicUsage,
 }
 
-/// Anthropic content block
+/// Anthropic content block (for responses)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AnthropicContent {
-    #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
 }
 
 /// Anthropic usage
@@ -70,6 +106,15 @@ pub enum AnthropicContent {
 pub struct AnthropicUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+}
+
+/// Anthropic tool definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicTool {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub input_schema: serde_json::Value,
 }
 
 /// Validate Anthropic request parameters
@@ -164,22 +209,74 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
                 }
             };
 
-            // Validate message content length
-            if msg.content.len() > 1_000_000 {
-                return Err(IngressError::InvalidRequest(
-                    format!("Message content too large: {} bytes (max 1MB)", msg.content.len())
-                ));
-            }
+            let content = msg.content.unwrap_or(AnthropicMessageContent::Text(String::new()));
+
+            // Parse content and extract tool calls
+            let (text_content, tool_calls, tool_call_id) = match content {
+                AnthropicMessageContent::Text(text) => {
+                    // Validate message content length
+                    if text.len() > 1_000_000 {
+                        return Err(IngressError::InvalidRequest(
+                            format!("Message content too large: {} bytes (max 1MB)", text.len())
+                        ));
+                    }
+                    (text, vec![], None)
+                },
+                AnthropicMessageContent::Blocks(blocks) => {
+                    let mut text_parts = Vec::new();
+                    let mut tool_calls_vec = Vec::new();
+                    let mut tool_result_id = None;
+
+                    for block in blocks {
+                        match block {
+                            AnthropicContentBlock::Text { text } => {
+                                text_parts.push(text);
+                            },
+                            AnthropicContentBlock::ToolUse { id, name, input } => {
+                                tool_calls_vec.push(ToolCall {
+                                    id,
+                                    tool_type: "function".to_string(),
+                                    function: FunctionCall {
+                                        name,
+                                        arguments: serde_json::to_string(&input)
+                                            .unwrap_or_else(|_| "{}".to_string()),
+                                    },
+                                });
+                            },
+                            AnthropicContentBlock::ToolResult { tool_use_id, content } => {
+                                tool_result_id = Some(tool_use_id);
+                                text_parts.push(content);
+                            },
+                        }
+                    }
+
+                    (text_parts.join("\n"), tool_calls_vec, tool_result_id)
+                }
+            };
 
             Ok(Message {
                 role,
-                content: MessageContent::Text(msg.content),
+                content: MessageContent::Text(text_content),
                 name: None,
-                tool_calls: vec![],
-                tool_call_id: None,
+                tool_calls,
+                tool_call_id,
             })
         })
         .collect();
+
+    // Convert tools
+    let tools = req.tools.map(|tools| {
+        tools.into_iter().map(|tool| {
+            Tool {
+                tool_type: "function".to_string(),
+                function: FunctionDefinition {
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: tool.input_schema,
+                },
+            }
+        }).collect()
+    }).unwrap_or_default();
 
     Ok(NormalizedRequest {
         messages: messages?,
@@ -191,8 +288,8 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
         top_k: req.top_k,
         stop_sequences: req.stop_sequences.unwrap_or_default(),
         stream: req.stream.unwrap_or(false),
-        tools: vec![],
-        tool_choice: None,
+        tools,
+        tool_choice: None, // Anthropic doesn't have tool_choice in same way
         metadata: std::collections::HashMap::new(),
     })
 }
@@ -202,11 +299,37 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
     let content: Vec<AnthropicContent> = resp
         .choices
         .first()
-        .map(|choice| match &choice.message.content {
-            MessageContent::Text(text) => vec![AnthropicContent::Text {
-                text: text.clone(),
-            }],
-            MessageContent::Parts(_) => vec![],
+        .map(|choice| {
+            let mut content_blocks = Vec::new();
+
+            // Add text content if present
+            match &choice.message.content {
+                MessageContent::Text(text) => {
+                    if !text.is_empty() {
+                        content_blocks.push(AnthropicContent::Text {
+                            text: text.clone(),
+                        });
+                    }
+                },
+                MessageContent::Parts(_) => {
+                    // TODO: Handle multimodal Parts
+                },
+            }
+
+            // Add tool_use blocks
+            for tool_call in &choice.message.tool_calls {
+                // Parse arguments back to JSON
+                let input = serde_json::from_str(&tool_call.function.arguments)
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+                content_blocks.push(AnthropicContent::ToolUse {
+                    id: tool_call.id.clone(),
+                    name: tool_call.function.name.clone(),
+                    input,
+                });
+            }
+
+            content_blocks
         })
         .unwrap_or_default();
 
@@ -282,7 +405,7 @@ mod tests {
             messages: vec![
                 AnthropicMessage {
                     role: "user".to_string(),
-                    content: "Hello!".to_string(),
+                    content: Some(AnthropicMessageContent::Text("Hello!".to_string())),
                 },
             ],
             system: Some("You are a helpful assistant".to_string()),
@@ -292,6 +415,7 @@ mod tests {
             top_k: None,
             stream: Some(false),
             stop_sequences: None,
+            tools: None,
         };
 
         let normalized = to_normalized(req).unwrap();
@@ -340,7 +464,7 @@ mod tests {
             model: "claude-3-opus".to_string(),
             messages: vec![AnthropicMessage {
                 role: "invalid".to_string(),
-                content: "test".to_string(),
+                content: Some(AnthropicMessageContent::Text("test".to_string())),
             }],
             system: None,
             max_tokens: None,
@@ -349,6 +473,7 @@ mod tests {
             top_k: None,
             stream: None,
             stop_sequences: None,
+            tools: None,
         };
 
         let result = to_normalized(req);
@@ -361,7 +486,7 @@ mod tests {
             model: "claude-3-opus".to_string(),
             messages: vec![AnthropicMessage {
                 role: "user".to_string(),
-                content: "Hello!".to_string(),
+                content: Some(AnthropicMessageContent::Text("Hello!".to_string())),
             }],
             system: None,
             max_tokens: None,
@@ -370,6 +495,7 @@ mod tests {
             top_k: None,
             stream: None,
             stop_sequences: None,
+            tools: None,
         };
 
         let response = messages(Json(req)).await;
@@ -429,6 +555,7 @@ mod tests {
             top_k: None,
             stream: None,
             stop_sequences: None,
+            tools: None,
         };
 
         // Validation should reject empty messages array
@@ -443,7 +570,7 @@ mod tests {
             model: "claude-3-opus".to_string(),
             messages: vec![AnthropicMessage {
                 role: "user".to_string(),
-                content: "Hello!".to_string(),
+                content: Some(AnthropicMessageContent::Text("Hello!".to_string())),
             }],
             system: Some("You are a helpful assistant".to_string()),
             max_tokens: Some(1024),
@@ -452,6 +579,7 @@ mod tests {
             top_k: Some(40),
             stream: Some(true),
             stop_sequences: Some(vec!["STOP".to_string()]),
+            tools: None,
         };
 
         let normalized = to_normalized(req).unwrap();

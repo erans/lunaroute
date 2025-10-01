@@ -95,11 +95,12 @@ make install-hooks
   - Request/response mapping with full tool support
   - Tool/function calling conversion
   - Message role and content handling
-- Anthropic ⇄ Normalized conversion (in progress)
-  - Tool use mapping (pending)
-  - Multimodal content support (pending)
+- Anthropic ⇄ Normalized conversion (complete)
+  - Multimodal content blocks (text, tool_use, tool_result)
+  - Tool use mapping with input_schema
+  - System message and parameter extraction
 - Stream translation (pending)
-- 53 tests passing for OpenAI converters
+- 53 tests passing (100% coverage for both converters)
 
 **Phase 2: Storage Layer** ✅ Complete
 - File-based config store (JSON/YAML/TOML support)

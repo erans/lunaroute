@@ -172,10 +172,10 @@
   - [x] Message role mapping (system, user, assistant, tool)
   - [x] Parameter extraction (temperature, top_p, max_tokens, etc.)
   - [x] Tool/function handling (tools, tool_choice, tool_calls)
-- [ ] Implement Anthropic → Normalized converter
-  - [ ] Message format conversion
-  - [ ] System message handling
-  - [ ] Tool use mapping
+- [x] Implement Anthropic → Normalized converter
+  - [x] Message format conversion (text and content blocks)
+  - [x] System message handling
+  - [x] Tool use mapping (tool_use, tool_result blocks)
 
 ### Response Normalization
 - [x] Implement Normalized → OpenAI converter
@@ -183,9 +183,10 @@
   - [x] Usage field unification
   - [x] Error code mapping (finish_reason)
   - [x] Tool call conversion
-- [ ] Implement Normalized → Anthropic converter
-  - [ ] Response format conversion
-  - [ ] Stream event mapping
+- [x] Implement Normalized → Anthropic converter
+  - [x] Response format conversion (content blocks)
+  - [x] Tool use block generation
+  - [ ] Stream event mapping (pending)
 
 ### Stream Translation
 - [ ] OpenAI SSE ⇄ Normalized events
