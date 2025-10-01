@@ -1097,7 +1097,7 @@ mod tests {
         assert_eq!(normalized.temperature, Some(0.8));
         assert_eq!(normalized.top_p, Some(0.9));
         assert_eq!(normalized.max_tokens, Some(500));
-        assert_eq!(normalized.stream, true);
+        assert!(normalized.stream);
         assert_eq!(normalized.stop_sequences, vec!["END".to_string()]);
         assert_eq!(normalized.messages[0].name, Some("Alice".to_string()));
     }

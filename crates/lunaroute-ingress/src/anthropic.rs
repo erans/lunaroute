@@ -688,13 +688,13 @@ pub async fn messages(
 
                         anthropic_events
                             .into_iter()
-                            .filter_map(|evt| {
+                            .map(|evt| {
                                 match Event::default().json_data(evt) {
-                                    Ok(event) => Some(Ok::<_, IngressError>(event)),
-                                    Err(e) => Some(Err(IngressError::Internal(format!(
+                                    Ok(event) => Ok::<_, IngressError>(event),
+                                    Err(e) => Err(IngressError::Internal(format!(
                                         "Failed to create SSE event: {}",
                                         e
-                                    )))),
+                                    ))),
                                 }
                             })
                             .collect::<Vec<_>>()
@@ -989,7 +989,7 @@ mod tests {
         assert_eq!(normalized.temperature, Some(0.7));
         assert_eq!(normalized.top_p, Some(0.9));
         assert_eq!(normalized.top_k, Some(40));
-        assert_eq!(normalized.stream, true);
+        assert!(normalized.stream);
         assert_eq!(normalized.stop_sequences, vec!["STOP".to_string()]);
     }
 

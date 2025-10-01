@@ -522,12 +522,11 @@ async fn test_chat_completions_streaming_content() {
 
         // Parse SSE events (format: "data: {json}\n\n")
         for line in text.lines() {
-            if line.starts_with("data: ") {
-                let data = &line[6..]; // Skip "data: "
-                if data != "[DONE]" {
-                    let json: serde_json::Value = serde_json::from_str(data).unwrap();
-                    events.push(json);
-                }
+            if let Some(data) = line.strip_prefix("data: ")
+                && data != "[DONE]"
+            {
+                let json: serde_json::Value = serde_json::from_str(data).unwrap();
+                events.push(json);
             }
         }
     }
@@ -612,12 +611,11 @@ async fn test_chat_completions_streaming_tool_calls() {
         let text = String::from_utf8(chunk.to_vec()).unwrap();
 
         for line in text.lines() {
-            if line.starts_with("data: ") {
-                let data = &line[6..];
-                if data != "[DONE]" {
-                    let json: serde_json::Value = serde_json::from_str(data).unwrap();
-                    events.push(json);
-                }
+            if let Some(data) = line.strip_prefix("data: ")
+                && data != "[DONE]"
+            {
+                let json: serde_json::Value = serde_json::from_str(data).unwrap();
+                events.push(json);
             }
         }
     }
@@ -692,21 +690,20 @@ async fn test_chat_completions_streaming_error_handling() {
         let text = String::from_utf8(chunk.to_vec()).unwrap();
 
         for line in text.lines() {
-            if line.starts_with("data: ") {
-                let data = &line[6..];
-                if data != "[DONE]" {
-                    let json: serde_json::Value = serde_json::from_str(data).unwrap();
+            if let Some(data) = line.strip_prefix("data: ")
+                && data != "[DONE]"
+            {
+                let json: serde_json::Value = serde_json::from_str(data).unwrap();
 
-                    // Check if it's an error event
-                    if json.get("error").is_some() {
-                        had_error = true;
-                        assert!(json["error"]["message"]
-                            .as_str()
-                            .unwrap()
-                            .contains("Connection lost midstream"));
-                    } else {
-                        events.push(json);
-                    }
+                // Check if it's an error event
+                if json.get("error").is_some() {
+                    had_error = true;
+                    assert!(json["error"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Connection lost midstream"));
+                } else {
+                    events.push(json);
                 }
             }
         }

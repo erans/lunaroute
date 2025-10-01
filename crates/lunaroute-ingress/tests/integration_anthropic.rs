@@ -446,8 +446,7 @@ async fn test_messages_streaming_content() {
 
         // Parse SSE events (format: "data: {json}\n\n")
         for line in text.lines() {
-            if line.starts_with("data: ") {
-                let data = &line[6..]; // Skip "data: "
+            if let Some(data) = line.strip_prefix("data: ") {
                 let json: serde_json::Value = serde_json::from_str(data).unwrap();
                 events.push(json);
             }
@@ -490,10 +489,10 @@ async fn test_messages_streaming_content() {
     // Verify accumulated content
     let mut accumulated = String::new();
     for event in &events {
-        if event["type"] == "content_block_delta" && event["delta"]["type"] == "text_delta" {
-            if let Some(text) = event["delta"]["text"].as_str() {
-                accumulated.push_str(text);
-            }
+        if event["type"] == "content_block_delta" && event["delta"]["type"] == "text_delta"
+            && let Some(text) = event["delta"]["text"].as_str()
+        {
+            accumulated.push_str(text);
         }
     }
     assert_eq!(accumulated, "Hello from Claude", "Content should be accumulated correctly");

@@ -526,18 +526,18 @@ fn create_openai_stream(
                             });
                         }
 
-                        if let Some(ref tool_calls) = choice.delta.tool_calls {
-                            if let Some(tool_call) = tool_calls.first() {
-                                return Ok(NormalizedStreamEvent::ToolCallDelta {
-                                    index: choice.index,
-                                    tool_call_index: tool_call.index,
-                                    id: tool_call.id.clone(),
-                                    function: tool_call.function.as_ref().map(|f| FunctionCallDelta {
-                                        name: f.name.clone(),
-                                        arguments: f.arguments.clone(),
-                                    }),
-                                });
-                            }
+                        if let Some(ref tool_calls) = choice.delta.tool_calls
+                            && let Some(tool_call) = tool_calls.first()
+                        {
+                            return Ok(NormalizedStreamEvent::ToolCallDelta {
+                                index: choice.index,
+                                tool_call_index: tool_call.index,
+                                id: tool_call.id.clone(),
+                                function: tool_call.function.as_ref().map(|f| FunctionCallDelta {
+                                    name: f.name.clone(),
+                                    arguments: f.arguments.clone(),
+                                }),
+                            });
                         }
                     }
 
