@@ -90,16 +90,26 @@ make install-hooks
 - Request size limits (1MB per message, 100K max tokens)
 - API-specific validation (OpenAI vs Anthropic parameter ranges)
 
-**Phase 4: Normalization Pipeline** 🚧 In Progress
-- OpenAI ⇄ Normalized conversion (complete)
+**Phase 4: Normalization Pipeline** ✅ Complete
+- OpenAI ⇄ Normalized conversion
   - Request/response mapping with full tool support
   - Tool/function calling conversion
-  - Message role and content handling
-- Anthropic ⇄ Normalized conversion (complete)
+  - Message role and multimodal content handling
+  - Proper text extraction from ContentPart arrays
+- Anthropic ⇄ Normalized conversion
   - Multimodal content blocks (text, tool_use, tool_result)
-  - Tool use mapping with input_schema
+  - Tool use mapping with input_schema validation
   - System message and parameter extraction
-- Stream translation (pending)
+- Security & validation improvements
+  - Tool argument size validation (1MB limit)
+  - JSON Schema validation for tool definitions
+  - Safe error propagation (no unwrap() in critical paths)
+  - Message content size limits (1MB per message)
+- Code quality improvements
+  - Fixed all clippy warnings (idiomatic Rust patterns)
+  - Let-chain syntax for nested conditions
+  - RangeInclusive::contains() for range checks
+- Stream translation (deferred to Phase 6 with egress)
 - 53 tests passing (100% coverage for both converters)
 
 **Phase 2: Storage Layer** ✅ Complete
