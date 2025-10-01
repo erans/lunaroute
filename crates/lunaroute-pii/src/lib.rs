@@ -7,3 +7,6 @@
 
 pub mod detector;
 pub mod redactor;
+
+pub use detector::{Detection, PIIDetector, PIIType};
+pub use redactor::{PIIRedactor, RedactionMode};

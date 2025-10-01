@@ -30,28 +30,28 @@
   - [x] Prometheus (metrics)
   - [x] OpenTelemetry (distributed tracing)
 
-## Phase 1: Core Types and Abstractions (Priority: Critical)
+## Phase 1: Core Types and Abstractions (Priority: Critical) ✅
 
 ### Normalized Data Models
-- [ ] Implement `NormalizedRequest` structure
-  - [ ] Message types (text, multimodal)
-  - [ ] Parameters (temperature, tokens, etc.)
-  - [ ] Metadata structures
-- [ ] Implement `NormalizedResponse` structure
-- [ ] Implement `NormalizedStreamEvent` enum
-  - [ ] Start, Delta, ToolCall, Usage, End, Error variants
+- [x] Implement `NormalizedRequest` structure
+  - [x] Message types (text, multimodal)
+  - [x] Parameters (temperature, tokens, etc.)
+  - [x] Metadata structures
+- [x] Implement `NormalizedResponse` structure
+- [x] Implement `NormalizedStreamEvent` enum
+  - [x] Start, Delta, ToolCall, Usage, End, Error variants
 - [ ] Create conversion utilities for zero-copy parsing
 
 ### Core Traits
-- [ ] Define `Provider` trait
-  - [ ] `send()` method for non-streaming
-  - [ ] `stream()` method for streaming
-  - [ ] `capabilities()` method
-- [ ] Define storage traits:
-  - [ ] `ConfigStore` trait
-  - [ ] `SessionStore` trait
-  - [ ] `StateStore` trait
-- [ ] Define `PIIDetector` trait
+- [x] Define `Provider` trait
+  - [x] `send()` method for non-streaming
+  - [x] `stream()` method for streaming
+  - [x] `capabilities()` method
+- [x] Define storage traits:
+  - [x] `ConfigStore` trait
+  - [x] `SessionStore` trait
+  - [x] `StateStore` trait
+- [x] Define `PIIDetector` trait
 
 ## Phase 2: Storage Layer (Priority: Critical)
 

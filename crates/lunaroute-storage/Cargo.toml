@@ -20,3 +20,4 @@ zstd = { workspace = true }
 lz4 = { workspace = true }
 aes-gcm = { workspace = true }
 bytes = { workspace = true }
+async-trait = "0.1"
