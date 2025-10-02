@@ -10,7 +10,12 @@ LunaRoute is a high-performance API gateway for Large Language Model providers, 
 - **Passthrough Mode**: Zero-copy routing for Anthropic→Anthropic with 100% API fidelity (preserves extended thinking, includes session recording)
 - **Streaming Support**: Full SSE streaming for real-time responses from both providers
 - **Intelligent Routing**: Route requests based on rules, health, and cost optimization
-- **Session Recording**: Capture and replay all LLM interactions with GDPR-compliant IP anonymization
+- **Production-Ready Session Recording**:
+  - AES-256-GCM encryption at rest with Argon2id key derivation
+  - LRU file handle caching and buffered writes (10-100x faster)
+  - Crypto-secure session IDs (128-bit OsRng, not UUID v4)
+  - Storage metrics and health checks
+  - Path traversal protection with strict ID validation
 - **Session Statistics**: Track per-session tokens (input/output/thinking), request counts, and proxy overhead
 - **PII Detection & Redaction**: Automatically detect and redact sensitive information with HKDF-based tokenization, JSON structure preservation, and overlapping detection handling
 - **Budget Management**: Track and enforce spending limits across providers

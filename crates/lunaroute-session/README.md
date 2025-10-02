@@ -14,6 +14,28 @@ Records, stores, searches, and replays LLM interactions with automatic PII redac
 - **Streaming support** - Record real-time streaming responses
 - **Error tracking** - Capture and store error states
 
+### Production-Ready Performance
+
+- **File Handle Caching** - LRU cache (default: 100 handles) for efficient file reuse
+- **Buffered Writes** - Configurable write buffers (default: 64KB) for reduced syscalls
+- **Batch Writing** - Single write operation per session for batch operations
+- **Race-Free Concurrency** - Pending operation tracking prevents file handle conflicts
+- **10-100x faster** for high-volume streaming sessions
+
+### Production-Ready Security
+
+- **AES-256-GCM Encryption at Rest** - Optional encryption for stored sessions
+- **Argon2id Key Derivation** - Secure password-based key generation
+- **Crypto-Secure Session IDs** - 128-bit entropy from OsRng (not UUID v4)
+- **Persistent Salt Management** - Salt stored in `.encryption_salt` for consistency
+- **Session ID Validation** - Strict validation prevents path traversal attacks
+
+### Production-Ready Observability
+
+- **Storage Metrics** - Track events written, bytes, cache performance, errors
+- **Health Checks** - Verify storage accessibility and writability
+- **Atomic Counters** - Thread-safe metric updates with minimal overhead
+
 ### PII Protection
 
 Integrated with `lunaroute-pii` for automatic sensitive data protection:
@@ -63,51 +85,73 @@ Integrated with `lunaroute-pii` for automatic sensitive data protection:
 
 ### Basic Configuration
 
-```toml
-[session_recording]
-enabled = true
+```yaml
+session_recording:
+  enabled: true
 
-[session_recording.worker]
-batch_size = 100
-flush_interval_secs = 5
-channel_capacity = 10000
+  worker:
+    batch_size: 100
+    flush_interval_secs: 5
+    channel_capacity: 10000
 
-[session_recording.jsonl]
-base_path = "./sessions"
-compression = true
+  jsonl:
+    base_path: "./sessions"
+    compression: true
+    # Performance tuning
+    cache_size: 100        # LRU cache size (file handles)
+    buffer_size: 65536     # Write buffer size in bytes (64KB)
 ```
+
+### Encryption Configuration
+
+```yaml
+session_recording:
+  jsonl:
+    # Enable encryption at rest
+    encryption_password: "your-secure-password"
+    # Optional: provide explicit salt (otherwise auto-generated and persisted)
+    # encryption_salt: "base64-encoded-16-bytes"
+```
+
+**Important Security Notes:**
+- Salt is automatically persisted in `{base_path}/.encryption_salt`
+- Changing the password or salt makes existing sessions unreadable
+- Use a strong password (recommended: 32+ random characters)
+- Consider using environment variables for passwords in production
 
 ### PII Configuration
 
-```toml
-[session_recording.pii]
-enabled = true
-detect_email = true
-detect_phone = true
-detect_ssn = true
-detect_credit_card = true
-detect_ip_address = true
-min_confidence = 0.7
-redaction_mode = "mask"  # or "remove", "tokenize", "partial"
-partial_show_chars = 4
-hmac_secret = "your-secret-key"  # Required for "tokenize" mode
+```yaml
+session_recording:
+  pii:
+    enabled: true
+    detect_email: true
+    detect_phone: true
+    detect_ssn: true
+    detect_credit_card: true
+    detect_ip_address: true
+    min_confidence: 0.7
+    redaction_mode: "mask"  # or "remove", "tokenize", "partial"
+    partial_show_chars: 4
+    hmac_secret: "your-secret-key"  # Required for "tokenize" mode
 
-[[session_recording.pii.custom_patterns]]
-name = "api_key"
-pattern = "sk-[a-zA-Z0-9]{32}"
-confidence = 0.95
-redaction_mode = "mask"
-placeholder = "[API_KEY]"
+    custom_patterns:
+      - name: "api_key"
+        pattern: "sk-[a-zA-Z0-9]{32}"
+        confidence: 0.95
+        redaction_mode: "mask"
+        placeholder: "[API_KEY]"
 ```
 
 ### Retention Policies
 
-```toml
-[session_recording.retention]
-max_age_days = 90              # Delete sessions older than 90 days
-max_size_mb = 10240            # Keep total storage under 10GB
-compress_after_days = 7        # Compress sessions after 7 days
-cleanup_interval_hours = 24    # Run cleanup daily
+```yaml
+session_recording:
+  retention:
+    max_age_days: 90              # Delete sessions older than 90 days
+    max_size_mb: 10240            # Keep total storage under 10GB
+    compress_after_days: 7        # Compress sessions after 7 days
+    cleanup_interval_hours: 24    # Run cleanup daily
 ```
 
 ## Usage
@@ -243,7 +287,125 @@ let cleanup_handle = tokio::spawn(async move {
 });
 ```
 
+### Production Features
+
+#### Encryption at Rest
+
+```rust
+use lunaroute_session::jsonl_writer::{JsonlWriter, JsonlConfig};
+use std::path::PathBuf;
+
+// Configure with encryption
+let config = JsonlConfig {
+    cache_size: 100,
+    buffer_size: 64 * 1024,
+    encryption_password: Some("my-secure-password".to_string()),
+    encryption_salt: None, // Auto-generated and persisted
+};
+
+let writer = JsonlWriter::with_config(
+    PathBuf::from("./sessions"),
+    config
+);
+
+// Sessions are now encrypted at rest with AES-256-GCM
+// Salt is stored in ./sessions/.encryption_salt
+```
+
+#### Storage Metrics
+
+```rust
+use lunaroute_session::jsonl_writer::JsonlWriter;
+
+let writer = JsonlWriter::new(PathBuf::from("./sessions"));
+
+// ... write some events ...
+
+// Get metrics snapshot
+let metrics = writer.metrics();
+println!("Events written: {}", metrics.events_written);
+println!("Bytes written: {}", metrics.bytes_written);
+println!("Cache hits: {}", metrics.cache_hits);
+println!("Cache misses: {}", metrics.cache_misses);
+println!("Cache evictions: {}", metrics.cache_evictions);
+println!("Write errors: {}", metrics.write_errors);
+```
+
+#### Health Checks
+
+```rust
+use lunaroute_session::jsonl_writer::JsonlWriter;
+
+let writer = JsonlWriter::new(PathBuf::from("./sessions"));
+
+// Check storage health
+let health = writer.health_check().await;
+
+if health.healthy {
+    println!("Storage is healthy");
+} else {
+    eprintln!("Storage unhealthy: {}", health.error.unwrap());
+    // Take action: alert, failover, etc.
+}
+```
+
+#### Important: Always Flush Before Dropping
+
+```rust
+use lunaroute_session::jsonl_writer::JsonlWriter;
+
+let writer = JsonlWriter::new(PathBuf::from("./sessions"));
+
+// ... write events ...
+
+// CRITICAL: Always flush before dropping
+writer.flush().await?;
+
+// Now safe to drop the writer
+drop(writer);
+```
+
+**Why this matters:**
+- Buffered data is lost if not flushed
+- No automatic flush on drop (unsafe in async Rust)
+- Always call `flush()` explicitly before shutdown
+
 ## Security Features
+
+### Encryption at Rest
+
+**AES-256-GCM encryption** protects sessions on disk:
+
+- Industry-standard authenticated encryption
+- Argon2id key derivation from password (secure against GPU attacks)
+- Persistent salt management (survives restarts)
+- Optional per-deployment configuration
+- Zero performance impact when disabled
+
+### Session ID Security
+
+**Crypto-secure session IDs** prevent attacks:
+
+- 128-bit entropy from OsRng (not predictable UUID v4)
+- 32 hex characters (filesystem-safe)
+- Strict validation rejects path traversal attempts
+- No sanitization (prevents ID collisions)
+- Format: `[a-zA-Z0-9_-]{1,255}`
+
+### Path Traversal Protection
+
+**Strict validation** prevents malicious session IDs:
+
+```rust
+// REJECTED - Path traversal attempt
+"../../../etc/passwd" → Error: "Invalid session ID: contains path traversal characters"
+
+// REJECTED - Special characters
+"test@#$%123" → Error: "Invalid session ID: contains unsafe characters"
+
+// ACCEPTED - Safe format
+"session-123-abc_def" → OK
+```
 
 ### PII Detection Before Storage
 
@@ -293,14 +455,21 @@ Automatically merges overlapping PII detections:
 
 ```
 sessions/
+├── .encryption_salt          # Persistent salt for encryption (auto-generated)
 ├── 2025-01-15/
-│   ├── session-123.jsonl
-│   ├── session-123.jsonl.gz
+│   ├── session-123.jsonl     # Plaintext or encrypted session events
+│   ├── session-123.jsonl.gz  # Compressed after retention policy
 │   └── session-124.jsonl
 ├── 2025-01-16/
 │   └── session-125.jsonl
-└── sessions.db
+└── sessions.db               # SQLite metadata (optional)
 ```
+
+**Notes:**
+- Session files organized by date (`YYYY-MM-DD` directories)
+- Session IDs must be alphanumeric with hyphens/underscores only
+- `.encryption_salt` file created automatically when encryption is enabled
+- Compressed files retain original encryption (if enabled)
 
 ### JSONL Format
 
@@ -353,11 +522,15 @@ cargo test -p lunaroute-session pii_redaction
 ## Dependencies
 
 - `lunaroute-core` - Normalized types
+- `lunaroute-storage` - Encryption utilities (AES-256-GCM, Argon2id)
 - `lunaroute-pii` - PII detection and redaction
 - `tokio` - Async runtime
 - `serde` / `serde_json` - Serialization
-- `flate2` - Gzip compression
-- `rusqlite` - SQLite database
+- `lru` - LRU cache for file handles
+- `rand` - Crypto-secure random number generation (OsRng)
+- `hex` - Session ID encoding
+- `zstd` - Compression
+- `sqlx` - SQLite database (optional, feature-gated)
 
 ## License
 
