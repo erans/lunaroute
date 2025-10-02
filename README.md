@@ -32,7 +32,6 @@ LunaRoute is organized as a Rust workspace with the following crates:
 - **lunaroute-observability**: Metrics, tracing, and health endpoints
 - **lunaroute-server**: Production server binary with configuration file support
 - **lunaroute-cli**: Command-line interface (`lunaroute`)
-- **lunaroute-demos**: Demo server for testing the gateway
 - **lunaroute-integration-tests**: End-to-end integration tests
 
 ## Quick Start
@@ -84,50 +83,17 @@ cargo run --package lunaroute-server -- --config config.example.yaml
 
 See `crates/lunaroute-server/README.md` for complete configuration options and Claude Code integration guide.
 
-### Running the Demo Server
+### Configuration Examples
 
-Try the working gateway with the included demo:
+Example configurations for common scenarios are available in `examples/configs/`:
 
-```bash
-# Set your OpenAI API key
-export OPENAI_API_KEY=sk-your-key-here
+- **`claude-code-proxy.yaml`** - Optimized for Claude Code with passthrough mode
+- **`anthropic-proxy.yaml`** - Simple Anthropic proxy with debug logging
+- **`openai-proxy.yaml`** - OpenAI-compatible proxy
+- **`development.yaml`** - Full-featured development setup
+- **`production.yaml`** - Production-ready configuration
 
-# Run the demo server
-cargo run --package lunaroute-demos
-
-# In another terminal, test it:
-curl http://localhost:3000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-5-mini",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-
-# Test with streaming:
-curl http://localhost:3000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-5-mini",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
-  }'
-```
-
-The demo server accepts OpenAI-compatible requests and proxies them through the LunaRoute gateway with automatic session recording. Supports latest models including **GPT-5 mini** and **Claude Sonnet 4.5**. Streaming is fully supported for real-time responses.
-
-Session recording is automatically enabled. Sessions are stored in `~/.lunaroute/sessions` (configurable via `SESSIONS_DIR` env var) and can be queried via:
-```bash
-# List all sessions
-curl http://localhost:3000/sessions
-
-# Filter sessions by provider, model, etc.
-curl http://localhost:3000/sessions?provider=openai&limit=10
-
-# Get specific session details
-curl http://localhost:3000/sessions/<session-id>
-```
-
-See `docs/TEST_SESSION_RECORDING.md` for comprehensive testing guide.
+See `examples/configs/README.md` for detailed usage instructions.
 
 ### Running Integration Tests
 
@@ -260,7 +226,7 @@ See `crates/lunaroute-integration-tests/README.md` for details.
 - Full end-to-end request flow (HTTP → Normalize → Provider → Response)
 - **Complete streaming pipeline**: Client → Ingress SSE → Normalized events → Egress SSE → Provider
 - Error propagation (validation errors, provider errors)
-- Demo server (`lunaroute-demos`) for local testing with streaming examples
+- Production server (`lunaroute-server`) with configuration file support
 - **359 unit tests passing across workspace:**
   - Core types: 16 tests
   - Ingress: 95 tests (76 unit + 19 integration)

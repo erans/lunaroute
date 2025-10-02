@@ -1,0 +1,32 @@
+# Claude Code Proxy Configuration
+# Optimized for use with Claude Code CLI
+# Zero-copy passthrough mode with minimal overhead
+
+host: "127.0.0.1"
+port: 3000
+
+# IMPORTANT: Must be "anthropic" for passthrough mode
+api_dialect: "anthropic"
+
+providers:
+  anthropic:
+    enabled: true
+    # Set ANTHROPIC_API_KEY environment variable
+
+session_recording:
+  enabled: false  # Disable for maximum performance
+
+logging:
+  level: "info"
+  log_requests: true  # See requests in stdout
+
+# Usage with Claude Code:
+# 1. Start server: lunaroute-server --config claude-code-proxy.yaml
+# 2. Set proxy: export ANTHROPIC_BASE_URL=http://localhost:3000
+# 3. Run Claude Code normally
+#
+# Features:
+# - Zero-copy passthrough (no normalization overhead)
+# - 100% API fidelity (preserves extended thinking)
+# - Sub-millisecond proxy overhead (~0.1-0.2ms)
+# - Prometheus metrics at /metrics

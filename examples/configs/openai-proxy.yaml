@@ -1,0 +1,20 @@
+# OpenAI Proxy Configuration
+# Accepts OpenAI-compatible requests and forwards to OpenAI
+
+host: "127.0.0.1"
+port: 3000
+
+# API dialect - accept OpenAI format
+api_dialect: "openai"
+
+providers:
+  openai:
+    enabled: true
+    # API key will be read from OPENAI_API_KEY env var
+
+session_recording:
+  enabled: false
+
+logging:
+  level: "info"
+  log_requests: true

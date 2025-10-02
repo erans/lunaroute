@@ -1,0 +1,28 @@
+# Development Configuration
+# Debug logging with session recording for local testing
+
+host: "127.0.0.1"
+port: 3000
+
+api_dialect: "anthropic"
+
+providers:
+  anthropic:
+    enabled: true
+    # API key from environment: ANTHROPIC_API_KEY
+
+session_recording:
+  enabled: true
+  sessions_dir: "./sessions"  # Local directory
+
+session_stats_max_sessions: 100
+
+logging:
+  level: "debug"  # Verbose logging with HTTP headers and timing
+  log_requests: true
+
+# Debug mode enables:
+# - HTTP request/response headers to providers
+# - Detailed timing metrics (pre/post proxy overhead)
+# - Session statistics on shutdown
+# - Tool call tracking
