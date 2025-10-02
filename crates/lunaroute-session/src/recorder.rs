@@ -2,6 +2,12 @@
 //!
 //! This module provides the SessionRecorder trait and implementations for
 //! recording LLM request/response sessions.
+//!
+//! # Security
+//!
+//! Session IDs are generated using cryptographically secure random number
+//! generation (OsRng) with 128 bits of entropy, encoded as 32 hex characters.
+//! This ensures session IDs are unpredictable and filesystem-safe.
 
 use crate::session::{SessionId, SessionMetadata, SessionQuery};
 use lunaroute_core::{

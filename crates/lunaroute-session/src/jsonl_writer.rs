@@ -1,4 +1,43 @@
-//! JSONL session writer implementation
+//! JSONL session writer implementation with production features
+//!
+//! # Features
+//!
+//! ## Performance
+//! - **File Handle Caching**: LRU cache for open file handles (default: 100)
+//! - **Buffered Writes**: Configurable write buffers (default: 64KB)
+//!
+//! ## Security
+//! - **Encryption at Rest**: AES-256-GCM with Argon2id key derivation
+//! - **Crypto-secure Session IDs**: 128-bit entropy from OsRng
+//!
+//! ## Observability
+//! - **Storage Metrics**: Track events written, bytes, cache performance, errors
+//! - **Health Checks**: Verify storage accessibility and writability
+//!
+//! # Example
+//!
+//! ```no_run
+//! use lunaroute_session::jsonl_writer::{JsonlWriter, JsonlConfig};
+//! use std::path::PathBuf;
+//!
+//! # async fn example() {
+//! // Basic usage with defaults
+//! let writer = JsonlWriter::new(PathBuf::from("/sessions"));
+//!
+//! // Production configuration
+//! let config = JsonlConfig {
+//!     cache_size: 100,
+//!     buffer_size: 64 * 1024,
+//!     encryption_password: Some("secure-password".to_string()),
+//!     encryption_salt: None, // Auto-generated
+//! };
+//! let writer = JsonlWriter::with_config(PathBuf::from("/sessions"), config);
+//!
+//! // Monitor health and metrics
+//! let health = writer.health_check().await;
+//! let metrics = writer.metrics();
+//! # }
+//! ```
 
 use crate::events::SessionEvent;
 use crate::writer::{SessionWriter, WriterResult};
@@ -9,9 +48,72 @@ use lru::LruCache;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex;
+
+/// Storage metrics for observability
+#[derive(Debug, Clone)]
+pub struct StorageMetrics {
+    /// Total number of events written
+    pub events_written: u64,
+    /// Total bytes written (after encryption if enabled)
+    pub bytes_written: u64,
+    /// Number of write errors encountered
+    pub write_errors: u64,
+    /// Number of cache hits
+    pub cache_hits: u64,
+    /// Number of cache misses (file opens)
+    pub cache_misses: u64,
+    /// Number of cache evictions
+    pub cache_evictions: u64,
+}
+
+/// Health check result
+#[derive(Debug, Clone, PartialEq)]
+pub struct HealthStatus {
+    /// Overall health status
+    pub healthy: bool,
+    /// Error message if unhealthy
+    pub error: Option<String>,
+}
+
+/// Internal metrics tracker with atomic counters
+#[derive(Debug)]
+struct MetricsTracker {
+    events_written: AtomicU64,
+    bytes_written: AtomicU64,
+    write_errors: AtomicU64,
+    cache_hits: AtomicU64,
+    cache_misses: AtomicU64,
+    cache_evictions: AtomicU64,
+}
+
+impl MetricsTracker {
+    fn new() -> Self {
+        Self {
+            events_written: AtomicU64::new(0),
+            bytes_written: AtomicU64::new(0),
+            write_errors: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
+            cache_evictions: AtomicU64::new(0),
+        }
+    }
+
+    fn snapshot(&self) -> StorageMetrics {
+        StorageMetrics {
+            events_written: self.events_written.load(Ordering::Relaxed),
+            bytes_written: self.bytes_written.load(Ordering::Relaxed),
+            write_errors: self.write_errors.load(Ordering::Relaxed),
+            cache_hits: self.cache_hits.load(Ordering::Relaxed),
+            cache_misses: self.cache_misses.load(Ordering::Relaxed),
+            cache_evictions: self.cache_evictions.load(Ordering::Relaxed),
+        }
+    }
+}
 
 /// JSONL writer for session events with file handle caching and buffered writes
 pub struct JsonlWriter {
@@ -21,6 +123,8 @@ pub struct JsonlWriter {
     file_cache: Mutex<LruCache<String, BufWriter<tokio::fs::File>>>,
     // Encryption key (if encryption is enabled)
     encryption_key: Option<[u8; 32]>,
+    // Metrics tracker
+    metrics: Arc<MetricsTracker>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +182,64 @@ impl JsonlWriter {
             config,
             file_cache: Mutex::new(LruCache::new(cache_size)),
             encryption_key,
+            metrics: Arc::new(MetricsTracker::new()),
+        }
+    }
+
+    /// Get current storage metrics snapshot
+    pub fn metrics(&self) -> StorageMetrics {
+        self.metrics.snapshot()
+    }
+
+    /// Check storage health
+    /// Verifies that the sessions directory is writable and accessible
+    pub async fn health_check(&self) -> HealthStatus {
+        // Check if sessions directory exists and is writable
+        match tokio::fs::metadata(&self.sessions_dir).await {
+            Ok(metadata) => {
+                if !metadata.is_dir() {
+                    return HealthStatus {
+                        healthy: false,
+                        error: Some(format!(
+                            "Sessions path is not a directory: {}",
+                            self.sessions_dir.display()
+                        )),
+                    };
+                }
+            }
+            Err(_) => {
+                // Try to create it
+                if let Err(create_err) = tokio::fs::create_dir_all(&self.sessions_dir).await {
+                    return HealthStatus {
+                        healthy: false,
+                        error: Some(format!(
+                            "Cannot access or create sessions directory: {} ({})",
+                            self.sessions_dir.display(),
+                            create_err
+                        )),
+                    };
+                }
+            }
+        }
+
+        // Try to write a test file to verify writability
+        let test_file = self.sessions_dir.join(".healthcheck");
+        match tokio::fs::write(&test_file, b"test").await {
+            Ok(_) => {
+                // Clean up test file
+                let _ = tokio::fs::remove_file(&test_file).await;
+                HealthStatus {
+                    healthy: true,
+                    error: None,
+                }
+            }
+            Err(e) => HealthStatus {
+                healthy: false,
+                error: Some(format!(
+                    "Sessions directory is not writable: {}",
+                    e
+                )),
+            },
         }
     }
 
@@ -126,6 +288,8 @@ impl JsonlWriter {
 
         if !cache.contains(&cache_key) {
             // Cache miss - need to open file
+            self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
+
             // Release lock while opening file
             drop(cache);
 
@@ -138,12 +302,17 @@ impl JsonlWriter {
             if !cache.contains(&cache_key) {
                 // If cache is full, evict LRU entry
                 if let Some((_, mut evicted)) = cache.push(cache_key.clone(), file) {
+                    self.metrics.cache_evictions.fetch_add(1, Ordering::Relaxed);
+
                     // Release lock before flushing evicted file
                     drop(cache);
                     evicted.flush().await?;
                     drop(evicted);
                 }
             }
+        } else {
+            // Cache hit
+            self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
         }
 
         Ok(())
@@ -163,13 +332,21 @@ impl JsonlWriter {
     /// Write data to cached file
     async fn write_to_file(&self, session_id: &str, data: &[u8]) -> WriterResult<()> {
         // Ensure file is cached
-        self.get_cached_file(session_id).await?;
+        if let Err(e) = self.get_cached_file(session_id).await {
+            self.metrics.write_errors.fetch_add(1, Ordering::Relaxed);
+            return Err(e);
+        }
 
         let cache_key = self.get_cache_key(session_id);
         let mut cache = self.file_cache.lock().await;
 
         if let Some(file) = cache.get_mut(&cache_key) {
-            file.write_all(data).await?;
+            if let Err(e) = file.write_all(data).await {
+                self.metrics.write_errors.fetch_add(1, Ordering::Relaxed);
+                return Err(e.into());
+            }
+            // Track bytes written
+            self.metrics.bytes_written.fetch_add(data.len() as u64, Ordering::Relaxed);
         }
 
         Ok(())
@@ -194,6 +371,9 @@ impl SessionWriter for JsonlWriter {
         // Write to cached file handle
         self.write_to_file(session_id, &data).await?;
 
+        // Track event written
+        self.metrics.events_written.fetch_add(1, Ordering::Relaxed);
+
         Ok(())
     }
 
@@ -210,6 +390,7 @@ impl SessionWriter for JsonlWriter {
         }
 
         // Write each session's events using cached file handles
+        let mut events_count = 0u64;
         for (session_id, session_events) in by_session {
             for event in session_events {
                 let json = serde_json::to_string(event)?;
@@ -223,8 +404,13 @@ impl SessionWriter for JsonlWriter {
 
                 // Write to cached file handle
                 self.write_to_file(&session_id, &data).await?;
+
+                events_count += 1;
             }
         }
+
+        // Track events written
+        self.metrics.events_written.fetch_add(events_count, Ordering::Relaxed);
 
         Ok(())
     }
@@ -803,5 +989,122 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(parsed["type"], "started");
+    }
+
+    #[tokio::test]
+    async fn test_storage_metrics() {
+        let dir = tempdir().unwrap();
+        let config = JsonlConfig {
+            cache_size: 2,
+            buffer_size: 1024,
+            encryption_password: None,
+            encryption_salt: None,
+        };
+        let writer = JsonlWriter::with_config(dir.path().to_path_buf(), config);
+
+        // Initial metrics should be zero
+        let metrics = writer.metrics();
+        assert_eq!(metrics.events_written, 0);
+        assert_eq!(metrics.bytes_written, 0);
+        assert_eq!(metrics.write_errors, 0);
+        assert_eq!(metrics.cache_hits, 0);
+        assert_eq!(metrics.cache_misses, 0);
+        assert_eq!(metrics.cache_evictions, 0);
+
+        // Write some events
+        for i in 0..5 {
+            let event = SessionEvent::Started {
+                session_id: format!("session-{}", i % 3), // 3 different sessions
+                request_id: format!("req-{}", i),
+                timestamp: Utc::now(),
+                model_requested: "gpt-4".to_string(),
+                provider: "openai".to_string(),
+                listener: "openai".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            };
+            writer.write_event(&event).await.unwrap();
+        }
+
+        writer.flush().await.unwrap();
+
+        // Check metrics
+        let metrics = writer.metrics();
+        assert_eq!(metrics.events_written, 5, "Should track 5 events written");
+        assert!(metrics.bytes_written > 0, "Should track bytes written");
+
+        // With cache_size=2 and 3 sessions, we should see:
+        // Event sequence: session-0, session-1, session-2, session-0, session-1
+        // - session-0 (i=0): cache miss, opens file
+        // - session-1 (i=1): cache miss, opens file
+        // - session-2 (i=2): cache miss, opens file, evicts session-0 (LRU)
+        // - session-0 (i=3): cache miss, opens file, evicts session-1 (LRU)
+        // - session-1 (i=4): cache miss, opens file, evicts session-2 (LRU)
+        // Total: 5 misses, 0 hits, 3 evictions
+        assert_eq!(metrics.cache_misses, 5, "Should have 5 cache misses");
+        assert_eq!(metrics.cache_hits, 0, "Should have 0 cache hits");
+        assert_eq!(metrics.cache_evictions, 3, "Should have 3 evictions");
+        assert_eq!(metrics.write_errors, 0, "Should have no write errors");
+    }
+
+    #[tokio::test]
+    async fn test_health_check_success() {
+        let dir = tempdir().unwrap();
+        let writer = JsonlWriter::new(dir.path().to_path_buf());
+
+        let health = writer.health_check().await;
+        assert!(health.healthy, "Health check should pass for writable directory");
+        assert_eq!(health.error, None, "Should have no error message");
+    }
+
+    #[tokio::test]
+    async fn test_health_check_creates_directory() {
+        let dir = tempdir().unwrap();
+        let sessions_dir = dir.path().join("non-existent-dir");
+
+        // Directory doesn't exist yet
+        assert!(!sessions_dir.exists());
+
+        let writer = JsonlWriter::new(sessions_dir.clone());
+        let health = writer.health_check().await;
+
+        assert!(health.healthy, "Health check should create directory");
+        assert!(sessions_dir.exists(), "Directory should be created");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_health_check_readonly_directory() {
+        use std::fs;
+
+        let dir = tempdir().unwrap();
+        let sessions_dir = dir.path().join("readonly-dir");
+        fs::create_dir(&sessions_dir).unwrap();
+
+        // Make directory read-only
+        let mut perms = fs::metadata(&sessions_dir).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&sessions_dir, perms).unwrap();
+
+        let writer = JsonlWriter::new(sessions_dir.clone());
+        let health = writer.health_check().await;
+
+        // Restore permissions for cleanup
+        let mut perms = fs::metadata(&sessions_dir).unwrap().permissions();
+        perms.set_readonly(false);
+        fs::set_permissions(&sessions_dir, perms).unwrap();
+
+        assert!(!health.healthy, "Health check should fail for read-only directory");
+        assert!(health.error.is_some(), "Should have error message");
+        assert!(
+            health.error.unwrap().contains("not writable"),
+            "Error should mention writability"
+        );
     }
 }
