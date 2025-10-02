@@ -1,8 +1,65 @@
 //! Routing strategies for provider selection
 //!
-//! Implements different strategies for selecting providers from a pool:
-//! - Round-robin: Equal distribution across providers
-//! - Weighted round-robin: Distribution based on weights
+//! Implements intelligent provider selection strategies with production-ready features:
+//!
+//! ## Strategies
+//!
+//! ### Round-Robin
+//! Equal distribution across all providers in the list.
+//!
+//! ```rust
+//! use lunaroute_routing::{RoutingStrategy, StrategyState};
+//!
+//! let strategy = RoutingStrategy::RoundRobin {
+//!     providers: vec!["p1".to_string(), "p2".to_string(), "p3".to_string()],
+//! };
+//!
+//! let state = StrategyState::new();
+//! let provider1 = state.select_provider(&strategy).unwrap(); // "p1"
+//! let provider2 = state.select_provider(&strategy).unwrap(); // "p2"
+//! let provider3 = state.select_provider(&strategy).unwrap(); // "p3"
+//! let provider4 = state.select_provider(&strategy).unwrap(); // "p1" (wraps)
+//! ```
+//!
+//! ### Weighted Round-Robin
+//! Distribution based on provider weights (capacity, cost, etc.).
+//!
+//! ```rust
+//! use lunaroute_routing::{RoutingStrategy, StrategyState, WeightedProvider};
+//!
+//! let strategy = RoutingStrategy::WeightedRoundRobin {
+//!     providers: vec![
+//!         WeightedProvider { id: "primary".to_string(), weight: 70 },
+//!         WeightedProvider { id: "backup".to_string(), weight: 30 },
+//!     ],
+//! };
+//!
+//! let state = StrategyState::new();
+//! // Over 100 requests: 70 go to "primary", 30 go to "backup"
+//! ```
+//!
+//! ## Thread Safety
+//!
+//! - **Lock-free**: Uses atomic operations for zero contention
+//! - **Overflow safe**: Counter wraps safely at `usize::MAX`
+//! - **AcqRel ordering**: Ensures visibility across CPU cores
+//! - **Concurrent**: Safe to use from multiple threads simultaneously
+//!
+//! ## Validation
+//!
+//! Strategies are validated before use:
+//!
+//! ```rust
+//! use lunaroute_routing::RoutingStrategy;
+//!
+//! let strategy = RoutingStrategy::RoundRobin { providers: vec![] };
+//! assert!(strategy.validate().is_err()); // Empty provider list
+//!
+//! let strategy = RoutingStrategy::RoundRobin {
+//!     providers: vec!["p1".to_string()],
+//! };
+//! assert!(strategy.validate().is_ok()); // Valid
+//! ```
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};

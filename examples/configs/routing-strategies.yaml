@@ -1,0 +1,198 @@
+# LunaRoute Configuration - Routing Strategies Example
+#
+# This example demonstrates intelligent routing strategies:
+# - Round-robin load balancing
+# - Weighted round-robin with capacity-based distribution
+# - Provider configuration with environment variables
+# - Health monitoring and circuit breakers
+
+# Server configuration
+server:
+  host: "127.0.0.1"
+  port: 3000
+
+# API dialect (openai or anthropic)
+api_dialect: "openai"
+
+# Logging configuration
+logging:
+  level: "info"
+  log_requests: true
+  log_responses: false
+
+# Provider definitions
+providers:
+  # Primary OpenAI endpoint
+  openai-primary:
+    type: "openai"
+    api_key: "$OPENAI_API_KEY"
+    base_url: "https://api.openai.com/v1"
+    headers:
+      X-Environment: "production"
+    timeout_secs: 60
+
+  # Backup OpenAI endpoint (could be different account or region)
+  openai-backup:
+    type: "openai"
+    api_key: "$OPENAI_BACKUP_KEY"
+    base_url: "https://api.openai.com/v1"
+    headers:
+      X-Environment: "production-backup"
+    timeout_secs: 60
+
+  # Primary Anthropic endpoint
+  anthropic-primary:
+    type: "anthropic"
+    api_key: "$ANTHROPIC_API_KEY"
+    base_url: "https://api.anthropic.com"
+    timeout_secs: 60
+
+  # Backup Anthropic endpoint
+  anthropic-backup:
+    type: "anthropic"
+    api_key: "$ANTHROPIC_BACKUP_KEY"
+    base_url: "https://api.anthropic.com"
+    timeout_secs: 60
+
+  # Emergency fallback (different provider)
+  emergency-fallback:
+    type: "openai"
+    api_key: "$EMERGENCY_API_KEY"
+    timeout_secs: 30
+
+# Routing configuration
+routing:
+  # Health monitoring configuration
+  health_monitor:
+    healthy_threshold: 0.95      # 95%+ success rate = healthy
+    unhealthy_threshold: 0.50    # <50% success rate = unhealthy
+    failure_window_secs: 60      # Track last 60 seconds
+    min_requests: 10             # Need 10+ requests for status
+
+  # Circuit breaker configuration
+  circuit_breaker:
+    failure_threshold: 5         # Open after 5 consecutive failures
+    success_threshold: 2         # Close after 2 consecutive successes
+    timeout_secs: 30            # Try again after 30 seconds
+
+  # Routing rules (evaluated in priority order)
+  rules:
+    # GPT models: Round-robin between two OpenAI endpoints
+    - name: "gpt-round-robin"
+      priority: 20
+      matcher:
+        model_pattern: "^gpt-.*"
+      strategy:
+        type: "round-robin"
+        providers:
+          - "openai-primary"
+          - "openai-backup"
+      fallbacks:
+        - "emergency-fallback"
+
+    # Claude models: Weighted distribution (80% primary, 20% backup)
+    - name: "claude-weighted"
+      priority: 20
+      matcher:
+        model_pattern: "^claude-.*"
+      strategy:
+        type: "weighted-round-robin"
+        providers:
+          - id: "anthropic-primary"
+            weight: 80  # 80% of traffic
+          - id: "anthropic-backup"
+            weight: 20  # 20% of traffic
+      fallbacks:
+        - "emergency-fallback"
+
+    # Sonnet models: Capacity-based distribution (70/25/5)
+    - name: "sonnet-capacity-based"
+      priority: 15
+      matcher:
+        model_pattern: "^claude-.*-sonnet-.*"
+      strategy:
+        type: "weighted-round-robin"
+        providers:
+          - id: "anthropic-primary"
+            weight: 70  # Primary instance (high capacity)
+          - id: "anthropic-backup"
+            weight: 25  # Backup instance (medium capacity)
+          - id: "emergency-fallback"
+            weight: 5   # Emergency only (low usage)
+
+    # Default route: Old-style primary + fallbacks (still works!)
+    - name: "default-fallback"
+      priority: 1
+      matcher:
+        always: true
+      primary: "openai-primary"
+      fallbacks:
+        - "anthropic-primary"
+        - "emergency-fallback"
+
+# Session recording (optional)
+session_recording:
+  enabled: true
+  storage_path: "~/.lunaroute/sessions"
+
+  # PII detection and redaction
+  pii:
+    enabled: true
+    detect_email: true
+    detect_phone: true
+    detect_ssn: true
+    detect_credit_card: true
+    redaction_mode: "mask"  # mask, remove, tokenize, or partial
+
+# Observability
+observability:
+  # Prometheus metrics endpoint
+  metrics:
+    enabled: true
+    port: 9090
+    path: "/metrics"
+
+  # Health check endpoints
+  health:
+    enabled: true
+    liveness_path: "/healthz"
+    readiness_path: "/readyz"
+
+# Example usage:
+#
+# 1. Set environment variables:
+#    export OPENAI_API_KEY="sk-..."
+#    export OPENAI_BACKUP_KEY="sk-..."
+#    export ANTHROPIC_API_KEY="sk-ant-..."
+#    export ANTHROPIC_BACKUP_KEY="sk-ant-..."
+#    export EMERGENCY_API_KEY="sk-..."
+#
+# 2. Run the server:
+#    cargo run --package lunaroute-server -- --config routing-strategies.yaml
+#
+# 3. Test round-robin:
+#    # First request goes to openai-primary
+#    curl http://localhost:3000/v1/chat/completions \
+#      -H "Content-Type: application/json" \
+#      -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
+#
+#    # Second request goes to openai-backup
+#    curl http://localhost:3000/v1/chat/completions \
+#      -H "Content-Type: application/json" \
+#      -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
+#
+# 4. Test weighted distribution:
+#    # 80% go to anthropic-primary, 20% to anthropic-backup
+#    for i in {1..100}; do
+#      curl http://localhost:3000/v1/messages \
+#        -H "Content-Type: application/json" \
+#        -H "anthropic-version: 2023-06-01" \
+#        -d "{\"model\": \"claude-3-sonnet\", \"messages\": [{\"role\": \"user\", \"content\": \"Test $i\"}], \"max_tokens\": 100}"
+#    done
+#
+# 5. Check metrics:
+#    curl http://localhost:9090/metrics | grep luna_route
+#
+# 6. Check health:
+#    curl http://localhost:3000/healthz  # Liveness
+#    curl http://localhost:3000/readyz   # Readiness with provider status

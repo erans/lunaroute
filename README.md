@@ -10,6 +10,10 @@ LunaRoute is a high-performance API gateway for Large Language Model providers, 
 - **Passthrough Mode**: Zero-copy routing for Anthropic→Anthropic with 100% API fidelity (preserves extended thinking, includes session recording)
 - **Streaming Support**: Full SSE streaming for real-time responses from both providers
 - **Intelligent Routing**: Route requests based on rules, health, and cost optimization
+  - **Round-Robin**: Equal load distribution across providers
+  - **Weighted Round-Robin**: Capacity-based distribution (e.g., 70/30 split)
+  - Lock-free concurrent access with DashMap for zero contention
+  - Thread-safe atomic counters with overflow protection
 - **Production-Ready Session Recording**:
   - AES-256-GCM encryption at rest with Argon2id key derivation
   - LRU file handle caching and buffered writes (10-100x faster)
@@ -335,6 +339,19 @@ See `crates/lunaroute-integration-tests/README.md` for details.
   - Listener-based routing (OpenAI vs Anthropic endpoints)
   - Header/query parameter overrides (X-Luna-Provider)
   - Priority ordering and fallback chain construction
+- **Routing strategies** ✅ Production-ready
+  - **Round-Robin**: Equal distribution across providers with wrapping counter
+  - **Weighted Round-Robin**: Capacity-based distribution (e.g., 70% primary, 30% backup)
+  - Per-rule strategy state with lock-free DashMap storage
+  - Thread-safe atomic counters with AcqRel memory ordering
+  - Integer overflow protection (checked arithmetic, wrapping_add)
+  - Backwards compatible with existing primary/fallbacks configuration
+  - 103 tests (7 new edge case + concurrency tests)
+- **Provider configuration**
+  - Provider type detection (openai, anthropic) for API format conversion
+  - Environment variable resolution ($VAR or ${VAR} syntax)
+  - Custom base URLs and headers per provider
+  - API key management with secure env var support
 - **Health monitoring**
   - Provider health tracking (Healthy, Degraded, Unhealthy, Unknown)
   - Success rate thresholds and recent failure window detection
@@ -344,17 +361,20 @@ See `crates/lunaroute-integration-tests/README.md` for details.
   - Failure/success thresholds with automatic recovery
   - Thread-safe state transitions using compare_exchange
   - Atomic saturating counters for overflow protection
+  - Lock-free DashMap for zero contention under load
 - **Router as Provider**
   - Router implements Provider trait for intelligent delegation
-  - Lazy per-provider circuit breaker creation
+  - Lazy per-provider circuit breaker creation with DashMap
   - Automatic fallback chain execution
   - Health metrics tracking for all providers
   - Public API for health status queries
 - **Production quality**
-  - All code review issues fixed (race conditions, panics, overflows)
-  - Poisoned lock handling, regex caching, memory ordering
+  - All P0/P1 code review issues fixed (thread safety, overflow, performance)
+  - Lock-free concurrent access (DashMap replaces RwLock<HashMap>)
+  - Serial test isolation for env var tests
+  - Comprehensive edge case coverage (overflow, wrapping, concurrency)
   - Config validation for all components
-  - 72 unit tests + 6 integration tests = 78 tests passing
+  - 103 unit tests + 6 integration tests + 6 streaming tests = 115 tests passing
   - 100% coverage, 0 clippy warnings
 
 **Integration Tests** ✅ Real API Testing

@@ -4,6 +4,25 @@ This directory contains example configurations for common LunaRoute deployment s
 
 ## Available Configurations
 
+### `routing-strategies.yaml` ⭐ NEW
+Intelligent routing with round-robin and weighted load balancing.
+
+```bash
+export OPENAI_API_KEY=sk-...
+export OPENAI_BACKUP_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_BACKUP_KEY=sk-ant-...
+lunaroute-server --config examples/configs/routing-strategies.yaml
+```
+
+**Features:**
+- **Round-robin**: Equal distribution across OpenAI endpoints for GPT models
+- **Weighted round-robin**: 80/20 split for Claude models (primary/backup)
+- Provider configuration with environment variables
+- Health monitoring and circuit breakers
+- Automatic fallback chains
+- Production-ready observability
+
 ### `claude-code-proxy.yaml`
 Optimized for Claude Code CLI with zero-copy passthrough mode.
 
