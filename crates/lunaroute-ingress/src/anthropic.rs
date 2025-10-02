@@ -1058,6 +1058,30 @@ pub async fn messages_passthrough(
                 let total_duration_ms = start_clone.elapsed().as_millis() as u64;
                 let streaming_duration_ms = total_duration_ms.saturating_sub(ttft_ms);
 
+                // Record Prometheus metrics for streaming
+                if let Some(metrics) = &state.metrics {
+                    metrics.record_streaming_request(
+                        "anthropic",
+                        &model,
+                        ttft_ms as f64 / 1000.0, // Convert to seconds
+                        total_chunks,
+                        streaming_duration_ms as f64 / 1000.0, // Convert to seconds
+                    );
+
+                    // Record individual chunk latencies (sample to avoid overwhelming Prometheus)
+                    // Sample every 10th latency for very long streams
+                    let sample_rate = if latencies.len() > 100 { 10 } else { 1 };
+                    for (i, &latency_ms) in latencies.iter().enumerate() {
+                        if i % sample_rate == 0 {
+                            metrics.record_chunk_latency(
+                                "anthropic",
+                                &model,
+                                latency_ms as f64 / 1000.0, // Convert to seconds
+                            );
+                        }
+                    }
+                }
+
                 // Record StreamStarted event
                 if ttft_ms > 0 {
                     recorder.record_event(SessionEvent::StreamStarted {

@@ -883,6 +883,8 @@ pub async fn chat_completions_passthrough(
         let text_clone = accumulated_text.clone();
         let model_clone = stream_model.clone();
         let finish_reason_clone = stream_finish_reason.clone();
+        let metrics_clone = state.metrics.clone();
+        let model_name_clone = model.clone(); // Clone for use in tracked_stream
 
         let tracked_stream = sse_stream.map(move |event_result| {
             match event_result {
@@ -916,6 +918,10 @@ pub async fn chat_completions_passthrough(
                                     "Chunk latency array reached maximum size ({} entries), dropping further measurements",
                                     MAX_CHUNK_LATENCIES
                                 );
+                                // Record metrics for memory bound hit
+                                if let Some(metrics) = &metrics_clone {
+                                    metrics.record_memory_bound_hit("openai", &model_name_clone, "latency_array");
+                                }
                             }
                             *last = now;
                         } else {
@@ -959,6 +965,10 @@ pub async fn chat_completions_passthrough(
                                 "Accumulated text reached maximum size ({} bytes), dropping further content",
                                 MAX_ACCUMULATED_TEXT_BYTES
                             );
+                            // Record metrics for memory bound hit
+                            if let Some(metrics) = &metrics_clone {
+                                metrics.record_memory_bound_hit("openai", &model_name_clone, "text_buffer");
+                            }
                         }
                     }
 
@@ -1037,6 +1047,30 @@ pub async fn chat_completions_passthrough(
 
                 let total_duration_ms = start_clone.elapsed().as_millis() as u64;
                 let streaming_duration_ms = total_duration_ms.saturating_sub(ttft_ms);
+
+                // Record Prometheus metrics for streaming
+                if let Some(metrics) = &state.metrics {
+                    metrics.record_streaming_request(
+                        "openai",
+                        &model,
+                        ttft_ms as f64 / 1000.0, // Convert to seconds
+                        total_chunks,
+                        streaming_duration_ms as f64 / 1000.0, // Convert to seconds
+                    );
+
+                    // Record individual chunk latencies (sample to avoid overwhelming Prometheus)
+                    // Sample every 10th latency for very long streams
+                    let sample_rate = if latencies.len() > 100 { 10 } else { 1 };
+                    for (i, &latency_ms) in latencies.iter().enumerate() {
+                        if i % sample_rate == 0 {
+                            metrics.record_chunk_latency(
+                                "openai",
+                                &model,
+                                latency_ms as f64 / 1000.0, // Convert to seconds
+                            );
+                        }
+                    }
+                }
 
                 // Record StreamStarted event
                 if ttft_ms > 0 {

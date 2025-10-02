@@ -7,6 +7,7 @@
 //! - Health status metrics
 //! - Token usage tracking
 //! - Fallback trigger counts
+//! - Streaming metrics (TTFT, chunk latencies, chunk counts, memory bounds)
 
 use prometheus::{
     CounterVec, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts, Registry,
@@ -70,6 +71,20 @@ pub struct Metrics {
     pub post_processing_duration_seconds: Histogram,
     /// Total proxy overhead (pre + post processing)
     pub proxy_overhead_seconds: Histogram,
+
+    // Streaming metrics
+    /// Time-to-first-token (TTFT) for streaming requests
+    pub streaming_ttft_seconds: HistogramVec,
+    /// Chunk latency for streaming requests
+    pub streaming_chunk_latency_seconds: HistogramVec,
+    /// Total streaming requests
+    pub streaming_requests_total: CounterVec,
+    /// Chunk count per streaming request
+    pub streaming_chunks_total: HistogramVec,
+    /// Memory bound warnings (when limits hit)
+    pub streaming_memory_bounds_hit: CounterVec,
+    /// Total streaming duration (first to last chunk)
+    pub streaming_duration_seconds: HistogramVec,
 }
 
 impl Metrics {
@@ -229,6 +244,59 @@ impl Metrics {
             .buckets(vec![0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05]),
         )?;
 
+        // Streaming metrics
+        let streaming_ttft_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "lunaroute_streaming_ttft_seconds",
+                "Time-to-first-token (TTFT) for streaming requests in seconds",
+            )
+            .buckets(vec![0.01, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1.0, 2.0, 5.0]),
+            &["provider", "model"],
+        )?;
+
+        let streaming_chunk_latency_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "lunaroute_streaming_chunk_latency_seconds",
+                "Individual chunk latency for streaming requests in seconds",
+            )
+            .buckets(vec![0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0]),
+            &["provider", "model"],
+        )?;
+
+        let streaming_requests_total = CounterVec::new(
+            Opts::new(
+                "lunaroute_streaming_requests_total",
+                "Total number of streaming requests",
+            ),
+            &["provider", "model"],
+        )?;
+
+        let streaming_chunks_total = HistogramVec::new(
+            HistogramOpts::new(
+                "lunaroute_streaming_chunks_total",
+                "Number of chunks per streaming request",
+            )
+            .buckets(vec![1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 5000.0, 10000.0]),
+            &["provider", "model"],
+        )?;
+
+        let streaming_memory_bounds_hit = CounterVec::new(
+            Opts::new(
+                "lunaroute_streaming_memory_bounds_hit_total",
+                "Number of times streaming memory bounds were hit",
+            ),
+            &["provider", "model", "bound_type"],
+        )?;
+
+        let streaming_duration_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "lunaroute_streaming_duration_seconds",
+                "Total streaming duration (first to last chunk) in seconds",
+            )
+            .buckets(vec![0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0]),
+            &["provider", "model"],
+        )?;
+
         // Register all metrics
         registry.register(Box::new(requests_total.clone()))?;
         registry.register(Box::new(requests_success.clone()))?;
@@ -248,6 +316,12 @@ impl Metrics {
         registry.register(Box::new(tool_calls_total.clone()))?;
         registry.register(Box::new(post_processing_duration_seconds.clone()))?;
         registry.register(Box::new(proxy_overhead_seconds.clone()))?;
+        registry.register(Box::new(streaming_ttft_seconds.clone()))?;
+        registry.register(Box::new(streaming_chunk_latency_seconds.clone()))?;
+        registry.register(Box::new(streaming_requests_total.clone()))?;
+        registry.register(Box::new(streaming_chunks_total.clone()))?;
+        registry.register(Box::new(streaming_memory_bounds_hit.clone()))?;
+        registry.register(Box::new(streaming_duration_seconds.clone()))?;
 
         Ok(Self {
             registry: Arc::new(registry),
@@ -269,6 +343,12 @@ impl Metrics {
             tool_calls_total,
             post_processing_duration_seconds,
             proxy_overhead_seconds,
+            streaming_ttft_seconds,
+            streaming_chunk_latency_seconds,
+            streaming_requests_total,
+            streaming_chunks_total,
+            streaming_memory_bounds_hit,
+            streaming_duration_seconds,
         })
     }
 
@@ -386,6 +466,43 @@ impl Metrics {
     /// Record total proxy overhead (pre + post processing)
     pub fn record_proxy_overhead(&self, duration_secs: f64) {
         self.proxy_overhead_seconds.observe(duration_secs);
+    }
+
+    /// Record streaming request completion with comprehensive metrics
+    pub fn record_streaming_request(
+        &self,
+        provider: &str,
+        model: &str,
+        ttft_secs: f64,
+        chunk_count: u32,
+        streaming_duration_secs: f64,
+    ) {
+        self.streaming_requests_total
+            .with_label_values(&[provider, model])
+            .inc();
+        self.streaming_ttft_seconds
+            .with_label_values(&[provider, model])
+            .observe(ttft_secs);
+        self.streaming_chunks_total
+            .with_label_values(&[provider, model])
+            .observe(chunk_count as f64);
+        self.streaming_duration_seconds
+            .with_label_values(&[provider, model])
+            .observe(streaming_duration_secs);
+    }
+
+    /// Record individual chunk latency
+    pub fn record_chunk_latency(&self, provider: &str, model: &str, latency_secs: f64) {
+        self.streaming_chunk_latency_seconds
+            .with_label_values(&[provider, model])
+            .observe(latency_secs);
+    }
+
+    /// Record memory bound hit (when streaming limits are reached)
+    pub fn record_memory_bound_hit(&self, provider: &str, model: &str, bound_type: &str) {
+        self.streaming_memory_bounds_hit
+            .with_label_values(&[provider, model, bound_type])
+            .inc();
     }
 }
 
