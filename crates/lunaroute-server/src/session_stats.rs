@@ -17,6 +17,10 @@ pub struct SessionStats {
     pub thinking_tokens: u64,
     /// Number of requests that used thinking
     pub thinking_requests: u64,
+    /// Tool calls by name (tool_name -> call_count)
+    pub tool_calls: HashMap<String, u64>,
+    /// Total number of tool calls across all tools
+    pub total_tool_calls: u64,
     /// Total time spent processing requests before proxying to provider
     pub pre_proxy_time: Duration,
     /// Total time spent processing responses after receiving from provider
@@ -76,12 +80,14 @@ impl SessionStatsTracker {
     }
 
     /// Record statistics for a request
+    #[allow(clippy::too_many_arguments)]
     pub fn record_request(
         &self,
         session_id: String,
         input_tokens: u64,
         output_tokens: u64,
         thinking_tokens: u64,
+        tool_calls: HashMap<String, u64>,
         pre_proxy_time: Duration,
         post_proxy_time: Duration,
     ) {
@@ -103,21 +109,31 @@ impl SessionStatsTracker {
         if thinking_tokens > 0 {
             entry.thinking_requests += 1;
         }
+
+        // Track tool calls
+        for (tool_name, count) in tool_calls {
+            *entry.tool_calls.entry(tool_name).or_insert(0) += count;
+            entry.total_tool_calls += count;
+        }
+
         entry.pre_proxy_time += pre_proxy_time;
         entry.post_proxy_time += post_proxy_time;
     }
 
     /// Get statistics for a specific session
+    #[allow(dead_code)]
     pub fn get_session_stats(&self, session_id: &str) -> Option<SessionStats> {
         self.stats.read().unwrap().get(session_id).cloned()
     }
 
     /// Get all session statistics
+    #[allow(dead_code)]
     pub fn get_all_stats(&self) -> HashMap<String, SessionStats> {
         self.stats.read().unwrap().clone()
     }
 
     /// Get total number of tracked sessions
+    #[allow(dead_code)]
     pub fn session_count(&self) -> usize {
         self.stats.read().unwrap().len()
     }
@@ -145,6 +161,8 @@ impl SessionStatsTracker {
         let mut total_thinking_requests = 0u64;
         let mut total_pre_time = Duration::ZERO;
         let mut total_post_time = Duration::ZERO;
+        let mut aggregate_tool_calls: HashMap<String, u64> = HashMap::new();
+        let mut total_tool_calls = 0u64;
 
         // Sort sessions by session ID for consistent output
         let mut sorted_sessions: Vec<_> = stats.iter().collect();
@@ -158,6 +176,12 @@ impl SessionStatsTracker {
             total_thinking_requests += session_stats.thinking_requests;
             total_pre_time += session_stats.pre_proxy_time;
             total_post_time += session_stats.post_proxy_time;
+            total_tool_calls += session_stats.total_tool_calls;
+
+            // Aggregate tool calls across sessions
+            for (tool_name, count) in &session_stats.tool_calls {
+                *aggregate_tool_calls.entry(tool_name.clone()).or_insert(0) += count;
+            }
 
             tracing::info!("Session: {}", session_id);
             tracing::info!("  Requests: {}", session_stats.request_count);
@@ -168,6 +192,15 @@ impl SessionStatsTracker {
                 tracing::info!("  Thinking tokens: {} ({} requests with thinking)",
                     session_stats.thinking_tokens, session_stats.thinking_requests);
                 tracing::info!("  Avg thinking tokens/thinking request: {:.1}", session_stats.avg_thinking_tokens());
+            }
+            if session_stats.total_tool_calls > 0 {
+                tracing::info!("  Tool calls: {} total", session_stats.total_tool_calls);
+                // Sort tool calls by count (descending)
+                let mut tool_list: Vec<_> = session_stats.tool_calls.iter().collect();
+                tool_list.sort_by(|a, b| b.1.cmp(a.1));
+                for (tool_name, count) in tool_list {
+                    tracing::info!("    {}: {}", tool_name, count);
+                }
             }
             tracing::info!("  Pre-proxy time: {:.2}ms", session_stats.pre_proxy_time.as_secs_f64() * 1000.0);
             tracing::info!("  Post-proxy time: {:.2}ms", session_stats.post_proxy_time.as_secs_f64() * 1000.0);
@@ -203,21 +236,34 @@ impl SessionStatsTracker {
             tracing::info!("Avg total processing time/request: {:.2}ms", (avg_pre + avg_post).as_secs_f64() * 1000.0);
         }
 
+        if total_tool_calls > 0 {
+            tracing::info!("");
+            tracing::info!("Tool Usage Across All Sessions:");
+            tracing::info!("Total tool calls: {}", total_tool_calls);
+            // Sort aggregate tool calls by count (descending)
+            let mut tool_list: Vec<_> = aggregate_tool_calls.iter().collect();
+            tool_list.sort_by(|a, b| b.1.cmp(a.1));
+            for (tool_name, count) in tool_list {
+                let percentage = (*count as f64 / total_tool_calls as f64) * 100.0;
+                tracing::info!("  {}: {} ({:.1}%)", tool_name, count, percentage);
+            }
+        }
+
         tracing::info!("═══════════════════════════════════════════════════════════");
     }
 }
 
 impl lunaroute_ingress::types::SessionStatsTracker for SessionStatsTracker {
-    fn record_request(
-        &self,
-        session_id: String,
-        input_tokens: u64,
-        output_tokens: u64,
-        thinking_tokens: u64,
-        pre_proxy_time: Duration,
-        post_proxy_time: Duration,
-    ) {
-        self.record_request(session_id, input_tokens, output_tokens, thinking_tokens, pre_proxy_time, post_proxy_time);
+    fn record_request(&self, session_id: String, stats: lunaroute_ingress::types::SessionRequestStats) {
+        self.record_request(
+            session_id,
+            stats.input_tokens,
+            stats.output_tokens,
+            stats.thinking_tokens,
+            stats.tool_calls,
+            stats.pre_proxy_time,
+            stats.post_proxy_time,
+        );
     }
 }
 
@@ -263,6 +309,7 @@ mod tests {
             100,
             200,
             0,
+            HashMap::new(),
             Duration::from_millis(5),
             Duration::from_millis(10),
         );
@@ -285,6 +332,7 @@ mod tests {
             100,
             200,
             1500,
+            HashMap::new(),
             Duration::from_millis(5),
             Duration::from_millis(10),
         );
@@ -294,6 +342,7 @@ mod tests {
             50,
             100,
             0,
+            HashMap::new(),
             Duration::from_millis(3),
             Duration::from_millis(7),
         );
@@ -313,9 +362,9 @@ mod tests {
         let config = SessionStatsConfig { max_sessions: 2 };
         let tracker = SessionStatsTracker::new(config);
 
-        tracker.record_request("session1".to_string(), 100, 200, 0, Duration::from_millis(5), Duration::from_millis(10));
-        tracker.record_request("session2".to_string(), 100, 200, 0, Duration::from_millis(5), Duration::from_millis(10));
-        tracker.record_request("session3".to_string(), 100, 200, 0, Duration::from_millis(5), Duration::from_millis(10));
+        tracker.record_request("session1".to_string(), 100, 200, 0, HashMap::new(), Duration::from_millis(5), Duration::from_millis(10));
+        tracker.record_request("session2".to_string(), 100, 200, 0, HashMap::new(), Duration::from_millis(5), Duration::from_millis(10));
+        tracker.record_request("session3".to_string(), 100, 200, 0, HashMap::new(), Duration::from_millis(5), Duration::from_millis(10));
 
         // Should have evicted one session
         assert_eq!(tracker.session_count(), 2);
@@ -325,12 +374,51 @@ mod tests {
     fn test_get_all_stats() {
         let tracker = SessionStatsTracker::new(SessionStatsConfig::default());
 
-        tracker.record_request("session1".to_string(), 100, 200, 0, Duration::from_millis(5), Duration::from_millis(10));
-        tracker.record_request("session2".to_string(), 50, 100, 0, Duration::from_millis(3), Duration::from_millis(7));
+        tracker.record_request("session1".to_string(), 100, 200, 0, HashMap::new(), Duration::from_millis(5), Duration::from_millis(10));
+        tracker.record_request("session2".to_string(), 50, 100, 0, HashMap::new(), Duration::from_millis(3), Duration::from_millis(7));
 
         let all_stats = tracker.get_all_stats();
         assert_eq!(all_stats.len(), 2);
         assert!(all_stats.contains_key("session1"));
         assert!(all_stats.contains_key("session2"));
+    }
+
+    #[test]
+    fn test_tool_call_tracking() {
+        let tracker = SessionStatsTracker::new(SessionStatsConfig::default());
+
+        let mut tool_calls1 = HashMap::new();
+        tool_calls1.insert("Read".to_string(), 3);
+        tool_calls1.insert("Write".to_string(), 1);
+
+        let mut tool_calls2 = HashMap::new();
+        tool_calls2.insert("Read".to_string(), 2);
+        tool_calls2.insert("Bash".to_string(), 1);
+
+        tracker.record_request(
+            "session1".to_string(),
+            100,
+            200,
+            0,
+            tool_calls1,
+            Duration::from_millis(5),
+            Duration::from_millis(10),
+        );
+
+        tracker.record_request(
+            "session1".to_string(),
+            50,
+            100,
+            0,
+            tool_calls2,
+            Duration::from_millis(3),
+            Duration::from_millis(7),
+        );
+
+        let stats = tracker.get_session_stats("session1").unwrap();
+        assert_eq!(stats.total_tool_calls, 7);
+        assert_eq!(stats.tool_calls.get("Read"), Some(&5));
+        assert_eq!(stats.tool_calls.get("Write"), Some(&1));
+        assert_eq!(stats.tool_calls.get("Bash"), Some(&1));
     }
 }

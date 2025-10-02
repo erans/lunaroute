@@ -115,7 +115,7 @@ curl http://localhost:3000/v1/chat/completions \
 
 The demo server accepts OpenAI-compatible requests and proxies them through the LunaRoute gateway with automatic session recording. Supports latest models including **GPT-5 mini** and **Claude Sonnet 4.5**. Streaming is fully supported for real-time responses.
 
-Session recording is automatically enabled. Sessions are stored in `./sessions` (configurable via `SESSIONS_DIR` env var) and can be queried via:
+Session recording is automatically enabled. Sessions are stored in `~/.lunaroute/sessions` (configurable via `SESSIONS_DIR` env var) and can be queried via:
 ```bash
 # List all sessions
 curl http://localhost:3000/sessions
@@ -383,7 +383,7 @@ See `crates/lunaroute-integration-tests/README.md` for details.
 - **Demo server integration**
   - RecordingProvider wrapper integrated with OpenAI and Anthropic providers
   - Session query API endpoints (/sessions, /sessions/:session_id)
-  - Configurable storage path (SESSIONS_DIR env var, defaults to ./sessions)
+  - Configurable storage path (SESSIONS_DIR env var, defaults to ~/.lunaroute/sessions)
   - Query filters: provider, model, success, streaming, limit
   - Integration testing guide: docs/TEST_SESSION_RECORDING.md
 - **Security hardening**

@@ -214,11 +214,8 @@ impl Provider for LoggingProvider {
         if !response.choices.is_empty() {
             let message = &response.choices[0].message;
             // MessageContent is an enum, check if it's text
-            match &message.content {
-                lunaroute_core::normalized::MessageContent::Text(text) => {
-                    info!("│ Content: {}", text);
-                }
-                _ => {}
+            if let lunaroute_core::normalized::MessageContent::Text(text) = &message.content {
+                info!("│ Content: {}", text);
             }
         }
         info!("│ Tokens: input={}, output={}, total={}",
@@ -363,9 +360,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut openai_connector: Option<Arc<OpenAIConnector>> = None;
 
     // OpenAI provider
-    if let Some(openai_config) = &config.providers.openai {
-        if openai_config.enabled {
-            if let Some(ref api_key) = openai_config.api_key {
+    if let Some(openai_config) = &config.providers.openai
+        && openai_config.enabled
+    {
+        if let Some(ref api_key) = openai_config.api_key {
                 info!("✓ OpenAI provider enabled");
                 let provider_config = OpenAIConfig::new(api_key.clone());
                 let conn = OpenAIConnector::new(provider_config)?;
@@ -389,26 +387,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         Arc::new(recording)
                     }
+                } else if config.logging.log_requests {
+                    info!("  Request/response logging: enabled");
+                    Arc::new(LoggingProvider::new(connector.clone(), "OpenAI".to_string()))
                 } else {
-                    if config.logging.log_requests {
-                        info!("  Request/response logging: enabled");
-                        Arc::new(LoggingProvider::new(connector.clone(), "OpenAI".to_string()))
-                    } else {
-                        connector
-                    }
+                    connector
                 };
 
-                providers.insert("openai".to_string(), provider);
-            } else {
-                warn!("✗ OpenAI provider enabled but no API key provided");
-            }
+            providers.insert("openai".to_string(), provider);
+        } else {
+            warn!("✗ OpenAI provider enabled but no API key provided");
         }
     }
 
     // Anthropic provider
-    if let Some(anthropic_config) = &config.providers.anthropic {
-        if anthropic_config.enabled {
-            if let Some(ref api_key) = anthropic_config.api_key {
+    if let Some(anthropic_config) = &config.providers.anthropic
+        && anthropic_config.enabled
+    {
+        if let Some(ref api_key) = anthropic_config.api_key {
                 info!("✓ Anthropic provider enabled");
                 let base_url = anthropic_config
                     .base_url
@@ -442,19 +438,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         Arc::new(recording)
                     }
+                } else if config.logging.log_requests {
+                    info!("  Request/response logging: enabled");
+                    Arc::new(LoggingProvider::new(connector.clone(), "Anthropic".to_string()))
                 } else {
-                    if config.logging.log_requests {
-                        info!("  Request/response logging: enabled");
-                        Arc::new(LoggingProvider::new(connector.clone(), "Anthropic".to_string()))
-                    } else {
-                        connector
-                    }
+                    connector
                 };
 
-                providers.insert("anthropic".to_string(), provider);
-            } else {
-                warn!("✗ Anthropic provider enabled but no API key provided");
-            }
+            providers.insert("anthropic".to_string(), provider);
+        } else {
+            warn!("✗ Anthropic provider enabled but no API key provided");
         }
     }
 
@@ -569,7 +562,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if is_anthropic_passthrough {
                 if let Some(connector) = anthropic_connector {
                     info!("⚡ Passthrough mode: Anthropic→Anthropic (no normalization)");
-                    anthropic_ingress::passthrough_router(connector, Some(stats_tracker_clone))
+                    anthropic_ingress::passthrough_router(connector, Some(stats_tracker_clone), Some(metrics.clone()))
                 } else {
                     anthropic_ingress::router(router)
                 }

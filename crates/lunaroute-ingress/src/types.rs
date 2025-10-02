@@ -286,19 +286,28 @@ impl StreamEvent {
     }
 }
 
+/// Request statistics for session tracking
+#[derive(Debug, Clone, Default)]
+pub struct SessionRequestStats {
+    /// Input tokens consumed
+    pub input_tokens: u64,
+    /// Output tokens generated
+    pub output_tokens: u64,
+    /// Thinking tokens used (Anthropic extended thinking)
+    pub thinking_tokens: u64,
+    /// Tool calls by name (tool_name -> call_count)
+    pub tool_calls: std::collections::HashMap<String, u64>,
+    /// Time spent processing before proxying to provider
+    pub pre_proxy_time: std::time::Duration,
+    /// Time spent processing after receiving from provider
+    pub post_proxy_time: std::time::Duration,
+}
+
 /// Session statistics tracker trait
 /// Allows recording per-session request statistics for monitoring proxy overhead
 pub trait SessionStatsTracker: Send + Sync {
     /// Record statistics for a request
-    fn record_request(
-        &self,
-        session_id: String,
-        input_tokens: u64,
-        output_tokens: u64,
-        thinking_tokens: u64,
-        pre_proxy_time: std::time::Duration,
-        post_proxy_time: std::time::Duration,
-    );
+    fn record_request(&self, session_id: String, stats: SessionRequestStats);
 }
 
 #[cfg(test)]

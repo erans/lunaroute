@@ -1,17 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiDialect {
     OpenAI,
+    #[default]
     Anthropic,
-}
-
-impl Default for ApiDialect {
-    fn default() -> Self {
-        ApiDialect::Anthropic
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,7 +150,7 @@ impl ServerConfig {
 
         // Provider API keys (no LUNAROUTE_ prefix for these)
         if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
-            let provider = self.providers.openai.get_or_insert_with(|| ProviderSettings {
+            let provider = self.providers.openai.get_or_insert(ProviderSettings {
                 api_key: None,
                 base_url: None,
                 enabled: true,
@@ -164,7 +159,7 @@ impl ServerConfig {
         }
 
         if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
-            let provider = self.providers.anthropic.get_or_insert_with(|| ProviderSettings {
+            let provider = self.providers.anthropic.get_or_insert(ProviderSettings {
                 api_key: None,
                 base_url: None,
                 enabled: true,
@@ -177,17 +172,17 @@ impl ServerConfig {
             self.session_recording.directory = val;
         }
 
-        if let Ok(val) = std::env::var("LUNAROUTE_ENABLE_SESSION_RECORDING") {
-            if let Ok(enabled) = val.parse::<bool>() {
-                self.session_recording.enabled = enabled;
-            }
+        if let Ok(val) = std::env::var("LUNAROUTE_ENABLE_SESSION_RECORDING")
+            && let Ok(enabled) = val.parse::<bool>()
+        {
+            self.session_recording.enabled = enabled;
         }
 
         // Logging settings
-        if let Ok(val) = std::env::var("LUNAROUTE_LOG_REQUESTS") {
-            if let Ok(enabled) = val.parse::<bool>() {
-                self.logging.log_requests = enabled;
-            }
+        if let Ok(val) = std::env::var("LUNAROUTE_LOG_REQUESTS")
+            && let Ok(enabled) = val.parse::<bool>()
+        {
+            self.logging.log_requests = enabled;
         }
 
         if let Ok(val) = std::env::var("LUNAROUTE_LOG_LEVEL") {
@@ -195,10 +190,10 @@ impl ServerConfig {
         }
 
         // Server settings
-        if let Ok(val) = std::env::var("LUNAROUTE_PORT") {
-            if let Ok(port) = val.parse::<u16>() {
-                self.port = port;
-            }
+        if let Ok(val) = std::env::var("LUNAROUTE_PORT")
+            && let Ok(port) = val.parse::<u16>()
+        {
+            self.port = port;
         }
 
         if let Ok(val) = std::env::var("LUNAROUTE_HOST") {
@@ -216,7 +211,9 @@ fn default_port() -> u16 {
 }
 
 fn default_sessions_dir() -> String {
-    "./sessions".to_string()
+    std::env::var("HOME")
+        .map(|home| format!("{}/.lunaroute/sessions", home))
+        .unwrap_or_else(|_| "./sessions".to_string())
 }
 
 fn default_log_level() -> String {

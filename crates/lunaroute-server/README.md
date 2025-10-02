@@ -88,7 +88,7 @@ lunaroute-server --config config.yaml --dialect anthropic
 | `LUNAROUTE_HOST` | Server bind address | 127.0.0.1 |
 | `LUNAROUTE_PORT` | Server port | 3000 |
 | `LUNAROUTE_ENABLE_SESSION_RECORDING` | Enable session recording | false |
-| `LUNAROUTE_SESSIONS_DIR` | Session storage directory | ./sessions |
+| `LUNAROUTE_SESSIONS_DIR` | Session storage directory | ~/.lunaroute/sessions |
 | `LUNAROUTE_LOG_REQUESTS` | Log requests to stdout | false |
 | `LUNAROUTE_LOG_LEVEL` | Log level (trace/debug/info/warn/error) | info |
 
@@ -149,7 +149,7 @@ If session recording is enabled:
 - ✅ **Circuit breakers**: Prevent cascading failures
 - ✅ **Health monitoring**: Track provider availability
 - ✅ **Session recording**: Optional request/response capture
-- ✅ **Session statistics**: Per-session tracking of tokens (input/output/thinking), requests, and proxy overhead
+- ✅ **Session statistics**: Per-session tracking of tokens (input/output/thinking), requests, tool usage, and proxy overhead
 - ✅ **Request logging**: Print all traffic to stdout
 - ✅ **Detailed timing metrics**: Pre/post proxy overhead, provider response time (DEBUG level)
 - ✅ **Prometheus metrics**: Request rates, latencies, tokens
@@ -159,9 +159,10 @@ If session recording is enabled:
 
 When running with `LUNAROUTE_LOG_LEVEL=debug`, detailed session statistics are printed on shutdown:
 
-- **Per-session metrics**: Request count, input/output/thinking tokens, processing overhead
+- **Per-session metrics**: Request count, input/output/thinking tokens, tool usage, processing overhead
 - **Aggregate statistics**: Total tokens across sessions, average processing time
 - **Thinking token tracking**: Separate tracking for Anthropic extended thinking usage
+- **Tool call tracking**: Per-session and aggregate statistics on tool usage (e.g., Read, Write, Bash calls)
 - **Proxy overhead analysis**: Exact time spent in pre/post processing vs provider response
 
 Configure max sessions tracked in config file:

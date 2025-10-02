@@ -415,8 +415,8 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
             // Concatenate all text blocks
             blocks
                 .into_iter()
-                .filter_map(|block| match block {
-                    AnthropicSystemBlock::Text { text } => Some(text),
+                .map(|block| match block {
+                    AnthropicSystemBlock::Text { text } => text,
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -800,10 +800,11 @@ pub async fn messages(
     }
 }
 
-/// State for passthrough handler (connector + optional stats tracker)
+/// State for passthrough handler (connector + optional stats tracker + metrics)
 pub struct PassthroughState {
     pub connector: Arc<lunaroute_egress::anthropic::AnthropicConnector>,
     pub stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
+    pub metrics: Option<Arc<lunaroute_observability::Metrics>>,
 }
 
 /// Passthrough handler for Anthropic→Anthropic routing (no normalization)
@@ -830,10 +831,10 @@ pub async fn messages_passthrough(
     for (name, value) in headers.iter() {
         let name_str = name.as_str();
         // Pass through anthropic-* headers (version, beta, etc.)
-        if name_str.starts_with("anthropic-") {
-            if let Ok(value_str) = value.to_str() {
-                passthrough_headers.insert(name_str.to_string(), value_str.to_string());
-            }
+        if name_str.starts_with("anthropic-")
+            && let Ok(value_str) = value.to_str()
+        {
+            passthrough_headers.insert(name_str.to_string(), value_str.to_string());
         }
     }
 
@@ -851,6 +852,12 @@ pub async fn messages_passthrough(
         "Proxy overhead before provider call: {:.2}ms",
         pre_provider_overhead.as_secs_f64() * 1000.0
     );
+
+    // Extract model before req is moved (for metrics)
+    let model = req.get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
 
     // Send directly to Anthropic API
     let response = state.connector
@@ -901,6 +908,23 @@ pub async fn messages_passthrough(
         (0, 0, 0)
     };
 
+    // Extract tool calls from response content
+    let mut tool_calls = std::collections::HashMap::new();
+    if let Some(content) = response.get("content").and_then(|c| c.as_array()) {
+        for block in content {
+            if let Some("tool_use") = block.get("type").and_then(|t| t.as_str())
+                && let Some(tool_name) = block.get("name").and_then(|n| n.as_str())
+            {
+                *tool_calls.entry(tool_name.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    if !tool_calls.is_empty() {
+        let total_tools: u64 = tool_calls.values().sum();
+        tracing::debug!("Tool calls: {} total across {} tools", total_tools, tool_calls.len());
+    }
+
     let response_result = Ok(Json(response).into_response());
 
     let total_time = std::time::Instant::now().duration_since(start_time);
@@ -922,12 +946,33 @@ pub async fn messages_passthrough(
     if let (Some(tracker), Some(sid)) = (state.stats_tracker.as_ref(), session_id) {
         tracker.record_request(
             sid,
-            input_tokens,
-            output_tokens,
-            thinking_tokens,
-            pre_provider_overhead,
-            post_provider_overhead,
+            crate::types::SessionRequestStats {
+                input_tokens,
+                output_tokens,
+                thinking_tokens,
+                tool_calls,
+                pre_proxy_time: pre_provider_overhead,
+                post_proxy_time: post_provider_overhead,
+            },
         );
+    }
+
+    // Record metrics if available
+    if let Some(metrics) = state.metrics.as_ref() {
+        let total_time = start_time.elapsed().as_secs_f64();
+
+        if response_result.is_ok() {
+            metrics.record_request_success("anthropic", &model, "anthropic", total_time);
+            metrics.record_tokens("anthropic", &model, input_tokens as u32, output_tokens as u32);
+        } else {
+            metrics.record_request_failure(
+                "anthropic",
+                &model,
+                "anthropic",
+                "provider_error",
+                total_time,
+            );
+        }
     }
 
     response_result
@@ -944,10 +989,12 @@ pub fn router(provider: Arc<dyn Provider>) -> Router {
 pub fn passthrough_router(
     connector: Arc<lunaroute_egress::anthropic::AnthropicConnector>,
     stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
+    metrics: Option<Arc<lunaroute_observability::Metrics>>,
 ) -> Router {
     let state = Arc::new(PassthroughState {
         connector,
         stats_tracker,
+        metrics,
     });
 
     Router::new()
