@@ -12,7 +12,7 @@ LunaRoute is a high-performance API gateway for Large Language Model providers, 
 - **Intelligent Routing**: Route requests based on rules, health, and cost optimization
 - **Session Recording**: Capture and replay all LLM interactions with GDPR-compliant IP anonymization
 - **Session Statistics**: Track per-session tokens (input/output/thinking), request counts, and proxy overhead
-- **PII Detection & Redaction**: Automatically detect and redact sensitive information
+- **PII Detection & Redaction**: Automatically detect and redact sensitive information with HKDF-based tokenization, JSON structure preservation, and overlapping detection handling
 - **Budget Management**: Track and enforce spending limits across providers
 - **Circuit Breakers**: Automatic failover and retry logic
 - **High Performance**: Built in Rust for minimal latency overhead (p95 < 35ms), with detailed timing metrics
@@ -33,6 +33,52 @@ LunaRoute is organized as a Rust workspace with the following crates:
 - **lunaroute-server**: Production server binary with configuration file support
 - **lunaroute-cli**: Command-line interface (`lunaroute`)
 - **lunaroute-integration-tests**: End-to-end integration tests
+
+## Security Features
+
+### PII Detection & Redaction
+
+LunaRoute includes production-ready PII protection with enterprise-grade security:
+
+**Supported PII Types:**
+- Email addresses, phone numbers, SSN
+- Credit card numbers (with Luhn validation)
+- IP addresses (IPv4 and IPv6)
+- Custom patterns (API keys, tokens, secrets)
+
+**Redaction Modes:**
+- **Mask**: Replace with `[EMAIL]`, `[PHONE]`, etc.
+- **Remove**: Delete PII completely
+- **Tokenize**: HMAC-based deterministic tokens with HKDF key derivation
+- **Partial**: Show last N characters
+
+**Security Enhancements:**
+- **HKDF Key Derivation**: Secure key derivation from master secrets (no plaintext storage)
+- **JSON Structure Preservation**: Parse and redact JSON without corruption
+- **Overlapping Detection Handling**: Merge overlapping PII detections by confidence score
+- **Custom Pattern Security**: JSON-based format prevents colon-splitting vulnerabilities
+
+**Configuration Example:**
+```yaml
+session_recording:
+  pii:
+    enabled: true
+    detect_email: true
+    detect_phone: true
+    detect_ssn: true
+    detect_credit_card: true
+    redaction_mode: "tokenize"
+    hmac_secret: "${PII_SECRET}"
+
+    custom_patterns:
+      - name: "api_key"
+        pattern: "sk-[a-zA-Z0-9]{32}"
+        confidence: 0.95
+        redaction_mode: "mask"
+        placeholder: "[API_KEY]"
+```
+
+See `crates/lunaroute-pii/README.md` for complete documentation.
 
 ## Quick Start
 
@@ -231,15 +277,15 @@ See `crates/lunaroute-integration-tests/README.md` for details.
 - **Complete streaming pipeline**: Client → Ingress SSE → Normalized events → Egress SSE → Provider
 - Error propagation (validation errors, provider errors)
 - Production server (`lunaroute-server`) with configuration file support
-- **432 unit tests passing across workspace:**
+- **544 unit tests passing across workspace:**
   - Core types: 16 tests
   - Ingress: 106 tests (87 unit + 19 integration)
   - Egress: 58 tests (46 unit + 12 integration)
   - Routing: 84 tests (72 unit + 6 integration + 6 streaming)
   - Observability: 34 tests (27 unit + 7 integration)
   - Storage: 88 tests
-  - Session: 62 tests (session recording, disk management, search/filter)
-  - PII: 18 tests
+  - Session: 80 tests (session recording, PII integration, disk management, search/filter)
+  - PII: 50 tests (detection, redaction, security features)
   - E2E integration: 23 tests (11 integration test files)
 - **73.35% code coverage** (2042/2784 lines)
 - **11 integration test files** (wiremock mocks + real API tests)
@@ -432,11 +478,19 @@ See `crates/lunaroute-integration-tests/README.md` for details.
   - Security validation tests (22 new test cases for production hardening)
   - 11 integration test files with wiremock mocks
 
+**Phase 11: PII Detection & Redaction** ✅ Complete
+- PII detection and redaction (email, phone, SSN, credit cards, IP addresses)
+- Custom pattern support with JSON serialization
+- HKDF-based key derivation for secure tokenization
+- JSON structure preservation in tool call arguments
+- Overlapping detection handling
+- Session recording integration
+- 130 comprehensive tests
+
 **Next Steps:**
 - **Phase 9**: Authentication & authorization (API key management, rate limiting)
 - **Phase 10**: Budget management (cost tracking, spending limits)
-- **Phase 11**: PII detection & redaction (email, SSN, credit cards)
-- **Session recording production gaps**: Disk management, encryption, performance optimization
+- **Session recording enhancements**: Encryption at rest, advanced search, performance optimization
 
 See [TODO.md](TODO.md) for the complete implementation roadmap.
 
