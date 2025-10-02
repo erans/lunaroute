@@ -4,20 +4,37 @@ use crate::events::SessionEvent;
 use crate::writer::{SessionWriter, WriterResult};
 use async_trait::async_trait;
 use chrono::Utc;
+use lru::LruCache;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::sync::Mutex;
 
-/// JSONL writer for session events
+/// JSONL writer for session events with file handle caching and buffered writes
 pub struct JsonlWriter {
     sessions_dir: PathBuf,
+    config: JsonlConfig,
+    // LRU cache for file handles - uses tokio::sync::Mutex for async compatibility
+    file_cache: Mutex<LruCache<String, BufWriter<tokio::fs::File>>>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct JsonlConfig {
-    // Reserved for future configuration options
-    // Currently empty but kept for backwards compatibility
+    /// Maximum number of open file handles to cache (default: 100)
+    pub cache_size: usize,
+    /// Buffer size in bytes for each file (default: 64KB)
+    pub buffer_size: usize,
+}
+
+impl Default for JsonlConfig {
+    fn default() -> Self {
+        Self {
+            cache_size: 100,
+            buffer_size: 64 * 1024, // 64KB
+        }
+    }
 }
 
 /// Sanitize session ID to prevent path traversal attacks
@@ -32,12 +49,16 @@ fn sanitize_session_id(session_id: &str) -> String {
 
 impl JsonlWriter {
     pub fn new(sessions_dir: PathBuf) -> Self {
-        Self { sessions_dir }
+        Self::with_config(sessions_dir, JsonlConfig::default())
     }
 
-    pub fn with_config(sessions_dir: PathBuf, _config: JsonlConfig) -> Self {
-        // Config parameter kept for backwards compatibility but not used
-        Self { sessions_dir }
+    pub fn with_config(sessions_dir: PathBuf, config: JsonlConfig) -> Self {
+        let cache_size = NonZeroUsize::new(config.cache_size).expect("cache_size must be > 0");
+        Self {
+            sessions_dir,
+            config,
+            file_cache: Mutex::new(LruCache::new(cache_size)),
+        }
     }
 
     /// Get the file path for a session (organized by date)
@@ -49,8 +70,15 @@ impl JsonlWriter {
             .join(format!("{}.jsonl", sanitized_id))
     }
 
-    /// Open file for appending
-    async fn open_session_file(&self, session_id: &str) -> WriterResult<tokio::fs::File> {
+    /// Get cache key for a session (date + session_id)
+    fn get_cache_key(&self, session_id: &str) -> String {
+        let sanitized_id = sanitize_session_id(session_id);
+        let today = Utc::now().format("%Y-%m-%d");
+        format!("{}:{}", today, sanitized_id)
+    }
+
+    /// Open file for appending (used when cache miss)
+    async fn open_session_file(&self, session_id: &str) -> WriterResult<BufWriter<tokio::fs::File>> {
         let path = self.get_session_file_path(session_id);
 
         // Create directory if needed
@@ -65,7 +93,55 @@ impl JsonlWriter {
             .open(&path)
             .await?;
 
-        Ok(file)
+        // Wrap in BufWriter for buffering
+        Ok(BufWriter::with_capacity(self.config.buffer_size, file))
+    }
+
+    /// Get or create a cached file handle
+    async fn get_cached_file(&self, session_id: &str) -> WriterResult<()> {
+        let cache_key = self.get_cache_key(session_id);
+
+        // Check cache first
+        let cache = self.file_cache.lock().await;
+
+        if !cache.contains(&cache_key) {
+            // Cache miss - need to open file
+            // Release lock while opening file
+            drop(cache);
+
+            let file = self.open_session_file(session_id).await?;
+
+            // Reacquire lock to add to cache
+            let mut cache = self.file_cache.lock().await;
+
+            // Check again in case another task added it while we were opening
+            if !cache.contains(&cache_key) {
+                // If cache is full, evict LRU entry
+                if let Some((_, mut evicted)) = cache.push(cache_key.clone(), file) {
+                    // Release lock before flushing evicted file
+                    drop(cache);
+                    evicted.flush().await?;
+                    drop(evicted);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Write data to cached file
+    async fn write_to_file(&self, session_id: &str, data: &[u8]) -> WriterResult<()> {
+        // Ensure file is cached
+        self.get_cached_file(session_id).await?;
+
+        let cache_key = self.get_cache_key(session_id);
+        let mut cache = self.file_cache.lock().await;
+
+        if let Some(file) = cache.get_mut(&cache_key) {
+            file.write_all(data).await?;
+        }
+
+        Ok(())
     }
 }
 
@@ -73,12 +149,13 @@ impl JsonlWriter {
 impl SessionWriter for JsonlWriter {
     async fn write_event(&self, event: &SessionEvent) -> WriterResult<()> {
         let session_id = event.session_id();
-        let mut file = self.open_session_file(session_id).await?;
 
+        // Serialize event
         let json = serde_json::to_string(event)?;
-        file.write_all(json.as_bytes()).await?;
-        file.write_all(b"\n").await?;
-        file.flush().await?;
+
+        // Write to cached file handle
+        self.write_to_file(session_id, json.as_bytes()).await?;
+        self.write_to_file(session_id, b"\n").await?;
 
         Ok(())
     }
@@ -95,24 +172,26 @@ impl SessionWriter for JsonlWriter {
                 .push(event);
         }
 
-        // Write each session's events
+        // Write each session's events using cached file handles
         for (session_id, session_events) in by_session {
-            let mut file = self.open_session_file(&session_id).await?;
-
             for event in session_events {
                 let json = serde_json::to_string(event)?;
-                file.write_all(json.as_bytes()).await?;
-                file.write_all(b"\n").await?;
+                self.write_to_file(&session_id, json.as_bytes()).await?;
+                self.write_to_file(&session_id, b"\n").await?;
             }
-
-            file.flush().await?;
         }
 
         Ok(())
     }
 
     async fn flush(&self) -> WriterResult<()> {
-        // Files are flushed after each write, so nothing to do here
+        // Flush all cached file handles
+        let mut cache = self.file_cache.lock().await;
+
+        for (_, file) in cache.iter_mut() {
+            file.flush().await?;
+        }
+
         Ok(())
     }
 
@@ -151,6 +230,7 @@ mod tests {
         };
 
         writer.write_event(&event).await.unwrap();
+        writer.flush().await.unwrap(); // Flush buffers before reading
 
         // Verify file exists
         let today = Utc::now().format("%Y-%m-%d");
@@ -229,6 +309,7 @@ mod tests {
         ];
 
         writer.write_batch(&events).await.unwrap();
+        writer.flush().await.unwrap(); // Flush buffers before reading
 
         let today = Utc::now().format("%Y-%m-%d");
         let expected_path = dir.path().join(today.to_string()).join("test-1.jsonl");
@@ -283,6 +364,7 @@ mod tests {
         };
 
         writer.write_event(&event).await.unwrap();
+        writer.flush().await.unwrap(); // Flush buffers before checking files
 
         // Verify the file was created with sanitized name, not at /etc/passwd
         let today = Utc::now().format("%Y-%m-%d");
@@ -362,6 +444,7 @@ mod tests {
         ];
 
         writer.write_batch(&events).await.unwrap();
+        writer.flush().await.unwrap(); // Flush buffers before reading
 
         let today = Utc::now().format("%Y-%m-%d");
         let expected_path = dir.path().join(today.to_string()).join(format!("{}.jsonl", session_id));
@@ -392,5 +475,153 @@ mod tests {
         assert_eq!(streaming_stats["time_to_first_token_ms"], 125);
         assert_eq!(streaming_stats["streaming_duration_ms"], 3375);
         assert_eq!(streaming_stats["p95_chunk_latency_ms"], 180);
+    }
+
+    #[tokio::test]
+    async fn test_file_handle_caching() {
+        let dir = tempdir().unwrap();
+        let config = JsonlConfig {
+            cache_size: 2, // Small cache to test eviction
+            buffer_size: 1024,
+        };
+        let writer = JsonlWriter::with_config(dir.path().to_path_buf(), config);
+
+        // Write to session 1
+        let event1 = SessionEvent::Started {
+            session_id: "session-1".to_string(),
+            request_id: "req-1".to_string(),
+            timestamp: Utc::now(),
+            model_requested: "gpt-4".to_string(),
+            provider: "openai".to_string(),
+            listener: "openai".to_string(),
+            is_streaming: false,
+            metadata: SessionMetadata {
+                client_ip: None,
+                user_agent: None,
+                api_version: None,
+                request_headers: HashMap::new(),
+                session_tags: vec![],
+            },
+        };
+        writer.write_event(&event1).await.unwrap();
+
+        // Write to session 2
+        let event2 = SessionEvent::Started {
+            session_id: "session-2".to_string(),
+            request_id: "req-2".to_string(),
+            timestamp: Utc::now(),
+            model_requested: "gpt-4".to_string(),
+            provider: "openai".to_string(),
+            listener: "openai".to_string(),
+            is_streaming: false,
+            metadata: SessionMetadata {
+                client_ip: None,
+                user_agent: None,
+                api_version: None,
+                request_headers: HashMap::new(),
+                session_tags: vec![],
+            },
+        };
+        writer.write_event(&event2).await.unwrap();
+
+        // Write to session 3 (should evict session-1 from cache)
+        let event3 = SessionEvent::Started {
+            session_id: "session-3".to_string(),
+            request_id: "req-3".to_string(),
+            timestamp: Utc::now(),
+            model_requested: "gpt-4".to_string(),
+            provider: "openai".to_string(),
+            listener: "openai".to_string(),
+            is_streaming: false,
+            metadata: SessionMetadata {
+                client_ip: None,
+                user_agent: None,
+                api_version: None,
+                request_headers: HashMap::new(),
+                session_tags: vec![],
+            },
+        };
+        writer.write_event(&event3).await.unwrap();
+
+        // Write again to session-1 (should open file again since it was evicted)
+        let event4 = SessionEvent::Started {
+            session_id: "session-1".to_string(),
+            request_id: "req-4".to_string(),
+            timestamp: Utc::now(),
+            model_requested: "gpt-4".to_string(),
+            provider: "openai".to_string(),
+            listener: "openai".to_string(),
+            is_streaming: false,
+            metadata: SessionMetadata {
+                client_ip: None,
+                user_agent: None,
+                api_version: None,
+                request_headers: HashMap::new(),
+                session_tags: vec![],
+            },
+        };
+        writer.write_event(&event4).await.unwrap();
+
+        // Flush all writes
+        writer.flush().await.unwrap();
+
+        // Verify all files exist and have correct content
+        let today = Utc::now().format("%Y-%m-%d");
+        for session_id in ["session-1", "session-2", "session-3"] {
+            let path = dir.path().join(today.to_string()).join(format!("{}.jsonl", session_id));
+            assert!(path.exists(), "Session file should exist: {}", session_id);
+
+            let content = tokio::fs::read_to_string(&path).await.unwrap();
+            assert!(content.contains(session_id));
+        }
+
+        // session-1 should have 2 events (req-1 and req-4)
+        let session1_path = dir.path().join(today.to_string()).join("session-1.jsonl");
+        let content = tokio::fs::read_to_string(&session1_path).await.unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2, "session-1 should have 2 events");
+        assert!(content.contains("req-1"));
+        assert!(content.contains("req-4"));
+    }
+
+    #[tokio::test]
+    async fn test_configurable_buffer_size() {
+        let dir = tempdir().unwrap();
+        let config = JsonlConfig {
+            cache_size: 10,
+            buffer_size: 512, // Small buffer for testing
+        };
+        let writer = JsonlWriter::with_config(dir.path().to_path_buf(), config);
+
+        // Write multiple events
+        for i in 0..10 {
+            let event = SessionEvent::Started {
+                session_id: "buffered-session".to_string(),
+                request_id: format!("req-{}", i),
+                timestamp: Utc::now(),
+                model_requested: "gpt-4".to_string(),
+                provider: "openai".to_string(),
+                listener: "openai".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                client_ip: None,
+                user_agent: None,
+                api_version: None,
+                request_headers: HashMap::new(),
+                session_tags: vec![],
+            },
+            };
+            writer.write_event(&event).await.unwrap();
+        }
+
+        // Flush to write buffered data
+        writer.flush().await.unwrap();
+
+        // Verify all events were written
+        let today = Utc::now().format("%Y-%m-%d");
+        let path = dir.path().join(today.to_string()).join("buffered-session.jsonl");
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 10, "All 10 events should be written");
     }
 }
