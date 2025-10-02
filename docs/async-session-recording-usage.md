@@ -436,7 +436,7 @@ The async session recording system fully supports streaming requests with compre
 ### Performance Considerations
 
 **Zero-Copy Passthrough**
-- Anthropic→Anthropic streaming uses passthrough mode
+- Anthropic→Anthropic and OpenAI→OpenAI streaming use passthrough mode
 - SSE events forwarded directly to client
 - Metrics extracted without buffering full response
 - Minimal latency overhead (< 1ms per chunk)

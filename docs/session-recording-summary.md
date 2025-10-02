@@ -164,5 +164,7 @@ print(f"Total cost: ${stats['estimated_cost.total_cost_usd'].sum():.2f}")
 2. ✅ **Phase 2**: SQLite metadata database
 3. ✅ **Phase 3**: Query tools and basic analytics
 4. ✅ **Phase 5**: Real-time streaming support with comprehensive metrics
+   - ✅ Anthropic passthrough mode
+   - ✅ OpenAI passthrough mode
 5. 🔄 **Phase 4**: Compression and archival (planned)
 6. 🔄 **Phase 6**: Advanced dashboards and visualization (planned)

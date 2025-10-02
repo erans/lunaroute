@@ -751,6 +751,505 @@ pub fn router(provider: Arc<dyn Provider>) -> Router {
         .with_state(provider)
 }
 
+/// State for OpenAI passthrough handler (connector + optional stats tracker + metrics + session recorder)
+pub struct OpenAIPassthroughState {
+    pub connector: Arc<lunaroute_egress::openai::OpenAIConnector>,
+    pub stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
+    pub metrics: Option<Arc<lunaroute_observability::Metrics>>,
+    pub session_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>>,
+}
+
+/// Create OpenAI passthrough router (for OpenAI→OpenAI direct routing)
+pub fn passthrough_router(
+    connector: Arc<lunaroute_egress::openai::OpenAIConnector>,
+    stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
+    metrics: Option<Arc<lunaroute_observability::Metrics>>,
+    session_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>>,
+) -> Router {
+    let state = Arc::new(OpenAIPassthroughState {
+        connector,
+        stats_tracker,
+        metrics,
+        session_recorder,
+    });
+
+    Router::new()
+        .route("/v1/chat/completions", post(chat_completions_passthrough))
+        .with_state(state)
+}
+
+/// Passthrough handler for OpenAI→OpenAI routing (no normalization)
+/// Takes raw JSON, sends directly to OpenAI, returns raw JSON
+/// Preserves 100% API fidelity while still extracting metrics
+pub async fn chat_completions_passthrough(
+    State(state): State<Arc<OpenAIPassthroughState>>,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Response, IngressError> {
+    let start_time = std::time::Instant::now();
+    tracing::debug!("OpenAI passthrough mode: skipping normalization");
+
+    // Extract session ID from metadata (reserved for future use)
+    let _session_id = req
+        .get("metadata")
+        .and_then(|m| m.get("user_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let is_streaming = req.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let before_provider = std::time::Instant::now();
+    let pre_provider_overhead = before_provider.duration_since(start_time);
+    tracing::debug!(
+        "Proxy overhead before provider call: {:.2}ms",
+        pre_provider_overhead.as_secs_f64() * 1000.0
+    );
+
+    // Extract model before req is moved (for metrics and session recording)
+    let model = req.get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    // Generate session ID and request ID for recording
+    let recording_session_id = if state.session_recorder.is_some() {
+        Some(uuid::Uuid::new_v4().to_string())
+    } else {
+        None
+    };
+
+    let recording_request_id = if state.session_recorder.is_some() {
+        Some(uuid::Uuid::new_v4().to_string())
+    } else {
+        None
+    };
+
+    // Start session recording if enabled (using async events)
+    if let (Some(recorder), Some(session_id), Some(request_id)) =
+        (&state.session_recorder, &recording_session_id, &recording_request_id)
+    {
+        use lunaroute_session::{SessionEvent, events::SessionMetadata as V2Metadata};
+
+        recorder.record_event(SessionEvent::Started {
+            session_id: session_id.clone(),
+            request_id: request_id.clone(),
+            timestamp: chrono::Utc::now(),
+            model_requested: model.clone(),
+            provider: "openai".to_string(),
+            listener: "openai".to_string(),
+            is_streaming,
+            metadata: V2Metadata {
+                client_ip: None,
+                user_agent: None,
+                api_version: None,
+                request_headers: Default::default(),
+                session_tags: vec![],
+            },
+        });
+    }
+
+    if is_streaming {
+        // Handle streaming passthrough
+        let stream_response = state.connector
+            .stream_passthrough(req)
+            .await
+            .map_err(|e| IngressError::ProviderError(e.to_string()))?;
+
+        // Track streaming metrics
+        use futures::StreamExt;
+        use std::sync::{Arc as StdArc, Mutex as StdMutex};
+
+        // State for tracking streaming metrics
+        let ttft_time: StdArc<StdMutex<Option<std::time::Instant>>> = StdArc::new(StdMutex::new(None));
+        let chunk_count = StdArc::new(StdMutex::new(0u32));
+        let chunk_latencies: StdArc<StdMutex<Vec<u64>>> = StdArc::new(StdMutex::new(Vec::new()));
+        let last_chunk_time: StdArc<StdMutex<std::time::Instant>> = StdArc::new(StdMutex::new(before_provider));
+        let accumulated_text = StdArc::new(StdMutex::new(String::new()));
+        let stream_model = StdArc::new(StdMutex::new(None::<String>));
+        let stream_finish_reason = StdArc::new(StdMutex::new(None::<String>));
+
+        let byte_stream = stream_response.bytes_stream();
+        let sse_stream = eventsource_stream::EventStream::new(byte_stream);
+
+        let ttft_clone = ttft_time.clone();
+        let chunk_count_clone = chunk_count.clone();
+        let latencies_clone = chunk_latencies.clone();
+        let last_chunk_clone = last_chunk_time.clone();
+        let text_clone = accumulated_text.clone();
+        let model_clone = stream_model.clone();
+        let finish_reason_clone = stream_finish_reason.clone();
+
+        let tracked_stream = sse_stream.map(move |event_result| {
+            match event_result {
+                Ok(event) => {
+                    let now = std::time::Instant::now();
+
+                    // Track TTFT on first chunk
+                    {
+                        if let Ok(mut ttft) = ttft_clone.lock() {
+                            if ttft.is_none() {
+                                *ttft = Some(now);
+                            }
+                        } else {
+                            tracing::error!("Streaming metrics: TTFT mutex poisoned");
+                        }
+                    }
+
+                    // Track chunk latency (with bounds to prevent unbounded growth)
+                    {
+                        if let (Ok(mut last), Ok(mut latencies)) = (
+                            last_chunk_clone.lock(),
+                            latencies_clone.lock()
+                        ) {
+                            let latency = now.duration_since(*last).as_millis() as u64;
+                            // Cap latency array at 10,000 entries to prevent OOM
+                            if latencies.len() < 10_000 {
+                                latencies.push(latency);
+                            }
+                            *last = now;
+                        } else {
+                            tracing::error!("Streaming metrics: latency tracking mutex poisoned");
+                        }
+                    }
+
+                    // Increment chunk count
+                    {
+                        if let Ok(mut count) = chunk_count_clone.lock() {
+                            *count += 1;
+                        } else {
+                            tracing::error!("Streaming metrics: chunk count mutex poisoned");
+                        }
+                    }
+
+                    // Parse event data to extract text and metadata (OpenAI format)
+                    if let Ok(openai_chunk) = serde_json::from_str::<serde_json::Value>(&event.data) {
+                        // Extract text deltas from choices (with size limit to prevent OOM)
+                        if let Some(choices) = openai_chunk.get("choices").and_then(|c| c.as_array())
+                            && let Some(first_choice) = choices.first()
+                            && let Some(delta) = first_choice.get("delta")
+                            && let Some(content) = delta.get("content").and_then(|c| c.as_str())
+                            && let Ok(mut accumulated) = text_clone.lock()
+                        {
+                            // Cap accumulated text at 1MB to prevent OOM
+                            if accumulated.len() + content.len() <= 1_000_000 {
+                                accumulated.push_str(content);
+                            }
+                        }
+
+                        // Extract model from chunk
+                        if let Some(model_str) = openai_chunk.get("model").and_then(|m| m.as_str())
+                            && let Ok(mut model) = model_clone.lock()
+                        {
+                            *model = Some(model_str.to_string());
+                        }
+
+                        // Extract finish reason from choices
+                        if let Some(choices) = openai_chunk.get("choices").and_then(|c| c.as_array())
+                            && let Some(first_choice) = choices.first()
+                            && let Some(reason) = first_choice.get("finish_reason").and_then(|r| r.as_str())
+                            && let Ok(mut finish) = finish_reason_clone.lock()
+                        {
+                            *finish = Some(reason.to_string());
+                        }
+                    }
+
+                    // Forward the event
+                    match serde_json::from_str::<serde_json::Value>(&event.data) {
+                        Ok(json) => Event::default().json_data(json)
+                            .map_err(|e| IngressError::Internal(format!("Failed to create SSE event: {}", e))),
+                        Err(e) => Err(IngressError::Internal(format!("Failed to parse SSE event data: {}", e)))
+                    }
+                }
+                Err(e) => {
+                    Err(IngressError::Internal(format!("SSE stream error: {}", e)))
+                }
+            }
+        });
+
+        // Add completion handler to record session stats when stream ends
+        let recorder_clone = state.session_recorder.clone();
+        let session_id_clone = recording_session_id.clone();
+        let request_id_clone = recording_request_id.clone();
+        let start_clone = start_time;
+        let before_provider_clone = before_provider;
+
+        let completion_stream = tracked_stream.chain(futures::stream::once(async move {
+            // Record StreamStarted and Completed events after stream ends
+            if let (Some(recorder), Some(session_id), Some(request_id)) =
+                (recorder_clone.as_ref(), session_id_clone.as_ref(), request_id_clone.as_ref())
+            {
+                use lunaroute_session::{SessionEvent, events::{StreamingStats, FinalSessionStats, TokenTotals, ToolUsageSummary, PerformanceMetrics}};
+
+                // Calculate streaming metrics (handle poisoned mutexes gracefully)
+                let ttft_ms = ttft_time.lock()
+                    .ok()
+                    .and_then(|guard| *guard)
+                    .map(|ttft| ttft.duration_since(before_provider_clone).as_millis() as u64)
+                    .unwrap_or(0);
+
+                let total_chunks = chunk_count.lock().ok().map(|c| *c).unwrap_or(0);
+                let latencies = chunk_latencies.lock().ok().map(|l| l.clone()).unwrap_or_default();
+
+                // Calculate percentiles (safe index calculation to avoid out-of-bounds)
+                let (p50, p95, p99, max, min, avg) = if !latencies.is_empty() {
+                    let mut sorted = latencies.clone();
+                    sorted.sort_unstable();
+                    let len = sorted.len();
+
+                    // Safe percentile index calculation: clamp to valid range
+                    let p50_idx = ((len - 1) * 50 / 100).min(len - 1);
+                    let p95_idx = ((len - 1) * 95 / 100).min(len - 1);
+                    let p99_idx = ((len - 1) * 99 / 100).min(len - 1);
+
+                    let p50 = sorted[p50_idx];
+                    let p95 = sorted[p95_idx];
+                    let p99 = sorted[p99_idx];
+                    let max = sorted[len - 1];  // Safe: len > 0
+                    let min = sorted[0];        // Safe: len > 0
+                    let avg = (sorted.iter().sum::<u64>() as f64) / (len as f64);
+
+                    (Some(p50), Some(p95), Some(p99), max, min, avg)
+                } else {
+                    (None, None, None, 0, 0, 0.0)
+                };
+
+                let total_duration_ms = start_clone.elapsed().as_millis() as u64;
+                let streaming_duration_ms = total_duration_ms.saturating_sub(ttft_ms);
+
+                // Record StreamStarted event
+                if ttft_ms > 0 {
+                    recorder.record_event(SessionEvent::StreamStarted {
+                        session_id: session_id.clone(),
+                        request_id: request_id.clone(),
+                        timestamp: chrono::Utc::now(),
+                        time_to_first_token_ms: ttft_ms,
+                    });
+                }
+
+                // Record Completed event with streaming_stats
+                let _model_used = stream_model.lock()
+                    .ok()
+                    .and_then(|m| m.clone())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let finish_reason = stream_finish_reason.lock()
+                    .ok()
+                    .and_then(|f| f.clone());
+
+                recorder.record_event(SessionEvent::Completed {
+                    session_id: session_id.clone(),
+                    request_id: request_id.clone(),
+                    timestamp: chrono::Utc::now(),
+                    success: true,
+                    error: None,
+                    finish_reason,
+                    final_stats: Box::new(FinalSessionStats {
+                        total_duration_ms,
+                        provider_time_ms: total_duration_ms, // Entire duration is provider time in streaming
+                        proxy_overhead_ms: 0.0, // Minimal overhead in passthrough mode
+                        total_tokens: TokenTotals::default(), // Tokens not available in passthrough streaming
+                        tool_summary: ToolUsageSummary::default(),
+                        performance: PerformanceMetrics::default(),
+                        streaming_stats: Some(StreamingStats {
+                            time_to_first_token_ms: ttft_ms,
+                            total_chunks,
+                            streaming_duration_ms,
+                            avg_chunk_latency_ms: avg,
+                            p50_chunk_latency_ms: p50,
+                            p95_chunk_latency_ms: p95,
+                            p99_chunk_latency_ms: p99,
+                            max_chunk_latency_ms: max,
+                            min_chunk_latency_ms: min,
+                        }),
+                        estimated_cost: None,
+                    }),
+                });
+            }
+
+            // Return empty event to complete the stream
+            Err(IngressError::Internal("Stream completed".to_string()))
+        }));
+
+        // Filter out the completion marker
+        let final_stream = completion_stream.filter_map(|result| {
+            futures::future::ready(match result {
+                Ok(event) => Some(Ok(event)),
+                Err(e) if e.to_string().contains("Stream completed") => None,
+                Err(e) => Some(Err(e)),
+            })
+        });
+
+        // Create SSE response
+        let sse_response = Sse::new(final_stream).keep_alive(KeepAlive::default());
+
+        return Ok(sse_response.into_response());
+    }
+
+    // Send directly to OpenAI API (non-streaming)
+    let response_result = state.connector
+        .send_passthrough(req)
+        .await;
+
+    let response = match response_result {
+        Ok(resp) => resp,
+        Err(e) => {
+            // Record error in session if recording is enabled
+            if let (Some(recorder), Some(session_id), Some(request_id)) =
+                (&state.session_recorder, &recording_session_id, &recording_request_id)
+            {
+                use lunaroute_session::{SessionEvent, events::FinalSessionStats};
+
+                recorder.record_event(SessionEvent::Completed {
+                    session_id: session_id.clone(),
+                    request_id: request_id.clone(),
+                    timestamp: chrono::Utc::now(),
+                    success: false,
+                    error: Some(e.to_string()),
+                    finish_reason: None,
+                    final_stats: Box::new(FinalSessionStats {
+                        total_duration_ms: start_time.elapsed().as_millis() as u64,
+                        provider_time_ms: 0,
+                        proxy_overhead_ms: 0.0,
+                        total_tokens: Default::default(),
+                        tool_summary: Default::default(),
+                        performance: Default::default(),
+                        streaming_stats: None,
+                        estimated_cost: None,
+                    }),
+                });
+            }
+            return Err(IngressError::ProviderError(e.to_string()));
+        }
+    };
+
+    let after_provider = std::time::Instant::now();
+    let provider_time = after_provider.duration_since(before_provider);
+    tracing::debug!(
+        "Provider response time: {:.2}ms",
+        provider_time.as_secs_f64() * 1000.0
+    );
+
+    // Extract metrics for observability (optional: log tokens, model, etc.)
+    let (input_tokens, output_tokens) = if let Some(usage) = response.get("usage") {
+        let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        if input > 0 || output > 0 {
+            tracing::debug!(
+                "Passthrough metrics: prompt_tokens={}, completion_tokens={}, total={}",
+                input,
+                output,
+                input + output
+            );
+        }
+        (input, output)
+    } else {
+        (0, 0)
+    };
+
+    // Record session response if enabled (using async events)
+    if let (Some(recorder), Some(session_id), Some(request_id)) =
+        (&state.session_recorder, &recording_session_id, &recording_request_id)
+        && let Ok(openai_resp) = serde_json::from_value::<OpenAIChatResponse>(response.clone()) {
+            use lunaroute_session::{SessionEvent, events::{ResponseStats, TokenStats, FinalSessionStats, TokenTotals, ToolUsageSummary, PerformanceMetrics}};
+
+            // Extract response text
+            let response_text = openai_resp.choices.iter()
+                .filter_map(|c| c.message.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            // Record response event
+            recorder.record_event(SessionEvent::ResponseRecorded {
+                session_id: session_id.clone(),
+                request_id: request_id.clone(),
+                timestamp: chrono::Utc::now(),
+                response_text: response_text.clone(),
+                response_json: response.clone(),
+                model_used: openai_resp.model.clone(),
+                stats: ResponseStats {
+                    provider_latency_ms: provider_time.as_millis() as u64,
+                    post_processing_ms: 0.0,
+                    total_proxy_overhead_ms: 0.0,
+                    tokens: TokenStats {
+                        input_tokens: input_tokens as u32,
+                        output_tokens: output_tokens as u32,
+                        thinking_tokens: None,
+                        cache_read_tokens: None,
+                        cache_write_tokens: None,
+                        total_tokens: (input_tokens + output_tokens) as u32,
+                        thinking_percentage: None,
+                        tokens_per_second: None,
+                    },
+                    tool_calls: vec![],
+                    response_size_bytes: response_text.len(),
+                    content_blocks: openai_resp.choices.len(),
+                    has_refusal: false,
+                    is_streaming: false,
+                    chunk_count: None,
+                    streaming_duration_ms: None,
+                },
+            });
+
+            // Record completion event
+            let finish_reason = openai_resp.choices.first()
+                .and_then(|c| c.finish_reason.clone());
+
+            recorder.record_event(SessionEvent::Completed {
+                session_id: session_id.clone(),
+                request_id: request_id.clone(),
+                timestamp: chrono::Utc::now(),
+                success: true,
+                error: None,
+                finish_reason,
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: start_time.elapsed().as_millis() as u64,
+                    provider_time_ms: provider_time.as_millis() as u64,
+                    proxy_overhead_ms: 0.0,
+                    total_tokens: TokenTotals {
+                        total_input: input_tokens,
+                        total_output: output_tokens,
+                        total_thinking: 0,
+                        total_cached: 0,
+                        grand_total: input_tokens + output_tokens,
+                        by_model: Default::default(),
+                    },
+                    tool_summary: ToolUsageSummary::default(),
+                    performance: PerformanceMetrics {
+                        avg_provider_latency_ms: provider_time.as_secs_f64() * 1000.0,
+                        p50_latency_ms: Some(provider_time.as_millis() as u64),
+                        p95_latency_ms: Some(provider_time.as_millis() as u64),
+                        p99_latency_ms: Some(provider_time.as_millis() as u64),
+                        max_latency_ms: provider_time.as_millis() as u64,
+                        min_latency_ms: provider_time.as_millis() as u64,
+                        avg_pre_processing_ms: 0.0,
+                        avg_post_processing_ms: 0.0,
+                        proxy_overhead_percentage: 0.0,
+                    },
+                    streaming_stats: None,
+                    estimated_cost: None,
+                }),
+            });
+        }
+
+    let response_result = Ok(Json(response).into_response());
+
+    let total_time = std::time::Instant::now().duration_since(start_time);
+    let post_provider_overhead = total_time - provider_time - pre_provider_overhead;
+    tracing::debug!(
+        "Proxy overhead after provider response: {:.2}ms",
+        post_provider_overhead.as_secs_f64() * 1000.0
+    );
+    tracing::debug!(
+        "Total proxy overhead: {:.2}ms (pre: {:.2}ms + post: {:.2}ms), provider: {:.2}ms, total: {:.2}ms",
+        (pre_provider_overhead + post_provider_overhead).as_secs_f64() * 1000.0,
+        pre_provider_overhead.as_secs_f64() * 1000.0,
+        post_provider_overhead.as_secs_f64() * 1000.0,
+        provider_time.as_secs_f64() * 1000.0,
+        total_time.as_secs_f64() * 1000.0
+    );
+
+    response_result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
