@@ -1,5 +1,9 @@
 //! PII redaction
 
+mod standard_redactor;
+
+pub use standard_redactor::StandardRedactor;
+
 use crate::detector::{Detection, PIIType};
 use serde::{Deserialize, Serialize};
 

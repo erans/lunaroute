@@ -1,5 +1,9 @@
 //! PII detectors
 
+mod regex_detector;
+
+pub use regex_detector::RegexPIIDetector;
+
 use serde::{Deserialize, Serialize};
 
 /// PII detection result
