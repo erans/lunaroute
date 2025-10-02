@@ -36,8 +36,17 @@
 //! // Monitor health and metrics
 //! let health = writer.health_check().await;
 //! let metrics = writer.metrics();
+//!
+//! // IMPORTANT: Always flush before dropping the writer
+//! writer.flush().await;
 //! # }
 //! ```
+//!
+//! # Important Notes
+//!
+//! - **Always call `flush()`** before dropping the writer to ensure buffered data is written
+//! - Session IDs must be alphanumeric with hyphens/underscores only (validated for security)
+//! - Salt for encryption is persisted in `sessions_dir/.encryption_salt` for consistency
 
 use crate::events::SessionEvent;
 use crate::writer::{SessionWriter, WriterResult};
@@ -47,12 +56,12 @@ use lunaroute_storage::encryption::{encrypt, derive_key_from_password, generate_
 use lru::LruCache;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 /// Storage metrics for observability
 #[derive(Debug, Clone)]
@@ -125,6 +134,8 @@ pub struct JsonlWriter {
     encryption_key: Option<[u8; 32]>,
     // Metrics tracker
     metrics: Arc<MetricsTracker>,
+    // Pending file operations to prevent race conditions
+    pending_ops: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -151,14 +162,44 @@ impl Default for JsonlConfig {
     }
 }
 
-/// Sanitize session ID to prevent path traversal attacks
-/// Allows only alphanumeric characters, hyphens, and underscores
-fn sanitize_session_id(session_id: &str) -> String {
-    session_id
+/// Validate session ID to prevent path traversal attacks
+/// Returns error if ID contains unsafe characters
+fn validate_session_id(session_id: &str) -> WriterResult<()> {
+    // Check for path traversal attempts
+    if session_id.contains("..") || session_id.contains('/') || session_id.contains('\\') {
+        return Err(std::io::Error::other(format!(
+            "Invalid session ID: contains path traversal characters: {}",
+            session_id
+        ))
+        .into());
+    }
+
+    // Check for empty or too long IDs
+    if session_id.is_empty() {
+        return Err(std::io::Error::other("Invalid session ID: empty").into());
+    }
+
+    if session_id.len() > 255 {
+        return Err(std::io::Error::other(format!(
+            "Invalid session ID: too long (max 255 chars): {}",
+            session_id.len()
+        ))
+        .into());
+    }
+
+    // Check that ID only contains safe characters (alphanumeric, hyphen, underscore)
+    if !session_id
         .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .take(255) // Limit length to prevent filesystem issues
-        .collect()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(std::io::Error::other(format!(
+            "Invalid session ID: contains unsafe characters: {}",
+            session_id
+        ))
+        .into());
+    }
+
+    Ok(())
 }
 
 impl JsonlWriter {
@@ -166,12 +207,42 @@ impl JsonlWriter {
         Self::with_config(sessions_dir, JsonlConfig::default())
     }
 
+    /// Load or generate a persistent salt for encryption key derivation
+    /// The salt is stored in sessions_dir/.encryption_salt
+    fn load_or_generate_persistent_salt(sessions_dir: &Path) -> [u8; 16] {
+        let salt_path = sessions_dir.join(".encryption_salt");
+
+        // Try to load existing salt
+        if let Ok(salt_bytes) = std::fs::read(&salt_path)
+            && salt_bytes.len() == 16
+        {
+            let mut salt = [0u8; 16];
+            salt.copy_from_slice(&salt_bytes);
+            return salt;
+        }
+
+        // Generate new salt and save it
+        let salt = generate_salt();
+
+        // Create directory if needed
+        if let Some(parent) = salt_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        // Save salt (best effort - if it fails, we'll regenerate next time)
+        let _ = std::fs::write(&salt_path, salt);
+
+        salt
+    }
+
     pub fn with_config(sessions_dir: PathBuf, config: JsonlConfig) -> Self {
         let cache_size = NonZeroUsize::new(config.cache_size).expect("cache_size must be > 0");
 
         // Derive encryption key if password is provided
         let encryption_key = config.encryption_password.as_ref().map(|password| {
-            let salt = config.encryption_salt.unwrap_or_else(generate_salt);
+            // Use persistent salt if not explicitly provided
+            let salt = config.encryption_salt
+                .unwrap_or_else(|| Self::load_or_generate_persistent_salt(&sessions_dir));
             let params = KeyDerivationParams::default();
             derive_key_from_password(password, &salt, &params)
                 .expect("Failed to derive encryption key")
@@ -183,6 +254,7 @@ impl JsonlWriter {
             file_cache: Mutex::new(LruCache::new(cache_size)),
             encryption_key,
             metrics: Arc::new(MetricsTracker::new()),
+            pending_ops: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -244,24 +316,25 @@ impl JsonlWriter {
     }
 
     /// Get the file path for a session (organized by date)
-    fn get_session_file_path(&self, session_id: &str) -> PathBuf {
-        let sanitized_id = sanitize_session_id(session_id);
+    fn get_session_file_path(&self, session_id: &str) -> WriterResult<PathBuf> {
+        validate_session_id(session_id)?;
         let today = Utc::now().format("%Y-%m-%d");
-        self.sessions_dir
+        Ok(self
+            .sessions_dir
             .join(today.to_string())
-            .join(format!("{}.jsonl", sanitized_id))
+            .join(format!("{}.jsonl", session_id)))
     }
 
     /// Get cache key for a session (date + session_id)
-    fn get_cache_key(&self, session_id: &str) -> String {
-        let sanitized_id = sanitize_session_id(session_id);
+    fn get_cache_key(&self, session_id: &str) -> WriterResult<String> {
+        validate_session_id(session_id)?;
         let today = Utc::now().format("%Y-%m-%d");
-        format!("{}:{}", today, sanitized_id)
+        Ok(format!("{}:{}", today, session_id))
     }
 
     /// Open file for appending (used when cache miss)
     async fn open_session_file(&self, session_id: &str) -> WriterResult<BufWriter<tokio::fs::File>> {
-        let path = self.get_session_file_path(session_id);
+        let path = self.get_session_file_path(session_id)?;
 
         // Create directory if needed
         if let Some(parent) = path.parent() {
@@ -280,42 +353,85 @@ impl JsonlWriter {
     }
 
     /// Get or create a cached file handle
+    /// Uses pending operations tracking to prevent race conditions
     async fn get_cached_file(&self, session_id: &str) -> WriterResult<()> {
-        let cache_key = self.get_cache_key(session_id);
+        let cache_key = self.get_cache_key(session_id)?;
 
-        // Check cache first
-        let cache = self.file_cache.lock().await;
-
-        if !cache.contains(&cache_key) {
-            // Cache miss - need to open file
-            self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
-
-            // Release lock while opening file
-            drop(cache);
-
-            let file = self.open_session_file(session_id).await?;
-
-            // Reacquire lock to add to cache
-            let mut cache = self.file_cache.lock().await;
-
-            // Check again in case another task added it while we were opening
-            if !cache.contains(&cache_key) {
-                // If cache is full, evict LRU entry
-                if let Some((_, mut evicted)) = cache.push(cache_key.clone(), file) {
-                    self.metrics.cache_evictions.fetch_add(1, Ordering::Relaxed);
-
-                    // Release lock before flushing evicted file
-                    drop(cache);
-                    evicted.flush().await?;
-                    drop(evicted);
+        loop {
+            // Check if file is already cached
+            {
+                let cache = self.file_cache.lock().await;
+                if cache.contains(&cache_key) {
+                    self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    return Ok(());
                 }
             }
-        } else {
-            // Cache hit
-            self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
-        }
 
-        Ok(())
+            // Check if another task is already opening this file
+            let notify = {
+                let mut pending = self.pending_ops.lock().await;
+
+                if let Some(notifier) = pending.get(&cache_key) {
+                    // Another task is opening this file, wait for it
+                    notifier.clone()
+                } else {
+                    // We'll open the file - mark as pending
+                    let notifier = Arc::new(Notify::new());
+                    pending.insert(cache_key.clone(), notifier.clone());
+
+                    // Release lock and proceed to open file
+                    drop(pending);
+
+                    // Track cache miss
+                    self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
+
+                    // Open the file
+                    let file = match self.open_session_file(session_id).await {
+                        Ok(f) => f,
+                        Err(e) => {
+                            // Remove pending operation and notify waiters
+                            let mut pending = self.pending_ops.lock().await;
+                            if let Some(notifier) = pending.remove(&cache_key) {
+                                notifier.notify_waiters();
+                            }
+                            return Err(e);
+                        }
+                    };
+
+                    // Add to cache
+                    {
+                        let mut cache = self.file_cache.lock().await;
+
+                        // Double-check it wasn't added while we were opening
+                        if !cache.contains(&cache_key) {
+                            // If cache is full, evict LRU entry
+                            if let Some((_, mut evicted)) = cache.push(cache_key.clone(), file) {
+                                self.metrics.cache_evictions.fetch_add(1, Ordering::Relaxed);
+
+                                // Release lock before flushing evicted file
+                                drop(cache);
+
+                                // Best-effort flush of evicted file
+                                let _ = evicted.flush().await;
+                                drop(evicted);
+                            }
+                        }
+                    }
+
+                    // Remove from pending and notify waiters
+                    let mut pending = self.pending_ops.lock().await;
+                    if let Some(notifier) = pending.remove(&cache_key) {
+                        notifier.notify_waiters();
+                    }
+
+                    return Ok(());
+                }
+            };
+
+            // Wait for the other task to finish opening the file
+            notify.notified().await;
+            // Loop back to check cache again
+        }
     }
 
     /// Optionally encrypt data before writing
@@ -337,7 +453,7 @@ impl JsonlWriter {
             return Err(e);
         }
 
-        let cache_key = self.get_cache_key(session_id);
+        let cache_key = self.get_cache_key(session_id)?;
         let mut cache = self.file_cache.lock().await;
 
         if let Some(file) = cache.get_mut(&cache_key) {
@@ -378,35 +494,29 @@ impl SessionWriter for JsonlWriter {
     }
 
     async fn write_batch(&self, events: &[SessionEvent]) -> WriterResult<()> {
-        // Group events by session for efficient file operations
-        let mut by_session: HashMap<String, Vec<&SessionEvent>> = HashMap::new();
+        // Group events by session and buffer all data before writing
+        let mut by_session: HashMap<String, Vec<u8>> = HashMap::new();
+        let mut events_count = 0u64;
 
         for event in events {
-            let session_id = event.session_id();
-            by_session
-                .entry(session_id.to_string())
-                .or_default()
-                .push(event);
+            let session_id = event.session_id().to_string();
+            let buffer = by_session.entry(session_id).or_default();
+
+            // Serialize event to the buffer
+            let json = serde_json::to_string(event)?;
+            buffer.extend_from_slice(json.as_bytes());
+            buffer.push(b'\n');
+
+            events_count += 1;
         }
 
-        // Write each session's events using cached file handles
-        let mut events_count = 0u64;
-        for (session_id, session_events) in by_session {
-            for event in session_events {
-                let json = serde_json::to_string(event)?;
+        // Single write per session with all events batched together
+        for (session_id, data) in by_session {
+            // Encrypt entire batch if enabled
+            let encrypted_data = self.encrypt_if_enabled(&data)?;
 
-                // Prepare JSON line (with newline)
-                let mut line = json.into_bytes();
-                line.push(b'\n');
-
-                // Encrypt if enabled
-                let data = self.encrypt_if_enabled(&line)?;
-
-                // Write to cached file handle
-                self.write_to_file(&session_id, &data).await?;
-
-                events_count += 1;
-            }
+            // Write batched data to cached file handle (single write operation)
+            self.write_to_file(&session_id, &encrypted_data).await?;
         }
 
         // Track events written
@@ -552,23 +662,31 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_session_id() {
-        // Normal IDs should pass through
-        assert_eq!(sanitize_session_id("test-123"), "test-123");
-        assert_eq!(sanitize_session_id("abc_def_123"), "abc_def_123");
+    fn test_validate_session_id() {
+        // Normal IDs should pass
+        assert!(validate_session_id("test-123").is_ok());
+        assert!(validate_session_id("abc_def_123").is_ok());
+        assert!(validate_session_id("ValidSessionID123").is_ok());
 
-        // Path traversal attempts should be sanitized
-        assert_eq!(sanitize_session_id("../../../etc/passwd"), "etcpasswd");
-        assert_eq!(sanitize_session_id("..\\..\\windows\\system32"), "windowssystem32");
-        assert_eq!(sanitize_session_id("/absolute/path"), "absolutepath");
+        // Path traversal attempts should be rejected
+        assert!(validate_session_id("../../../etc/passwd").is_err());
+        assert!(validate_session_id("..\\..\\windows\\system32").is_err());
+        assert!(validate_session_id("/absolute/path").is_err());
+        assert!(validate_session_id("test/../etc").is_err());
 
-        // Special characters should be removed (except - and _)
-        assert_eq!(sanitize_session_id("test@#$%123"), "test123");
-        assert_eq!(sanitize_session_id("test;rm -rf /"), "testrm-rf");
+        // Special characters should be rejected (except - and _)
+        assert!(validate_session_id("test@#$%123").is_err());
+        assert!(validate_session_id("test;rm -rf /").is_err());
+        assert!(validate_session_id("test session").is_err()); // spaces not allowed
 
-        // Length should be limited to 255 chars
-        let long_id = "a".repeat(300);
-        assert_eq!(sanitize_session_id(&long_id).len(), 255);
+        // Empty or too long IDs should be rejected
+        assert!(validate_session_id("").is_err());
+        let long_id = "a".repeat(256);
+        assert!(validate_session_id(&long_id).is_err());
+
+        // Edge case: exactly 255 chars should pass
+        let max_id = "a".repeat(255);
+        assert!(validate_session_id(&max_id).is_ok());
     }
 
     #[tokio::test]
@@ -576,7 +694,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let writer = JsonlWriter::new(dir.path().to_path_buf());
 
-        // Try to use a malicious session ID
+        // Try to use a malicious session ID - should be rejected
         let event = SessionEvent::Started {
             session_id: "../../../etc/passwd".to_string(),
             request_id: "req-1".to_string(),
@@ -594,16 +712,27 @@ mod tests {
             },
         };
 
-        writer.write_event(&event).await.unwrap();
-        writer.flush().await.unwrap(); // Flush buffers before checking files
-
-        // Verify the file was created with sanitized name, not at /etc/passwd
-        let today = Utc::now().format("%Y-%m-%d");
-        let expected_path = dir.path().join(today.to_string()).join("etcpasswd.jsonl");
-        assert!(expected_path.exists());
+        // Malicious session ID should be rejected
+        let result = writer.write_event(&event).await;
+        assert!(result.is_err(), "Path traversal attempt should be rejected");
+        assert!(
+            result.unwrap_err().to_string().contains("path traversal"),
+            "Error should mention path traversal"
+        );
 
         // Verify that no files were created outside the temp directory
         assert!(!std::path::Path::new("/etc/passwd.jsonl").exists());
+
+        // Verify no files were created at all for the malicious session
+        let today = Utc::now().format("%Y-%m-%d");
+        let sessions_date_dir = dir.path().join(today.to_string());
+        // The directory might not even exist if no valid sessions were written
+        if sessions_date_dir.exists() {
+            let entries: Vec<_> = std::fs::read_dir(&sessions_date_dir)
+                .unwrap()
+                .collect();
+            assert_eq!(entries.len(), 0, "No session files should be created for invalid IDs");
+        }
     }
 
     #[tokio::test]
