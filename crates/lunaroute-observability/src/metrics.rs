@@ -60,6 +60,16 @@ pub struct Metrics {
     // Fallback metrics
     /// Fallback trigger count
     pub fallback_triggered: CounterVec,
+
+    // Tool call metrics
+    /// Tool calls made during requests
+    pub tool_calls_total: CounterVec,
+
+    // Processing time metrics
+    /// Post-processing duration (after provider response)
+    pub post_processing_duration_seconds: Histogram,
+    /// Total proxy overhead (pre + post processing)
+    pub proxy_overhead_seconds: Histogram,
 }
 
 impl Metrics {
@@ -193,6 +203,32 @@ impl Metrics {
             &["from_provider", "to_provider", "reason"],
         )?;
 
+        // Tool call metrics
+        let tool_calls_total = CounterVec::new(
+            Opts::new(
+                "lunaroute_tool_calls_total",
+                "Total number of tool calls made",
+            ),
+            &["provider", "model", "tool_name"],
+        )?;
+
+        // Processing time metrics
+        let post_processing_duration_seconds = Histogram::with_opts(
+            HistogramOpts::new(
+                "lunaroute_post_processing_duration_seconds",
+                "Post-processing duration in seconds (after provider response)",
+            )
+            .buckets(vec![0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01]),
+        )?;
+
+        let proxy_overhead_seconds = Histogram::with_opts(
+            HistogramOpts::new(
+                "lunaroute_proxy_overhead_seconds",
+                "Total proxy overhead in seconds (pre + post processing)",
+            )
+            .buckets(vec![0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05]),
+        )?;
+
         // Register all metrics
         registry.register(Box::new(requests_total.clone()))?;
         registry.register(Box::new(requests_success.clone()))?;
@@ -209,6 +245,9 @@ impl Metrics {
         registry.register(Box::new(tokens_completion.clone()))?;
         registry.register(Box::new(tokens_total.clone()))?;
         registry.register(Box::new(fallback_triggered.clone()))?;
+        registry.register(Box::new(tool_calls_total.clone()))?;
+        registry.register(Box::new(post_processing_duration_seconds.clone()))?;
+        registry.register(Box::new(proxy_overhead_seconds.clone()))?;
 
         Ok(Self {
             registry: Arc::new(registry),
@@ -227,6 +266,9 @@ impl Metrics {
             tokens_completion,
             tokens_total,
             fallback_triggered,
+            tool_calls_total,
+            post_processing_duration_seconds,
+            proxy_overhead_seconds,
         })
     }
 
@@ -327,6 +369,23 @@ impl Metrics {
         self.provider_success_rate
             .with_label_values(&[provider])
             .set(success_rate);
+    }
+
+    /// Record a tool call
+    pub fn record_tool_call(&self, provider: &str, model: &str, tool_name: &str) {
+        self.tool_calls_total
+            .with_label_values(&[provider, model, tool_name])
+            .inc();
+    }
+
+    /// Record post-processing duration
+    pub fn record_post_processing(&self, duration_secs: f64) {
+        self.post_processing_duration_seconds.observe(duration_secs);
+    }
+
+    /// Record total proxy overhead (pre + post processing)
+    pub fn record_proxy_overhead(&self, duration_secs: f64) {
+        self.proxy_overhead_seconds.observe(duration_secs);
     }
 }
 
@@ -486,5 +545,68 @@ mod tests {
     fn test_metrics_default() {
         let metrics = Metrics::default();
         assert!(metrics.registry().gather().len() > 0);
+    }
+
+    #[test]
+    fn test_record_tool_call() {
+        let metrics = Metrics::new().unwrap();
+        metrics.record_tool_call("anthropic", "claude-sonnet-4-5", "Read");
+        metrics.record_tool_call("anthropic", "claude-sonnet-4-5", "Read");
+        metrics.record_tool_call("anthropic", "claude-sonnet-4-5", "Write");
+
+        let gathered = metrics.registry().gather();
+        let tool_metric = gathered
+            .iter()
+            .find(|m| m.get_name() == "lunaroute_tool_calls_total")
+            .expect("tool_calls_total metric not found");
+
+        // Should have 2 label sets (Read and Write)
+        assert_eq!(tool_metric.get_metric().len(), 2);
+
+        // Find the Read metric and verify count
+        let read_metric = tool_metric
+            .get_metric()
+            .iter()
+            .find(|m| {
+                m.get_label()
+                    .iter()
+                    .any(|l| l.get_name() == "tool_name" && l.get_value() == "Read")
+            })
+            .expect("Read tool metric not found");
+
+        assert_eq!(read_metric.get_counter().get_value(), 2.0);
+    }
+
+    #[test]
+    fn test_record_post_processing() {
+        let metrics = Metrics::new().unwrap();
+        metrics.record_post_processing(0.001);
+        metrics.record_post_processing(0.002);
+
+        let gathered = metrics.registry().gather();
+        let post_metric = gathered
+            .iter()
+            .find(|m| m.get_name() == "lunaroute_post_processing_duration_seconds")
+            .expect("post_processing_duration_seconds metric not found");
+
+        let histogram = post_metric.get_metric()[0].get_histogram();
+        assert_eq!(histogram.get_sample_count(), 2);
+    }
+
+    #[test]
+    fn test_record_proxy_overhead() {
+        let metrics = Metrics::new().unwrap();
+        metrics.record_proxy_overhead(0.0001);
+        metrics.record_proxy_overhead(0.0005);
+        metrics.record_proxy_overhead(0.001);
+
+        let gathered = metrics.registry().gather();
+        let overhead_metric = gathered
+            .iter()
+            .find(|m| m.get_name() == "lunaroute_proxy_overhead_seconds")
+            .expect("proxy_overhead_seconds metric not found");
+
+        let histogram = overhead_metric.get_metric()[0].get_histogram();
+        assert_eq!(histogram.get_sample_count(), 3);
     }
 }

@@ -350,12 +350,14 @@ See `crates/lunaroute-integration-tests/README.md` for details.
 - See `crates/lunaroute-integration-tests/README.md` for usage
 
 **Phase 8: Observability** ✅ Complete
-- **Prometheus metrics** (15 metric types)
+- **Prometheus metrics** (18 metric types)
   - Request counters (total, success, failure by listener/model/provider)
   - Latency histograms (request, ingress, routing, egress durations)
+  - Proxy overhead histograms (post-processing, total overhead)
   - Circuit breaker state and transition tracking
   - Provider health status and success rates
   - Token usage counters (prompt, completion, total)
+  - Tool call counters (breakdown by tool name: Read, Write, Bash, etc.)
   - Fallback trigger tracking
 - **Health endpoints**
   - `/healthz` - Liveness probe for Kubernetes
@@ -368,7 +370,7 @@ See `crates/lunaroute-integration-tests/README.md` for details.
   - Request success/error recording helpers
 - **Production quality**
   - Thread-safe concurrent metrics recording
-  - 27 unit tests + 7 integration tests = 34 tests passing
+  - 30 unit tests + 7 integration tests = 37 tests passing
   - Zero clippy warnings
 
 **Phase 7: Session Recording** ✅ Complete

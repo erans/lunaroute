@@ -942,21 +942,6 @@ pub async fn messages_passthrough(
         total_time.as_secs_f64() * 1000.0
     );
 
-    // Record stats if tracker is available and we have a session ID
-    if let (Some(tracker), Some(sid)) = (state.stats_tracker.as_ref(), session_id) {
-        tracker.record_request(
-            sid,
-            crate::types::SessionRequestStats {
-                input_tokens,
-                output_tokens,
-                thinking_tokens,
-                tool_calls,
-                pre_proxy_time: pre_provider_overhead,
-                post_proxy_time: post_provider_overhead,
-            },
-        );
-    }
-
     // Record metrics if available
     if let Some(metrics) = state.metrics.as_ref() {
         let total_time = start_time.elapsed().as_secs_f64();
@@ -973,6 +958,32 @@ pub async fn messages_passthrough(
                 total_time,
             );
         }
+
+        // Record tool calls
+        for (tool_name, count) in &tool_calls {
+            for _ in 0..*count {
+                metrics.record_tool_call("anthropic", &model, tool_name);
+            }
+        }
+
+        // Record processing times
+        metrics.record_post_processing(post_provider_overhead.as_secs_f64());
+        metrics.record_proxy_overhead((pre_provider_overhead + post_provider_overhead).as_secs_f64());
+    }
+
+    // Record stats if tracker is available and we have a session ID
+    if let (Some(tracker), Some(sid)) = (state.stats_tracker.as_ref(), session_id) {
+        tracker.record_request(
+            sid,
+            crate::types::SessionRequestStats {
+                input_tokens,
+                output_tokens,
+                thinking_tokens,
+                tool_calls,
+                pre_proxy_time: pre_provider_overhead,
+                post_proxy_time: post_provider_overhead,
+            },
+        );
     }
 
     response_result

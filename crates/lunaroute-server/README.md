@@ -152,7 +152,7 @@ If session recording is enabled:
 - ✅ **Session statistics**: Per-session tracking of tokens (input/output/thinking), requests, tool usage, and proxy overhead
 - ✅ **Request logging**: Print all traffic to stdout
 - ✅ **Detailed timing metrics**: Pre/post proxy overhead, provider response time (DEBUG level)
-- ✅ **Prometheus metrics**: Request rates, latencies, tokens
+- ✅ **Prometheus metrics**: Request rates, latencies, tokens, tool calls, proxy overhead
 - ✅ **OpenTelemetry tracing**: Distributed tracing support
 
 ### Session Statistics
