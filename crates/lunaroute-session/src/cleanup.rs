@@ -527,4 +527,229 @@ mod tests {
         let stats = execute_cleanup(temp_dir.path(), &policy).unwrap();
         assert_eq!(stats.sessions_deleted, 0); // Nothing deleted because we're under limit
     }
+
+    #[test]
+    fn test_execute_cleanup_age_based_deletion() {
+        use filetime::{set_file_mtime, FileTime};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create sessions with different ages
+        let old_session = create_test_session(temp_dir.path(), "2024-01-01", "old", 1000);
+        let medium_session = create_test_session(temp_dir.path(), "2024-01-02", "medium", 1000);
+        let recent_session = create_test_session(temp_dir.path(), "2024-01-03", "recent", 1000);
+
+        // Set file timestamps to simulate age
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let days_40_ago = FileTime::from_unix_time((now - (40 * 24 * 60 * 60)) as i64, 0);
+        let days_20_ago = FileTime::from_unix_time((now - (20 * 24 * 60 * 60)) as i64, 0);
+        let days_5_ago = FileTime::from_unix_time((now - (5 * 24 * 60 * 60)) as i64, 0);
+
+        set_file_mtime(&old_session, days_40_ago).unwrap();
+        set_file_mtime(&medium_session, days_20_ago).unwrap();
+        set_file_mtime(&recent_session, days_5_ago).unwrap();
+
+        // Delete sessions older than 30 days
+        let policy = RetentionPolicy {
+            max_age_days: Some(30),
+            max_total_size_gb: None,
+            compress_after_days: None,
+            cleanup_interval_minutes: 60,
+        };
+
+        let stats = execute_cleanup(temp_dir.path(), &policy).unwrap();
+
+        assert_eq!(stats.sessions_deleted, 1); // Only the 40-day-old session
+        assert_eq!(stats.bytes_freed, 1000);
+        assert!(!old_session.exists());
+        assert!(medium_session.exists());
+        assert!(recent_session.exists());
+    }
+
+    #[test]
+    fn test_execute_cleanup_age_based_compression() {
+        use filetime::{set_file_mtime, FileTime};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create sessions with different ages
+        let old_session = create_test_session(temp_dir.path(), "2024-01-01", "old", 10000);
+        let recent_session = create_test_session(temp_dir.path(), "2024-01-02", "recent", 10000);
+
+        // Set file timestamps
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let days_10_ago = FileTime::from_unix_time((now - (10 * 24 * 60 * 60)) as i64, 0);
+        let days_3_ago = FileTime::from_unix_time((now - (3 * 24 * 60 * 60)) as i64, 0);
+
+        set_file_mtime(&old_session, days_10_ago).unwrap();
+        set_file_mtime(&recent_session, days_3_ago).unwrap();
+
+        // Compress sessions older than 7 days
+        let policy = RetentionPolicy {
+            max_age_days: None,
+            max_total_size_gb: None,
+            compress_after_days: Some(7),
+            cleanup_interval_minutes: 60,
+        };
+
+        let stats = execute_cleanup(temp_dir.path(), &policy).unwrap();
+
+        assert_eq!(stats.sessions_compressed, 1); // Only the 10-day-old session
+        assert!(stats.bytes_saved > 0);
+        assert!(!old_session.exists());
+        assert!(old_session.with_extension("jsonl.zst").exists());
+        assert!(recent_session.exists());
+    }
+
+    #[test]
+    fn test_execute_cleanup_combined_policies() {
+        use filetime::{set_file_mtime, FileTime};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create sessions: very old, old, medium age, recent
+        let very_old = create_test_session(temp_dir.path(), "2024-01-01", "very_old", 10000);
+        let old = create_test_session(temp_dir.path(), "2024-01-02", "old", 10000);
+        let medium = create_test_session(temp_dir.path(), "2024-01-03", "medium", 10000);
+        let recent = create_test_session(temp_dir.path(), "2024-01-04", "recent", 10000);
+
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        set_file_mtime(&very_old, FileTime::from_unix_time((now - (40 * 24 * 60 * 60)) as i64, 0)).unwrap();
+        set_file_mtime(&old, FileTime::from_unix_time((now - (25 * 24 * 60 * 60)) as i64, 0)).unwrap();
+        set_file_mtime(&medium, FileTime::from_unix_time((now - (10 * 24 * 60 * 60)) as i64, 0)).unwrap();
+        set_file_mtime(&recent, FileTime::from_unix_time((now - (2 * 24 * 60 * 60)) as i64, 0)).unwrap();
+
+        // Combined policy: delete after 30 days, compress after 7 days
+        let policy = RetentionPolicy {
+            max_age_days: Some(30),
+            max_total_size_gb: None,
+            compress_after_days: Some(7),
+            cleanup_interval_minutes: 60,
+        };
+
+        let stats = execute_cleanup(temp_dir.path(), &policy).unwrap();
+
+        // Should delete very_old (40 days), compress old and medium (25 and 10 days)
+        assert_eq!(stats.sessions_deleted, 1);
+        assert_eq!(stats.sessions_compressed, 2);
+        assert!(!very_old.exists());
+        assert!(!old.exists());
+        assert!(old.with_extension("jsonl.zst").exists());
+        assert!(!medium.exists());
+        assert!(medium.with_extension("jsonl.zst").exists());
+        assert!(recent.exists());
+    }
+
+    #[test]
+    fn test_calculate_disk_usage_with_compressed() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create regular and compressed sessions
+        create_test_session(temp_dir.path(), "2024-01-01", "session1", 1000);
+        let session2 = create_test_session(temp_dir.path(), "2024-01-02", "session2", 2000);
+
+        // Compress session2
+        compress_session_file(&session2).unwrap();
+
+        let usage = calculate_disk_usage(temp_dir.path()).unwrap();
+
+        assert_eq!(usage.session_count, 2);
+        assert_eq!(usage.compressed_count, 1);
+        assert!(usage.total_bytes > 0); // Compressed file still takes space
+    }
+
+    #[test]
+    fn test_mixed_compressed_uncompressed_cleanup() {
+        use filetime::{set_file_mtime, FileTime};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create sessions
+        let old_uncompressed = create_test_session(temp_dir.path(), "2024-01-01", "old_unc", 10000);
+        let old_compressed = create_test_session(temp_dir.path(), "2024-01-02", "old_comp", 10000);
+
+        // Compress one manually
+        compress_session_file(&old_compressed).unwrap();
+        let old_compressed_path = old_compressed.with_extension("jsonl.zst");
+
+        // Age both files
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let days_10_ago = FileTime::from_unix_time((now - (10 * 24 * 60 * 60)) as i64, 0);
+        set_file_mtime(&old_uncompressed, days_10_ago).unwrap();
+        set_file_mtime(&old_compressed_path, days_10_ago).unwrap();
+
+        // Try to compress sessions older than 7 days
+        let policy = RetentionPolicy {
+            max_age_days: None,
+            max_total_size_gb: None,
+            compress_after_days: Some(7),
+            cleanup_interval_minutes: 60,
+        };
+
+        let stats = execute_cleanup(temp_dir.path(), &policy).unwrap();
+
+        // Should compress only the uncompressed one
+        assert_eq!(stats.sessions_compressed, 1);
+        assert!(!old_uncompressed.exists());
+        assert!(old_uncompressed.with_extension("jsonl.zst").exists());
+        assert!(old_compressed_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_background_cleanup_task() {
+        use std::sync::Arc;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a session
+        create_test_session(temp_dir.path(), "2024-01-01", "session", 1000);
+
+        // Start background task with very short interval
+        let policy = Arc::new(RetentionPolicy {
+            max_age_days: None,
+            max_total_size_gb: None,
+            compress_after_days: None,
+            cleanup_interval_minutes: 1, // Not used in test, we'll shutdown immediately
+        });
+
+        let task = spawn_cleanup_task(temp_dir.path().to_path_buf(), policy);
+
+        // Let it run briefly
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Shutdown
+        task.shutdown().await;
+
+        // Verify task started and stopped without panicking
+        // (The fact that we got here means success)
+    }
+
+    #[test]
+    fn test_cleanup_with_non_session_files() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create session files and non-session files
+        create_test_session(temp_dir.path(), "2024-01-01", "session", 1000);
+
+        // Create a non-JSONL file
+        let date_dir = temp_dir.path().join("2024-01-01");
+        fs::create_dir_all(&date_dir).unwrap();
+        let mut other_file = File::create(date_dir.join("other.txt")).unwrap();
+        other_file.write_all(b"not a session").unwrap();
+
+        let policy = RetentionPolicy {
+            max_age_days: None,
+            max_total_size_gb: None,
+            compress_after_days: None,
+            cleanup_interval_minutes: 60,
+        };
+
+        // Should not crash on non-session files
+        let stats = execute_cleanup(temp_dir.path(), &policy).unwrap();
+        assert_eq!(stats.sessions_deleted, 0);
+    }
 }
