@@ -13,6 +13,7 @@
 pub mod recorder;
 pub mod session;
 pub mod recording_provider;
+pub mod pii_redaction;
 
 // V2 async recording system
 pub mod events;
@@ -36,7 +37,8 @@ pub use writer::{
     WriterError, WriterResult,
 };
 pub use jsonl_writer::{JsonlConfig as JsonlWriterConfig, JsonlWriter};
-pub use config::{SessionRecordingConfig, JsonlConfig, SqliteConfig, WorkerConfig, RetentionPolicy};
+pub use config::{SessionRecordingConfig, JsonlConfig, SqliteConfig, WorkerConfig, RetentionPolicy, PIIConfig, CustomPatternConfig};
+pub use pii_redaction::SessionPIIRedactor;
 pub use cleanup::{
     CleanupError, CleanupResult, CleanupStats, CleanupTask, DiskUsage,
     calculate_disk_usage, execute_cleanup, compress_session_file, delete_session_file,

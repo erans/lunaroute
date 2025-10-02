@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 lunaroute-core = { path = "../lunaroute-core" }
 lunaroute-storage = { path = "../lunaroute-storage" }
+lunaroute-pii = { path = "../lunaroute-pii" }
 
 tokio = { workspace = true }
 serde = { workspace = true }

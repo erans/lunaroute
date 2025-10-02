@@ -21,6 +21,10 @@ pub struct SessionRecordingConfig {
     /// Background worker configuration
     #[serde(default)]
     pub worker: WorkerConfig,
+
+    /// PII detection and redaction configuration
+    #[serde(default)]
+    pub pii: Option<PIIConfig>,
 }
 
 
@@ -192,6 +196,110 @@ fn default_batch_timeout_ms() -> u64 {
     100
 }
 
+/// PII detection and redaction configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PIIConfig {
+    /// Enable PII detection and redaction
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Enable email detection
+    #[serde(default = "default_true")]
+    pub detect_email: bool,
+
+    /// Enable phone number detection
+    #[serde(default = "default_true")]
+    pub detect_phone: bool,
+
+    /// Enable SSN detection
+    #[serde(default = "default_true")]
+    pub detect_ssn: bool,
+
+    /// Enable credit card detection
+    #[serde(default = "default_true")]
+    pub detect_credit_card: bool,
+
+    /// Enable IP address detection
+    #[serde(default = "default_true")]
+    pub detect_ip_address: bool,
+
+    /// Minimum confidence threshold (0.0 to 1.0)
+    #[serde(default = "default_min_confidence")]
+    pub min_confidence: f32,
+
+    /// Redaction mode: "remove", "mask", "tokenize", or "partial"
+    #[serde(default = "default_redaction_mode")]
+    pub redaction_mode: String,
+
+    /// HMAC secret for tokenization (required if redaction_mode is "tokenize")
+    #[serde(default)]
+    pub hmac_secret: Option<String>,
+
+    /// Number of characters to show in partial mode
+    #[serde(default = "default_partial_show_chars")]
+    pub partial_show_chars: usize,
+
+    /// Custom regex patterns for detection
+    #[serde(default)]
+    pub custom_patterns: Vec<CustomPatternConfig>,
+}
+
+impl Default for PIIConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            detect_email: true,
+            detect_phone: true,
+            detect_ssn: true,
+            detect_credit_card: true,
+            detect_ip_address: true,
+            min_confidence: default_min_confidence(),
+            redaction_mode: default_redaction_mode(),
+            hmac_secret: None,
+            partial_show_chars: default_partial_show_chars(),
+            custom_patterns: Vec::new(),
+        }
+    }
+}
+
+/// Custom pattern configuration for PII detection
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomPatternConfig {
+    /// Name of the pattern
+    pub name: String,
+
+    /// Regex pattern to match
+    pub pattern: String,
+
+    /// Confidence score for matches (0.0 to 1.0)
+    pub confidence: f32,
+
+    /// Redaction mode: "tokenize" or "mask"
+    #[serde(default = "default_custom_redaction_mode")]
+    pub redaction_mode: String,
+
+    /// Placeholder text for mask mode (e.g., "[API_KEY]")
+    /// If None, defaults to "[CUS:name]"
+    #[serde(default)]
+    pub placeholder: Option<String>,
+}
+
+fn default_min_confidence() -> f32 {
+    0.7
+}
+
+fn default_redaction_mode() -> String {
+    "mask".to_string()
+}
+
+fn default_custom_redaction_mode() -> String {
+    "mask".to_string()
+}
+
+fn default_partial_show_chars() -> usize {
+    4
+}
+
 impl SessionRecordingConfig {
     /// Check if JSONL writer is enabled
     pub fn is_jsonl_enabled(&self) -> bool {
@@ -206,6 +314,11 @@ impl SessionRecordingConfig {
     /// Check if any writer is enabled
     pub fn has_writers(&self) -> bool {
         self.is_jsonl_enabled() || self.is_sqlite_enabled()
+    }
+
+    /// Check if PII detection and redaction is enabled
+    pub fn is_pii_enabled(&self) -> bool {
+        self.enabled && self.pii.as_ref().is_some_and(|c| c.enabled)
     }
 }
 
@@ -227,6 +340,7 @@ mod tests {
             jsonl: Some(JsonlConfig::default()),
             sqlite: None,
             worker: WorkerConfig::default(),
+            pii: None,
         };
 
         assert!(config.is_jsonl_enabled());
@@ -241,6 +355,7 @@ mod tests {
             jsonl: None,
             sqlite: Some(SqliteConfig::default()),
             worker: WorkerConfig::default(),
+            pii: None,
         };
 
         assert!(!config.is_jsonl_enabled());
@@ -255,6 +370,7 @@ mod tests {
             jsonl: Some(JsonlConfig::default()),
             sqlite: Some(SqliteConfig::default()),
             worker: WorkerConfig::default(),
+            pii: None,
         };
 
         assert!(config.is_jsonl_enabled());
@@ -269,6 +385,7 @@ mod tests {
             jsonl: Some(JsonlConfig::default()),
             sqlite: Some(SqliteConfig::default()),
             worker: WorkerConfig::default(),
+            pii: None,
         };
 
         assert!(!config.is_jsonl_enabled());
@@ -294,6 +411,7 @@ mod tests {
                 batch_size: 200,
                 batch_timeout_ms: 50,
             },
+            pii: None,
         };
 
         let json = serde_json::to_string(&config).unwrap();
