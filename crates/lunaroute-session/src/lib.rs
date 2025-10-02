@@ -5,6 +5,8 @@
 //! - Stream event recording
 //! - Session management
 //! - Async multi-writer recording (v2)
+//! - Disk space management with retention policies
+//! - Automatic cleanup and compression
 
 pub mod recorder;
 pub mod session;
@@ -15,6 +17,7 @@ pub mod events;
 pub mod writer;
 pub mod jsonl_writer;
 pub mod config;
+pub mod cleanup;
 
 #[cfg(feature = "sqlite-writer")]
 pub mod sqlite_writer;
@@ -30,7 +33,12 @@ pub use writer::{
     WriterError, WriterResult,
 };
 pub use jsonl_writer::{JsonlConfig as JsonlWriterConfig, JsonlWriter};
-pub use config::{SessionRecordingConfig, JsonlConfig, SqliteConfig, WorkerConfig};
+pub use config::{SessionRecordingConfig, JsonlConfig, SqliteConfig, WorkerConfig, RetentionPolicy};
+pub use cleanup::{
+    CleanupError, CleanupResult, CleanupStats, CleanupTask, DiskUsage,
+    calculate_disk_usage, execute_cleanup, compress_session_file, delete_session_file,
+    spawn_cleanup_task,
+};
 
 #[cfg(feature = "sqlite-writer")]
 pub use sqlite_writer::SqliteWriter;
