@@ -167,7 +167,8 @@ async fn test_streaming_basic_routing() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "primary".to_string(),
+        strategy: None,
+        primary: Some("primary".to_string()),
         fallbacks: vec![],
     }];
 
@@ -214,7 +215,8 @@ async fn test_streaming_fallback_with_circuit_breaker() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "primary".to_string(),
+        strategy: None,
+        primary: Some("primary".to_string()),
         fallbacks: vec!["fallback".to_string()],
     }];
 
@@ -276,7 +278,8 @@ async fn test_streaming_error_handling() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "primary".to_string(),
+        strategy: None,
+        primary: Some("primary".to_string()),
         fallbacks: vec![],
     }];
 
@@ -306,7 +309,8 @@ async fn test_streaming_circuit_breaker_blocks() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "primary".to_string(),
+        strategy: None,
+        primary: Some("primary".to_string()),
         fallbacks: vec![],
     }];
 
@@ -388,7 +392,8 @@ async fn test_streaming_multiple_chunks() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test".to_string(),
+        strategy: None,
+        primary: Some("test".to_string()),
         fallbacks: vec![],
     }];
 
@@ -454,7 +459,8 @@ async fn test_streaming_with_usage_tracking() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test".to_string(),
+        strategy: None,
+        primary: Some("test".to_string()),
         fallbacks: vec![],
     }];
 

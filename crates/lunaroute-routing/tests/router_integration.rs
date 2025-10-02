@@ -136,7 +136,8 @@ async fn test_routing_with_fallback_recovery() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "primary".to_string(),
+        strategy: None,
+        primary: Some("primary".to_string()),
         fallbacks: vec!["fallback".to_string()],
     }];
 
@@ -176,7 +177,8 @@ async fn test_circuit_breaker_opens_and_closes() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test-provider".to_string(),
+        strategy: None,
+        primary: Some("test-provider".to_string()),
         fallbacks: vec![],
     }];
 
@@ -228,7 +230,8 @@ async fn test_health_monitoring_tracks_failures() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test-provider".to_string(),
+        strategy: None,
+        primary: Some("test-provider".to_string()),
         fallbacks: vec![],
     }];
 
@@ -286,7 +289,8 @@ async fn test_multiple_fallbacks_in_sequence() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "primary".to_string(),
+        strategy: None,
+        primary: Some("primary".to_string()),
         fallbacks: vec!["fallback1".to_string(), "fallback2".to_string()],
     }];
 
@@ -330,7 +334,8 @@ async fn test_concurrent_requests() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test-provider".to_string(),
+        strategy: None,
+        primary: Some("test-provider".to_string()),
         fallbacks: vec![],
     }];
 
@@ -377,14 +382,16 @@ async fn test_model_based_routing() {
             priority: 10,
             name: Some("gpt-to-openai".to_string()),
             matcher: RuleMatcher::model_pattern("^gpt-.*"),
-            primary: "openai".to_string(),
+            strategy: None,
+            primary: Some("openai".to_string()),
             fallbacks: vec!["anthropic".to_string()],
         },
         RoutingRule {
             priority: 10,
             name: Some("claude-to-anthropic".to_string()),
             matcher: RuleMatcher::model_pattern("^claude-.*"),
-            primary: "anthropic".to_string(),
+            strategy: None,
+            primary: Some("anthropic".to_string()),
             fallbacks: vec!["openai".to_string()],
         },
     ];

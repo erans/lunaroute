@@ -10,6 +10,7 @@ use crate::{
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
     health::{HealthMonitor, HealthMonitorConfig},
     router::{RouteTable, RoutingContext},
+    strategy::StrategyState,
 };
 use async_trait::async_trait;
 use lunaroute_core::{
@@ -38,6 +39,9 @@ pub struct Router {
 
     /// Default circuit breaker config for new providers
     circuit_breaker_config: CircuitBreakerConfig,
+
+    /// Strategy state for routing strategies (round-robin counters, etc.)
+    strategy_states: RwLock<HashMap<String, Arc<StrategyState>>>,
 }
 
 impl Router {
@@ -61,6 +65,7 @@ impl Router {
             health_monitor,
             circuit_breakers: RwLock::new(HashMap::new()),
             circuit_breaker_config,
+            strategy_states: RwLock::new(HashMap::new()),
         }
     }
 
@@ -104,6 +109,37 @@ impl Router {
         breakers.insert(provider_id.to_string(), Arc::clone(&cb));
 
         cb
+    }
+
+    /// Get or create strategy state for a rule
+    async fn get_strategy_state(&self, rule_name: &str) -> Arc<StrategyState> {
+        let states = self.strategy_states.read().await;
+
+        if let Some(state) = states.get(rule_name) {
+            return Arc::clone(state);
+        }
+
+        drop(states);
+
+        // Create new strategy state
+        let state = Arc::new(StrategyState::new());
+
+        let mut states = self.strategy_states.write().await;
+        states.insert(rule_name.to_string(), Arc::clone(&state));
+
+        state
+    }
+
+    /// Select provider using strategy
+    async fn select_provider_from_strategy(
+        &self,
+        strategy: &crate::strategy::RoutingStrategy,
+        rule_name: &str,
+    ) -> Result<String> {
+        let state = self.get_strategy_state(rule_name).await;
+        state
+            .select_provider(strategy)
+            .map_err(|e| Error::Provider(format!("Strategy selection failed: {}", e)))
     }
 
     /// Try to send request to a provider, respecting circuit breaker
@@ -181,22 +217,46 @@ impl Provider for Router {
             Error::Provider(format!("No route found for model '{}'", request.model))
         })?;
 
-        tracing::info!(
-            model = %request.model,
-            primary = %decision.primary,
-            fallbacks = ?decision.fallbacks,
-            rule = ?decision.matched_rule,
-            "Route decision made"
-        );
+        // Determine primary provider (from strategy or direct)
+        let primary_provider = if let Some(strategy) = &decision.strategy {
+            let rule_name = decision.matched_rule.as_deref().unwrap_or("unknown");
+            let selected = self
+                .select_provider_from_strategy(strategy, rule_name)
+                .await?;
 
-        // Try primary provider
-        match self.try_provider(&decision.primary, &request).await {
+            tracing::info!(
+                model = %request.model,
+                selected_provider = %selected,
+                strategy = "round-robin/weighted",
+                rule = ?decision.matched_rule,
+                "Route decision made (strategy)"
+            );
+
+            selected
+        } else if let Some(primary) = &decision.primary {
+            tracing::info!(
+                model = %request.model,
+                primary = %primary,
+                fallbacks = ?decision.fallbacks,
+                rule = ?decision.matched_rule,
+                "Route decision made (primary)"
+            );
+
+            primary.clone()
+        } else {
+            return Err(Error::Provider(
+                "No primary provider or strategy specified".to_string(),
+            ));
+        };
+
+        // Try primary/selected provider
+        match self.try_provider(&primary_provider, &request).await {
             Ok(response) => return Ok(response),
             Err(err) => {
                 tracing::warn!(
-                    primary = %decision.primary,
+                    provider = %primary_provider,
                     error = %err,
-                    "Primary provider failed, trying fallbacks"
+                    "Primary/selected provider failed, trying fallbacks"
                 );
             }
         }
@@ -224,7 +284,7 @@ impl Provider for Router {
         // All providers failed
         Err(Error::Provider(format!(
             "All providers failed for model '{}' (primary: {}, fallbacks: {:?})",
-            request.model, decision.primary, decision.fallbacks
+            request.model, primary_provider, decision.fallbacks
         )))
     }
 
@@ -240,21 +300,45 @@ impl Provider for Router {
             Error::Provider(format!("No route found for model '{}'", request.model))
         })?;
 
-        tracing::info!(
-            model = %request.model,
-            primary = %decision.primary,
-            fallbacks = ?decision.fallbacks,
-            rule = ?decision.matched_rule,
-            "Route decision made for streaming request"
-        );
+        // Determine primary provider (from strategy or direct)
+        let primary_provider = if let Some(strategy) = &decision.strategy {
+            let rule_name = decision.matched_rule.as_deref().unwrap_or("unknown");
+            let selected = self
+                .select_provider_from_strategy(strategy, rule_name)
+                .await?;
 
-        // For streaming, we'll try primary first, then fallbacks
+            tracing::info!(
+                model = %request.model,
+                selected_provider = %selected,
+                strategy = "round-robin/weighted",
+                rule = ?decision.matched_rule,
+                "Route decision made for streaming request (strategy)"
+            );
+
+            selected
+        } else if let Some(primary) = &decision.primary {
+            tracing::info!(
+                model = %request.model,
+                primary = %primary,
+                fallbacks = ?decision.fallbacks,
+                rule = ?decision.matched_rule,
+                "Route decision made for streaming request (primary)"
+            );
+
+            primary.clone()
+        } else {
+            return Err(Error::Provider(
+                "No primary provider or strategy specified".to_string(),
+            ));
+        };
+
+        // For streaming, we'll try primary/selected first, then fallbacks
         // Note: Circuit breaker check for streaming
-        let circuit_breaker = self.get_circuit_breaker(&decision.primary).await;
+        let circuit_breaker = self.get_circuit_breaker(&primary_provider).await;
 
         if !circuit_breaker.allow_request() {
             tracing::warn!(
-                provider = %decision.primary,
+                provider = %primary_provider,
                 state = ?circuit_breaker.state(),
                 "Circuit breaker is open for streaming request"
             );
@@ -283,13 +367,13 @@ impl Provider for Router {
             )));
         }
 
-        // Use primary provider for streaming
-        let provider = self.providers.get(&decision.primary).ok_or_else(|| {
-            Error::Provider(format!("Provider '{}' not found", decision.primary))
+        // Use primary/selected provider for streaming
+        let provider = self.providers.get(&primary_provider).ok_or_else(|| {
+            Error::Provider(format!("Provider '{}' not found", primary_provider))
         })?;
 
         tracing::debug!(
-            provider = %decision.primary,
+            provider = %primary_provider,
             model = %request.model,
             "Starting streaming request"
         );
@@ -389,7 +473,8 @@ mod tests {
             priority: 10,
             name: Some("test-rule".to_string()),
             matcher: RuleMatcher::Always,
-            primary: "test-provider".to_string(),
+            strategy: None,
+            primary: Some("test-provider".to_string()),
             fallbacks: vec![],
         };
 
@@ -440,7 +525,8 @@ mod tests {
             priority: 10,
             name: Some("test-rule".to_string()),
             matcher: RuleMatcher::Always,
-            primary: "primary".to_string(),
+            strategy: None,
+            primary: Some("primary".to_string()),
             fallbacks: vec!["fallback".to_string()],
         };
 
@@ -477,7 +563,8 @@ mod tests {
             priority: 10,
             name: Some("test-rule".to_string()),
             matcher: RuleMatcher::Always,
-            primary: "primary".to_string(),
+            strategy: None,
+            primary: Some("primary".to_string()),
             fallbacks: vec!["fallback".to_string()],
         };
 
@@ -512,7 +599,8 @@ mod tests {
             priority: 10,
             name: Some("test-rule".to_string()),
             matcher: RuleMatcher::Always,
-            primary: "test-provider".to_string(),
+            strategy: None,
+            primary: Some("test-provider".to_string()),
             fallbacks: vec![],
         };
 
@@ -565,7 +653,8 @@ mod tests {
             priority: 10,
             name: Some("test-rule".to_string()),
             matcher: RuleMatcher::Always,
-            primary: "test-provider".to_string(),
+            strategy: None,
+            primary: Some("test-provider".to_string()),
             fallbacks: vec![],
         };
 

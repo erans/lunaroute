@@ -6,6 +6,7 @@
 //! - Header overrides (X-Luna-Provider)
 //! - Fallback chains for automatic failover
 
+use crate::strategy::RoutingStrategy;
 use lunaroute_core::normalized::NormalizedRequest;
 use once_cell::sync::OnceCell;
 use regex::Regex;
@@ -78,11 +79,58 @@ pub struct RoutingRule {
     pub name: Option<String>,
     /// Matcher for this rule
     pub matcher: RuleMatcher,
-    /// Primary provider to route to
-    pub primary: String,
-    /// Fallback providers (tried in order if primary fails)
+
+    /// Routing strategy (optional, new style)
+    /// If specified, uses strategy for provider selection
+    #[serde(default)]
+    pub strategy: Option<RoutingStrategy>,
+
+    /// Primary provider to route to (optional, old style)
+    /// Used when strategy is not specified
+    /// Must be specified if strategy is None
+    #[serde(default)]
+    pub primary: Option<String>,
+
+    /// Fallback providers (tried in order if primary/strategy providers fail)
     #[serde(default)]
     pub fallbacks: Vec<String>,
+}
+
+impl RoutingRule {
+    /// Validate the routing rule configuration
+    pub fn validate(&self) -> Result<(), String> {
+        // Must have either strategy or primary
+        if self.strategy.is_none() && self.primary.is_none() {
+            return Err("Rule must specify either 'strategy' or 'primary' provider".to_string());
+        }
+
+        // Validate strategy if present
+        if let Some(strategy) = &self.strategy {
+            strategy.validate().map_err(|e| e.to_string())?;
+        }
+
+        Ok(())
+    }
+
+    /// Get all provider IDs that this rule might use (for validation)
+    pub fn all_provider_ids(&self) -> Vec<&str> {
+        let mut ids = Vec::new();
+
+        // Add strategy providers
+        if let Some(strategy) = &self.strategy {
+            ids.extend(strategy.provider_ids());
+        }
+
+        // Add primary
+        if let Some(primary) = &self.primary {
+            ids.push(primary.as_str());
+        }
+
+        // Add fallbacks
+        ids.extend(self.fallbacks.iter().map(|s| s.as_str()));
+
+        ids
+    }
 }
 
 /// Matcher for routing rules
@@ -172,15 +220,29 @@ impl RuleMatcher {
     }
 }
 
-/// Routing decision containing target provider and fallbacks
+/// Routing decision containing target provider(s) and fallbacks
 #[derive(Debug, Clone)]
 pub struct RoutingDecision {
-    /// Primary provider to use
-    pub primary: String,
-    /// Fallback providers to try if primary fails
+    /// Strategy for provider selection (if rule uses strategy)
+    pub strategy: Option<RoutingStrategy>,
+    /// Primary provider to use (if rule uses old-style primary)
+    pub primary: Option<String>,
+    /// Fallback providers to try if primary/strategy providers fail
     pub fallbacks: Vec<String>,
     /// The rule that matched (for logging/debugging)
     pub matched_rule: Option<String>,
+}
+
+impl RoutingDecision {
+    /// Check if this decision uses a strategy
+    pub fn uses_strategy(&self) -> bool {
+        self.strategy.is_some()
+    }
+
+    /// Get the primary provider (for backwards compatibility with old-style routing)
+    pub fn get_primary(&self) -> Option<&str> {
+        self.primary.as_deref()
+    }
 }
 
 /// Route table for managing routing rules
@@ -221,7 +283,8 @@ impl RouteTable {
         if let Some(provider) = &context.provider_override {
             tracing::debug!("Using provider override: {}", provider);
             return Some(RoutingDecision {
-                primary: provider.clone(),
+                strategy: None,
+                primary: Some(provider.clone()),
                 fallbacks: vec![],
                 matched_rule: Some("provider_override".to_string()),
             });
@@ -235,15 +298,35 @@ impl RouteTable {
                     .clone()
                     .unwrap_or_else(|| format!("rule_priority_{}", rule.priority));
 
-                tracing::debug!(
-                    "Matched routing rule '{}': {} → {}",
-                    rule_name,
-                    request.model,
-                    rule.primary
-                );
+                // Determine routing target (strategy or primary)
+                let (strategy, primary) = if let Some(strategy) = &rule.strategy {
+                    let provider_ids = strategy.provider_ids();
+                    tracing::debug!(
+                        "Matched routing rule '{}': {} → strategy with {} providers",
+                        rule_name,
+                        request.model,
+                        provider_ids.len()
+                    );
+                    (Some(strategy.clone()), None)
+                } else if let Some(primary) = &rule.primary {
+                    tracing::debug!(
+                        "Matched routing rule '{}': {} → {}",
+                        rule_name,
+                        request.model,
+                        primary
+                    );
+                    (None, Some(primary.clone()))
+                } else {
+                    tracing::error!(
+                        "Rule '{}' has neither strategy nor primary provider",
+                        rule_name
+                    );
+                    continue; // Skip invalid rule
+                };
 
                 return Some(RoutingDecision {
-                    primary: rule.primary.clone(),
+                    strategy,
+                    primary,
                     fallbacks: rule.fallbacks.clone(),
                     matched_rule: Some(rule_name),
                 });
@@ -358,7 +441,8 @@ mod tests {
             priority: 10,
             name: Some("test".to_string()),
             matcher: RuleMatcher::Always,
-            primary: "provider1".to_string(),
+            strategy: None,
+            primary: Some("provider1".to_string()),
             fallbacks: vec![],
         };
 
@@ -373,14 +457,16 @@ mod tests {
                 priority: 5,
                 name: Some("low".to_string()),
                 matcher: RuleMatcher::Always,
-                primary: "provider1".to_string(),
+                strategy: None,
+                primary: Some("provider1".to_string()),
                 fallbacks: vec![],
             },
             RoutingRule {
                 priority: 10,
                 name: Some("high".to_string()),
                 matcher: RuleMatcher::Always,
-                primary: "provider2".to_string(),
+                strategy: None,
+                primary: Some("provider2".to_string()),
                 fallbacks: vec![],
             },
         ];
@@ -397,7 +483,8 @@ mod tests {
             priority: 10,
             name: Some("default".to_string()),
             matcher: RuleMatcher::Always,
-            primary: "provider1".to_string(),
+            strategy: None,
+            primary: Some("provider1".to_string()),
             fallbacks: vec![],
         };
         let table = RouteTable::with_rules(vec![rule]);
@@ -406,7 +493,7 @@ mod tests {
         let context = RoutingContext::new().with_provider_override("override_provider");
 
         let decision = table.find_route(&request, &context).unwrap();
-        assert_eq!(decision.primary, "override_provider");
+        assert_eq!(decision.primary, Some("override_provider".to_string()));
         assert_eq!(decision.matched_rule, Some("provider_override".to_string()));
     }
 
@@ -416,7 +503,8 @@ mod tests {
             priority: 10,
             name: Some("gpt_rule".to_string()),
             matcher: RuleMatcher::model_pattern("^gpt-.*"),
-            primary: "openai".to_string(),
+            strategy: None,
+            primary: Some("openai".to_string()),
             fallbacks: vec!["openai_backup".to_string()],
         };
         let table = RouteTable::with_rules(vec![rule]);
@@ -425,7 +513,7 @@ mod tests {
         let context = RoutingContext::new();
 
         let decision = table.find_route(&request, &context).unwrap();
-        assert_eq!(decision.primary, "openai");
+        assert_eq!(decision.primary, Some("openai".to_string()));
         assert_eq!(decision.fallbacks, vec!["openai_backup"]);
         assert_eq!(decision.matched_rule, Some("gpt_rule".to_string()));
     }
@@ -438,7 +526,8 @@ mod tests {
             matcher: RuleMatcher::Listener {
                 listener: ListenerType::Anthropic,
             },
-            primary: "anthropic".to_string(),
+            strategy: None,
+            primary: Some("anthropic".to_string()),
             fallbacks: vec![],
         };
         let table = RouteTable::with_rules(vec![rule]);
@@ -447,7 +536,7 @@ mod tests {
         let context = RoutingContext::new().with_listener(ListenerType::Anthropic);
 
         let decision = table.find_route(&request, &context).unwrap();
-        assert_eq!(decision.primary, "anthropic");
+        assert_eq!(decision.primary, Some("anthropic".to_string()));
     }
 
     #[test]
@@ -457,14 +546,16 @@ mod tests {
                 priority: 20,
                 name: Some("high_priority".to_string()),
                 matcher: RuleMatcher::model_pattern(".*"), // Matches everything
-                primary: "provider1".to_string(),
+                strategy: None,
+                primary: Some("provider1".to_string()),
                 fallbacks: vec![],
             },
             RoutingRule {
                 priority: 10,
                 name: Some("low_priority".to_string()),
                 matcher: RuleMatcher::Always,
-                primary: "provider2".to_string(),
+                strategy: None,
+                primary: Some("provider2".to_string()),
                 fallbacks: vec![],
             },
         ];
@@ -475,7 +566,7 @@ mod tests {
 
         let decision = table.find_route(&request, &context).unwrap();
         // High priority rule should match first
-        assert_eq!(decision.primary, "provider1");
+        assert_eq!(decision.primary, Some("provider1".to_string()));
         assert_eq!(decision.matched_rule, Some("high_priority".to_string()));
     }
 
@@ -485,7 +576,8 @@ mod tests {
             priority: 10,
             name: Some("gpt_only".to_string()),
             matcher: RuleMatcher::model_pattern("^gpt-.*"),
-            primary: "openai".to_string(),
+            strategy: None,
+            primary: Some("openai".to_string()),
             fallbacks: vec![],
         };
         let table = RouteTable::with_rules(vec![rule]);
@@ -524,7 +616,8 @@ mod tests {
             priority: 10,
             name: Some("gpt_rule".to_string()),
             matcher: RuleMatcher::model_pattern("^gpt-.*"),
-            primary: "openai".to_string(),
+            strategy: None,
+            primary: Some("openai".to_string()),
             fallbacks: vec!["openai_backup".to_string()],
         };
 
@@ -533,7 +626,7 @@ mod tests {
 
         assert_eq!(deserialized.priority, 10);
         assert_eq!(deserialized.name, Some("gpt_rule".to_string()));
-        assert_eq!(deserialized.primary, "openai");
+        assert_eq!(deserialized.primary, Some("openai".to_string()));
         assert_eq!(deserialized.fallbacks, vec!["openai_backup"]);
 
         // Verify matcher is correct
@@ -552,7 +645,8 @@ mod tests {
             matcher: RuleMatcher::Listener {
                 listener: ListenerType::Anthropic,
             },
-            primary: "anthropic".to_string(),
+            strategy: None,
+            primary: Some("anthropic".to_string()),
             fallbacks: vec![],
         };
 
@@ -586,7 +680,7 @@ mod tests {
 
         assert_eq!(rule.priority, 20);
         assert_eq!(rule.name, Some("claude_rule".to_string()));
-        assert_eq!(rule.primary, "anthropic");
+        assert_eq!(rule.primary, Some("anthropic".to_string()));
         assert_eq!(rule.fallbacks, vec!["anthropic_backup"]);
 
         if let RuleMatcher::ModelPattern { pattern, .. } = rule.matcher {
@@ -609,7 +703,7 @@ mod tests {
 
         assert_eq!(rule.priority, 0); // Default
         assert_eq!(rule.name, None); // Default
-        assert_eq!(rule.primary, "default_provider");
+        assert_eq!(rule.primary, Some("default_provider".to_string()));
         assert_eq!(rule.fallbacks, Vec::<String>::new()); // Default
 
         assert!(matches!(rule.matcher, RuleMatcher::Always));
@@ -634,14 +728,16 @@ mod tests {
                 priority: 10,
                 name: Some("rule1".to_string()),
                 matcher: RuleMatcher::model_pattern("^gpt-.*"),
-                primary: "openai".to_string(),
+                strategy: None,
+                primary: Some("openai".to_string()),
                 fallbacks: vec![],
             },
             RoutingRule {
                 priority: 5,
                 name: Some("rule2".to_string()),
                 matcher: RuleMatcher::Always,
-                primary: "default".to_string(),
+                strategy: None,
+                primary: Some("default".to_string()),
                 fallbacks: vec![],
             },
         ];
@@ -737,7 +833,8 @@ mod tests {
             priority: 42,
             name: None, // No name
             matcher: RuleMatcher::Always,
-            primary: "provider1".to_string(),
+            strategy: None,
+            primary: Some("provider1".to_string()),
             fallbacks: vec![],
         };
         let table = RouteTable::with_rules(vec![rule]);
@@ -785,7 +882,8 @@ mod tests {
             priority: 10,
             name: Some("no_fallback".to_string()),
             matcher: RuleMatcher::Always,
-            primary: "primary_only".to_string(),
+            strategy: None,
+            primary: Some("primary_only".to_string()),
             fallbacks: vec![], // Empty fallbacks
         };
         let table = RouteTable::with_rules(vec![rule]);
@@ -794,7 +892,7 @@ mod tests {
         let context = RoutingContext::new();
 
         let decision = table.find_route(&request, &context).unwrap();
-        assert_eq!(decision.primary, "primary_only");
+        assert_eq!(decision.primary, Some("primary_only".to_string()));
         assert_eq!(decision.fallbacks, Vec::<String>::new());
     }
 
