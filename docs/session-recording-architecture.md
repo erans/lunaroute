@@ -896,6 +896,61 @@ This example shows:
 5. Safe percentile calculation with bounds checking
 6. Zero-copy passthrough while extracting metrics
 
+### Streaming Production Safety Features
+
+The streaming implementation includes multiple layers of protection against memory exhaustion and parsing errors:
+
+**Memory Bounds**
+```rust
+// Constants defined in openai.rs and anthropic.rs
+const MAX_CHUNK_LATENCIES: usize = 10_000;        // Cap latency array
+const MAX_ACCUMULATED_TEXT_BYTES: usize = 1_000_000;  // Cap text buffer (1MB)
+
+// Latency tracking with warning
+if latencies.len() < MAX_CHUNK_LATENCIES {
+    latencies.push(latency);
+} else if latencies.len() == MAX_CHUNK_LATENCIES {
+    tracing::warn!(
+        "Chunk latency array reached maximum size ({} entries), dropping further measurements",
+        MAX_CHUNK_LATENCIES
+    );
+}
+
+// Text accumulation with warning
+if accumulated.len() + content.len() <= MAX_ACCUMULATED_TEXT_BYTES {
+    accumulated.push_str(content);
+} else if accumulated.len() < MAX_ACCUMULATED_TEXT_BYTES {
+    tracing::warn!(
+        "Accumulated text reached maximum size ({} bytes), dropping further content",
+        MAX_ACCUMULATED_TEXT_BYTES
+    );
+}
+```
+
+**SSE Parsing Optimization**
+- Single parse per event (not double parsing)
+- Graceful fallback if JSON parsing fails
+- Raw data forwarded if parse errors occur
+- Warnings logged without failing the stream
+
+**Mutex Poisoning Handling**
+```rust
+// All mutex operations use graceful error handling
+if let Ok(mut latencies) = latencies_clone.lock() {
+    latencies.push(latency);
+} else {
+    tracing::error!("Streaming metrics: latency tracking mutex poisoned");
+    // Stream continues despite metrics failure
+}
+```
+
+**Benefits:**
+- Prevents OOM from extremely long streaming sessions
+- Early warning when sessions exceed expected bounds
+- Non-blocking error handling preserves stream integrity
+- Graceful degradation of metrics collection
+- No panics in production code paths
+
 ## Configuration
 
 ```yaml

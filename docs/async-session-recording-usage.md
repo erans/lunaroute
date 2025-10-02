@@ -444,7 +444,9 @@ The async session recording system fully supports streaming requests with compre
 **Chunk Tracking**
 - Each SSE chunk latency measured in real-time
 - Percentiles calculated on stream completion
-- No memory overhead during streaming (only latency array)
+- Memory-bounded: 10,000 chunk latency cap, 1MB text accumulation limit
+- Warning logs when memory bounds reached (once per session)
+- Graceful degradation if limits exceeded
 
 ### Example: Analyzing Streaming Performance
 
@@ -502,3 +504,17 @@ Session IDs with special characters are automatically sanitized. Check logs for 
 - `../../../` - Path traversal attempt
 - `/absolute/path` - Absolute path attempt
 - Session ID will be sanitized to alphanumeric + `-` + `_` only
+
+### Streaming memory bounds warnings
+```
+WARN Chunk latency array reached maximum size (10000 entries), dropping further measurements
+WARN Accumulated text reached maximum size (1000000 bytes), dropping further content
+```
+- Indicates extremely long streaming session (10K+ chunks or 1MB+ text)
+- **Impact**: Metrics collection continues but additional chunks not tracked
+- **Normal behavior**: Protection against OOM, stream continues unaffected
+- **Action**: If frequent, investigate why sessions are so long
+  - Check for infinite loops in streaming responses
+  - Review client streaming timeout configurations
+  - Consider if this is expected behavior for your use case
+- **Note**: Final statistics still recorded with data up to the limit
