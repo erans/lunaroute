@@ -145,7 +145,7 @@ If session recording is enabled:
 ## Features
 
 - ✅ **Zero-downtime routing**: Automatic failover between providers
-- ✅ **Passthrough mode**: When dialect matches provider, zero-copy routing with 100% API fidelity
+- ✅ **Passthrough mode**: When dialect matches provider, zero-copy routing with 100% API fidelity (with session recording support)
 - ✅ **Circuit breakers**: Prevent cascading failures
 - ✅ **Health monitoring**: Track provider availability
 - ✅ **Session recording**: Optional request/response capture

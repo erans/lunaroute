@@ -562,7 +562,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if is_anthropic_passthrough {
                 if let Some(connector) = anthropic_connector {
                     info!("⚡ Passthrough mode: Anthropic→Anthropic (no normalization)");
-                    anthropic_ingress::passthrough_router(connector, Some(stats_tracker_clone), Some(metrics.clone()))
+                    anthropic_ingress::passthrough_router(
+                        connector,
+                        Some(stats_tracker_clone),
+                        Some(metrics.clone()),
+                        recorder.clone().map(|r| r as Arc<dyn lunaroute_session::SessionRecorder>),
+                    )
                 } else {
                     anthropic_ingress::router(router)
                 }
