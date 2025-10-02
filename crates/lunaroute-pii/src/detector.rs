@@ -96,6 +96,23 @@ impl Default for DetectorConfig {
     }
 }
 
+/// Redaction mode for custom patterns
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CustomRedactionMode {
+    /// Use HMAC tokenization (deterministic, reversible)
+    Tokenize,
+
+    /// Use placeholder masking (simple string replacement)
+    Mask,
+}
+
+impl Default for CustomRedactionMode {
+    fn default() -> Self {
+        Self::Mask
+    }
+}
+
 /// Custom regex pattern for detection
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomPattern {
@@ -107,6 +124,14 @@ pub struct CustomPattern {
 
     /// Confidence score for matches
     pub confidence: f32,
+
+    /// Redaction mode for this pattern
+    #[serde(default)]
+    pub redaction_mode: CustomRedactionMode,
+
+    /// Placeholder text when redaction_mode is Mask (e.g., "[API_KEY]")
+    /// If None, defaults to "[CUS:name]"
+    pub placeholder: Option<String>,
 }
 
 #[cfg(test)]

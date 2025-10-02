@@ -16,6 +16,13 @@ pub struct RegexPIIDetector {
 }
 
 impl RegexPIIDetector {
+    /// Get the custom patterns configuration
+    pub fn custom_patterns(&self) -> &[crate::detector::CustomPattern] {
+        &self.config.custom_patterns
+    }
+}
+
+impl RegexPIIDetector {
     /// Create a new regex-based PII detector with the given configuration
     pub fn new(config: DetectorConfig) -> Result<Self, regex::Error> {
         // Compile all regex patterns
@@ -424,6 +431,8 @@ mod tests {
                 name: "api_key".to_string(),
                 pattern: r"sk-[a-zA-Z0-9]{32}".to_string(),
                 confidence: 0.9,
+                redaction_mode: crate::detector::CustomRedactionMode::Mask,
+                placeholder: Some("[API_KEY]".to_string()),
             }],
             min_confidence: 0.7,
         };

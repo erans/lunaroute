@@ -1,6 +1,6 @@
 //! Standard PII redactor implementation
 
-use crate::detector::{Detection, PIIType};
+use crate::detector::{CustomPattern, CustomRedactionMode, Detection, PIIType};
 use crate::redactor::{PIIRedactor, RedactionMode, RedactorConfig, TypeRedactionOverride};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -12,6 +12,7 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct StandardRedactor {
     config: RedactorConfig,
     type_overrides: HashMap<PIIType, TypeRedactionOverride>,
+    custom_patterns: HashMap<String, CustomPattern>,
     hmac_key: Option<Vec<u8>>,
 }
 
@@ -29,6 +30,33 @@ impl StandardRedactor {
         Self {
             config,
             type_overrides,
+            custom_patterns: HashMap::new(),
+            hmac_key,
+        }
+    }
+
+    /// Create a new standard redactor with custom pattern configurations
+    pub fn with_custom_patterns(
+        config: RedactorConfig,
+        custom_patterns: Vec<CustomPattern>,
+    ) -> Self {
+        let type_overrides: HashMap<PIIType, TypeRedactionOverride> = config
+            .type_overrides
+            .iter()
+            .map(|override_item| (override_item.pii_type, override_item.clone()))
+            .collect();
+
+        let hmac_key = config.hmac_secret.as_ref().map(|s| s.as_bytes().to_vec());
+
+        let custom_patterns_map: HashMap<String, CustomPattern> = custom_patterns
+            .into_iter()
+            .map(|pattern| (pattern.name.clone(), pattern))
+            .collect();
+
+        Self {
+            config,
+            type_overrides,
+            custom_patterns: custom_patterns_map,
             hmac_key,
         }
     }
@@ -48,8 +76,61 @@ impl StandardRedactor {
             .and_then(|override_item| override_item.replacement.as_deref())
     }
 
+    /// Redact a custom pattern detection
+    fn redact_custom_pattern(&self, detection: &Detection) -> String {
+        // Parse "name:actual_text" format
+        let parts: Vec<&str> = detection.text.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            // Fallback if format is unexpected
+            return "[CUS:UNKNOWN]".to_string();
+        }
+
+        let pattern_name = parts[0];
+        let actual_text = parts[1];
+
+        // Look up the pattern configuration
+        let pattern = self.custom_patterns.get(pattern_name);
+
+        match pattern.map(|p| p.redaction_mode) {
+            Some(CustomRedactionMode::Tokenize) => {
+                // Use HMAC tokenization
+                if let Some(key) = &self.hmac_key {
+                    let mut mac = HmacSha256::new_from_slice(key)
+                        .expect("HMAC can take key of any size");
+                    mac.update(actual_text.as_bytes());
+                    let result = mac.finalize();
+
+                    use base64::Engine;
+                    let hash = base64::engine::general_purpose::STANDARD.encode(result.into_bytes());
+
+                    // Use first 16 chars of base64-encoded hash for readability
+                    let short_hash = &hash[..16.min(hash.len())];
+                    format!("[CUS:{}:{}]", pattern_name, short_hash)
+                } else {
+                    // No HMAC key, fall back to mask
+                    pattern
+                        .and_then(|p| p.placeholder.as_ref())
+                        .map(|s| s.clone())
+                        .unwrap_or_else(|| format!("[CUS:{}]", pattern_name))
+                }
+            }
+            Some(CustomRedactionMode::Mask) | None => {
+                // Use placeholder if provided, otherwise default to [CUS:name]
+                pattern
+                    .and_then(|p| p.placeholder.as_ref())
+                    .map(|s| s.clone())
+                    .unwrap_or_else(|| format!("[CUS:{}]", pattern_name))
+            }
+        }
+    }
+
     /// Redact a single detection based on mode
     fn redact_detection(&self, detection: &Detection) -> String {
+        // Handle custom patterns separately
+        if detection.pii_type == PIIType::Custom {
+            return self.redact_custom_pattern(detection);
+        }
+
         let mode = self.get_mode_for_type(detection.pii_type);
 
         match mode {
@@ -406,7 +487,7 @@ mod tests {
 
         let redactor = StandardRedactor::new(config);
         let text = "Short: abc";
-        let detections = vec![create_detection(PIIType::Custom, 7, 10, "abc")];
+        let detections = vec![create_detection(PIIType::Email, 7, 10, "abc")];
 
         let redacted = redactor.redact(text, &detections);
         // Text shorter than partial_show_chars, should be all asterisks
@@ -463,5 +544,194 @@ mod tests {
 
         // Different keys should produce different tokens
         assert_ne!(redacted1, redacted2);
+    }
+
+    #[test]
+    fn test_custom_pattern_mask_with_placeholder() {
+        let config = RedactorConfig::default();
+        let custom_patterns = vec![CustomPattern {
+            name: "api_key".to_string(),
+            pattern: r"sk-[a-zA-Z0-9]{32}".to_string(),
+            confidence: 0.9,
+            redaction_mode: CustomRedactionMode::Mask,
+            placeholder: Some("[API_KEY]".to_string()),
+        }];
+
+        let redactor = StandardRedactor::with_custom_patterns(config, custom_patterns);
+        let text = "Key: sk-abcdefghijklmnopqrstuvwxyz123456";
+        // Detection text format: "name:actual_text"
+        let detections = vec![create_detection(
+            PIIType::Custom,
+            5,
+            40,
+            "api_key:sk-abcdefghijklmnopqrstuvwxyz123456",
+        )];
+
+        let redacted = redactor.redact(text, &detections);
+        assert_eq!(redacted, "Key: [API_KEY]");
+    }
+
+    #[test]
+    fn test_custom_pattern_mask_without_placeholder() {
+        let config = RedactorConfig::default();
+        let custom_patterns = vec![CustomPattern {
+            name: "openai_key".to_string(),
+            pattern: r"sk-[a-zA-Z0-9]{32}".to_string(),
+            confidence: 0.9,
+            redaction_mode: CustomRedactionMode::Mask,
+            placeholder: None,
+        }];
+
+        let redactor = StandardRedactor::with_custom_patterns(config, custom_patterns);
+        let text = "Key: sk-abcdefghijklmnopqrstuvwxyz123456";
+        let detections = vec![create_detection(
+            PIIType::Custom,
+            5,
+            40,
+            "openai_key:sk-abcdefghijklmnopqrstuvwxyz123456",
+        )];
+
+        let redacted = redactor.redact(text, &detections);
+        // Should use default [CUS:name] format
+        assert_eq!(redacted, "Key: [CUS:openai_key]");
+    }
+
+    #[test]
+    fn test_custom_pattern_tokenize_with_hmac() {
+        let config = RedactorConfig {
+            mode: RedactionMode::Mask,
+            partial_show_chars: 4,
+            hmac_secret: Some("test-secret".to_string()),
+            type_overrides: Vec::new(),
+        };
+
+        let custom_patterns = vec![CustomPattern {
+            name: "api_key".to_string(),
+            pattern: r"sk-[a-zA-Z0-9]{32}".to_string(),
+            confidence: 0.9,
+            redaction_mode: CustomRedactionMode::Tokenize,
+            placeholder: None,
+        }];
+
+        let redactor = StandardRedactor::with_custom_patterns(config, custom_patterns);
+        let text = "Key: sk-abcdefghijklmnopqrstuvwxyz123456";
+        let detections = vec![create_detection(
+            PIIType::Custom,
+            5,
+            40,
+            "api_key:sk-abcdefghijklmnopqrstuvwxyz123456",
+        )];
+
+        let redacted = redactor.redact(text, &detections);
+
+        // Should contain [CUS:api_key:hash] format
+        assert!(redacted.starts_with("Key: [CUS:api_key:"));
+        assert!(redacted.ends_with("]"));
+        assert!(!redacted.contains("sk-"));
+
+        // Should be deterministic
+        let redacted2 = redactor.redact(text, &detections);
+        assert_eq!(redacted, redacted2);
+    }
+
+    #[test]
+    fn test_custom_pattern_tokenize_without_hmac() {
+        let config = RedactorConfig {
+            mode: RedactionMode::Mask,
+            partial_show_chars: 4,
+            hmac_secret: None, // No HMAC key
+            type_overrides: Vec::new(),
+        };
+
+        let custom_patterns = vec![CustomPattern {
+            name: "api_key".to_string(),
+            pattern: r"sk-[a-zA-Z0-9]{32}".to_string(),
+            confidence: 0.9,
+            redaction_mode: CustomRedactionMode::Tokenize,
+            placeholder: Some("[SECRET_KEY]".to_string()),
+        }];
+
+        let redactor = StandardRedactor::with_custom_patterns(config, custom_patterns);
+        let text = "Key: sk-abcdefghijklmnopqrstuvwxyz123456";
+        let detections = vec![create_detection(
+            PIIType::Custom,
+            5,
+            40,
+            "api_key:sk-abcdefghijklmnopqrstuvwxyz123456",
+        )];
+
+        let redacted = redactor.redact(text, &detections);
+
+        // Should fall back to placeholder
+        assert_eq!(redacted, "Key: [SECRET_KEY]");
+    }
+
+    #[test]
+    fn test_custom_pattern_tokenize_without_hmac_no_placeholder() {
+        let config = RedactorConfig {
+            mode: RedactionMode::Mask,
+            partial_show_chars: 4,
+            hmac_secret: None, // No HMAC key
+            type_overrides: Vec::new(),
+        };
+
+        let custom_patterns = vec![CustomPattern {
+            name: "github_token".to_string(),
+            pattern: r"ghp_[a-zA-Z0-9]{36}".to_string(),
+            confidence: 0.95,
+            redaction_mode: CustomRedactionMode::Tokenize,
+            placeholder: None, // No placeholder
+        }];
+
+        let redactor = StandardRedactor::with_custom_patterns(config, custom_patterns);
+        let text = "Token: ghp_abcdefghijklmnopqrstuvwxyz1234567890";
+        let detections = vec![create_detection(
+            PIIType::Custom,
+            7,
+            47,
+            "github_token:ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+        )];
+
+        let redacted = redactor.redact(text, &detections);
+
+        // Should fall back to [CUS:name] format
+        assert_eq!(redacted, "Token: [CUS:github_token]");
+    }
+
+    #[test]
+    fn test_mixed_standard_and_custom_patterns() {
+        let config = RedactorConfig {
+            mode: RedactionMode::Mask,
+            partial_show_chars: 4,
+            hmac_secret: Some("secret".to_string()),
+            type_overrides: Vec::new(),
+        };
+
+        let custom_patterns = vec![CustomPattern {
+            name: "api_key".to_string(),
+            pattern: r"sk-[a-zA-Z0-9]{32}".to_string(),
+            confidence: 0.9,
+            redaction_mode: CustomRedactionMode::Tokenize,
+            placeholder: None,
+        }];
+
+        let redactor = StandardRedactor::with_custom_patterns(config, custom_patterns);
+        let text = "Email: test@example.com, API: sk-abcdefghijklmnopqrstuvwxyz123456";
+        let detections = vec![
+            create_detection(PIIType::Email, 7, 23, "test@example.com"),
+            create_detection(
+                PIIType::Custom,
+                30,
+                65,
+                "api_key:sk-abcdefghijklmnopqrstuvwxyz123456",
+            ),
+        ];
+
+        let redacted = redactor.redact(text, &detections);
+
+        // Email should use standard mask
+        assert!(redacted.contains("[EMAIL]"));
+        // API key should use custom tokenization
+        assert!(redacted.contains("[CUS:api_key:"));
     }
 }

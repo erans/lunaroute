@@ -78,6 +78,8 @@ fn test_detector_config_custom() {
             name: "api_key".to_string(),
             pattern: r"sk-[a-zA-Z0-9]{32}".to_string(),
             confidence: 0.9,
+            redaction_mode: CustomRedactionMode::Mask,
+            placeholder: None,
         }],
         min_confidence: 0.8,
     };
@@ -94,10 +96,14 @@ fn test_custom_pattern() {
         name: "api_token".to_string(),
         pattern: r"[A-Z0-9]{32}".to_string(),
         confidence: 0.85,
+        redaction_mode: CustomRedactionMode::Tokenize,
+        placeholder: Some("[TOKEN]".to_string()),
     };
 
     assert_eq!(pattern.name, "api_token");
     assert_eq!(pattern.confidence, 0.85);
+    assert_eq!(pattern.redaction_mode, CustomRedactionMode::Tokenize);
+    assert_eq!(pattern.placeholder, Some("[TOKEN]".to_string()));
 }
 
 #[test]
@@ -106,12 +112,16 @@ fn test_custom_pattern_serialization() {
         name: "secret".to_string(),
         pattern: r"\bsecret_\w+".to_string(),
         confidence: 0.75,
+        redaction_mode: CustomRedactionMode::Mask,
+        placeholder: Some("[SECRET]".to_string()),
     };
 
     let json = serde_json::to_string(&pattern).unwrap();
     let deserialized: CustomPattern = serde_json::from_str(&json).unwrap();
 
     assert_eq!(deserialized.name, "secret");
+    assert_eq!(deserialized.redaction_mode, CustomRedactionMode::Mask);
+    assert_eq!(deserialized.placeholder, Some("[SECRET]".to_string()));
 }
 
 #[test]

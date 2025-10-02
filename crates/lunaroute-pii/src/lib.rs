@@ -8,5 +8,8 @@
 pub mod detector;
 pub mod redactor;
 
-pub use detector::{Detection, DetectorConfig, PIIDetector, PIIType, RegexPIIDetector};
+pub use detector::{
+    CustomPattern, CustomRedactionMode, Detection, DetectorConfig, PIIDetector, PIIType,
+    RegexPIIDetector,
+};
 pub use redactor::{PIIRedactor, RedactionMode, RedactorConfig, StandardRedactor};
