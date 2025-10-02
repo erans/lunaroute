@@ -428,3 +428,150 @@ fn test_custom_pattern() {
         panic!("Expected text content");
     }
 }
+
+// Security tests
+
+#[test]
+fn test_json_structure_preservation() {
+    let config = PIIConfig::default();
+    let redactor = SessionPIIRedactor::from_config(&config).unwrap();
+
+    let mut request = NormalizedRequest {
+        messages: vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::Text("Sending email".to_string()),
+            name: None,
+            tool_calls: vec![ToolCall {
+                id: "call_123".to_string(),
+                tool_type: "function".to_string(),
+                function: FunctionCall {
+                    name: "send_email".to_string(),
+                    arguments: r#"{"to":"user@example.com","subject":"Hello","body":"Test message","cc":["admin@example.com"]}"#.to_string(),
+                },
+            }],
+            tool_call_id: None,
+        }],
+        model: "gpt-4".to_string(),
+        max_tokens: None,
+        temperature: None,
+        top_k: None,
+        top_p: None,
+        stream: false,
+        tools: Vec::new(),
+        tool_choice: None,
+        stop_sequences: Vec::new(),
+        system: None,
+        metadata: HashMap::new(),
+    };
+
+    redactor.redact_request(&mut request);
+
+    let args = &request.messages[0].tool_calls[0].function.arguments;
+
+    // Should still be valid JSON
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(args);
+    assert!(parsed.is_ok(), "Redacted JSON should still be valid JSON");
+
+    // Check that emails are redacted
+    assert!(!args.contains("user@example.com"));
+    assert!(!args.contains("admin@example.com"));
+    assert!(args.contains("[EMAIL]"));
+}
+
+#[test]
+fn test_json_with_nested_structures() {
+    let config = PIIConfig {
+        detect_phone: true,
+        ..Default::default()
+    };
+    let redactor = SessionPIIRedactor::from_config(&config).unwrap();
+
+    let mut request = NormalizedRequest {
+        messages: vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::Text("Creating user".to_string()),
+            name: None,
+            tool_calls: vec![ToolCall {
+                id: "call_456".to_string(),
+                tool_type: "function".to_string(),
+                function: FunctionCall {
+                    name: "create_user".to_string(),
+                    arguments: r#"{"user":{"email":"john@example.com","phone":"555-123-1234","metadata":{"backup_email":"john.doe@work.com"}}}"#.to_string(),
+                },
+            }],
+            tool_call_id: None,
+        }],
+        model: "gpt-4".to_string(),
+        max_tokens: None,
+        temperature: None,
+        top_k: None,
+        top_p: None,
+        stream: false,
+        tools: Vec::new(),
+        tool_choice: None,
+        stop_sequences: Vec::new(),
+        system: None,
+        metadata: HashMap::new(),
+    };
+
+    redactor.redact_request(&mut request);
+
+    let args = &request.messages[0].tool_calls[0].function.arguments;
+
+    // Should still be valid JSON
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(args);
+    assert!(parsed.is_ok(), "Redacted nested JSON should still be valid");
+
+    // Check that all PII is redacted
+    assert!(!args.contains("john@example.com"));
+    assert!(!args.contains("john.doe@work.com"));
+    assert!(!args.contains("555-123-1234"));
+}
+
+#[test]
+fn test_malformed_json_fallback() {
+    let config = PIIConfig {
+        detect_phone: true,
+        ..Default::default()
+    };
+    let redactor = SessionPIIRedactor::from_config(&config).unwrap();
+
+    let mut request = NormalizedRequest {
+        messages: vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::Text("Calling function".to_string()),
+            name: None,
+            tool_calls: vec![ToolCall {
+                id: "call_789".to_string(),
+                tool_type: "function".to_string(),
+                function: FunctionCall {
+                    name: "some_func".to_string(),
+                    // Invalid JSON - should fall back to string redaction
+                    arguments: "email: test@example.com, phone: 555-123-9999".to_string(),
+                },
+            }],
+            tool_call_id: None,
+        }],
+        model: "gpt-4".to_string(),
+        max_tokens: None,
+        temperature: None,
+        top_k: None,
+        top_p: None,
+        stream: false,
+        tools: Vec::new(),
+        tool_choice: None,
+        stop_sequences: Vec::new(),
+        system: None,
+        metadata: HashMap::new(),
+    };
+
+    redactor.redact_request(&mut request);
+
+    let args = &request.messages[0].tool_calls[0].function.arguments;
+
+    // Should still redact PII even if not valid JSON
+    assert!(!args.contains("test@example.com"));
+    assert!(!args.contains("555-123-9999"));
+    assert!(args.contains("[EMAIL]"));
+    assert!(args.contains("[PHONE]"));
+}

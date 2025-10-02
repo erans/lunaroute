@@ -2,6 +2,7 @@
 
 use crate::detector::{CustomPattern, CustomRedactionMode, Detection, PIIType};
 use crate::redactor::{PIIRedactor, RedactionMode, RedactorConfig, TypeRedactionOverride};
+use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -16,6 +17,19 @@ pub struct StandardRedactor {
     hmac_key: Option<Vec<u8>>,
 }
 
+/// Derive a secure HMAC key from a secret using HKDF
+fn derive_hmac_key(secret: &str) -> Vec<u8> {
+    let salt = b"lunaroute-pii-redaction-v1";
+    let info = b"hmac-tokenization-key";
+
+    let hkdf = Hkdf::<Sha256>::new(Some(salt), secret.as_bytes());
+    let mut key = vec![0u8; 32]; // 32 bytes for HMAC-SHA256
+    hkdf.expand(info, &mut key)
+        .expect("HKDF expand should never fail for 32-byte output");
+
+    key
+}
+
 impl StandardRedactor {
     /// Create a new standard redactor with the given configuration
     pub fn new(config: RedactorConfig) -> Self {
@@ -25,7 +39,7 @@ impl StandardRedactor {
             .map(|override_item| (override_item.pii_type, override_item.clone()))
             .collect();
 
-        let hmac_key = config.hmac_secret.as_ref().map(|s| s.as_bytes().to_vec());
+        let hmac_key = config.hmac_secret.as_ref().map(|s| derive_hmac_key(s.as_str()));
 
         Self {
             config,
@@ -46,7 +60,7 @@ impl StandardRedactor {
             .map(|override_item| (override_item.pii_type, override_item.clone()))
             .collect();
 
-        let hmac_key = config.hmac_secret.as_ref().map(|s| s.as_bytes().to_vec());
+        let hmac_key = config.hmac_secret.as_ref().map(|s| derive_hmac_key(s.as_str()));
 
         let custom_patterns_map: HashMap<String, CustomPattern> = custom_patterns
             .into_iter()
@@ -78,18 +92,30 @@ impl StandardRedactor {
 
     /// Redact a custom pattern detection
     fn redact_custom_pattern(&self, detection: &Detection) -> String {
-        // Parse "name:actual_text" format
-        let parts: Vec<&str> = detection.text.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            // Fallback if format is unexpected
-            return "[CUS:UNKNOWN]".to_string();
+        // Parse JSON format: {"name":"pattern_name","text":"actual_text"}
+        #[derive(serde::Deserialize)]
+        struct CustomDetection {
+            name: String,
+            text: String,
         }
 
-        let pattern_name = parts[0];
-        let actual_text = parts[1];
+        let parsed: Result<CustomDetection, _> = serde_json::from_str(&detection.text);
+
+        let (pattern_name, actual_text) = match parsed {
+            Ok(custom) => (custom.name, custom.text),
+            Err(_) => {
+                // Fallback: try old "name:text" format for backwards compatibility
+                let parts: Vec<&str> = detection.text.splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    (parts[0].to_string(), parts[1].to_string())
+                } else {
+                    return "[CUS:UNKNOWN]".to_string();
+                }
+            }
+        };
 
         // Look up the pattern configuration
-        let pattern = self.custom_patterns.get(pattern_name);
+        let pattern = self.custom_patterns.get(&pattern_name);
 
         match pattern.map(|p| p.redaction_mode) {
             Some(CustomRedactionMode::Tokenize) => {
@@ -214,16 +240,65 @@ fn pii_type_abbrev(pii_type: PIIType) -> &'static str {
     }
 }
 
+/// Merge overlapping detections, keeping the highest confidence one
+fn merge_overlapping_detections(detections: &[Detection]) -> Vec<Detection> {
+    if detections.is_empty() {
+        return Vec::new();
+    }
+
+    // Sort by start position, then by confidence (descending)
+    let mut sorted = detections.to_vec();
+    sorted.sort_by(|a, b| {
+        a.start
+            .cmp(&b.start)
+            .then_with(|| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    let mut merged = Vec::new();
+    let mut current = sorted[0].clone();
+
+    for detection in sorted.iter().skip(1) {
+        if detection.start < current.end {
+            // Overlapping: keep the one with higher confidence
+            if detection.confidence > current.confidence {
+                // Only replace if the new detection has higher confidence
+                // and doesn't extend before current.start
+                if detection.end > current.end {
+                    current.end = detection.end;
+                    current.text = detection.text.clone();
+                    current.confidence = detection.confidence;
+                    current.pii_type = detection.pii_type;
+                }
+            } else {
+                // Keep current, but extend end if needed
+                if detection.end > current.end {
+                    current.end = detection.end;
+                }
+            }
+        } else {
+            // Non-overlapping: save current and start new
+            merged.push(current.clone());
+            current = detection.clone();
+        }
+    }
+
+    merged.push(current);
+    merged
+}
+
 impl PIIRedactor for StandardRedactor {
     fn redact(&self, text: &str, detections: &[Detection]) -> String {
         if detections.is_empty() {
             return text.to_string();
         }
 
+        // Merge overlapping detections first
+        let merged = merge_overlapping_detections(detections);
+
         let mut result = String::with_capacity(text.len());
         let mut last_end = 0;
 
-        for detection in detections {
+        for detection in &merged {
             // Add text before this detection
             result.push_str(&text[last_end..detection.start]);
 
@@ -731,5 +806,150 @@ mod tests {
         assert!(redacted.contains("[EMAIL]"));
         // API key should use custom tokenization
         assert!(redacted.contains("[CUS:api_key:"));
+    }
+
+    // Security tests
+
+    #[test]
+    fn test_overlapping_detections() {
+        let config = RedactorConfig::default();
+        let redactor = StandardRedactor::new(config);
+
+        let text = "test@example.com";
+        // Two overlapping detections: email and a fake phone pattern that overlaps
+        let detections = vec![
+            Detection {
+                pii_type: PIIType::Email,
+                start: 0,
+                end: 16,
+                text: "test@example.com".to_string(),
+                confidence: 0.95,
+            },
+            Detection {
+                pii_type: PIIType::Phone,
+                start: 5,
+                end: 12,
+                text: "example".to_string(),
+                confidence: 0.7,
+            },
+        ];
+
+        let redacted = redactor.redact(text, &detections);
+        // Should only have one redaction (the higher confidence email)
+        assert_eq!(redacted, "[EMAIL]");
+        assert!(!redacted.contains("[PHONE]"));
+    }
+
+    #[test]
+    fn test_hkdf_key_derivation_deterministic() {
+        let config1 = RedactorConfig {
+            mode: RedactionMode::Tokenize,
+            partial_show_chars: 4,
+            hmac_secret: Some("my-secret-key".to_string()),
+            type_overrides: Vec::new(),
+        };
+
+        let config2 = RedactorConfig {
+            mode: RedactionMode::Tokenize,
+            partial_show_chars: 4,
+            hmac_secret: Some("my-secret-key".to_string()),
+            type_overrides: Vec::new(),
+        };
+
+        let redactor1 = StandardRedactor::new(config1);
+        let redactor2 = StandardRedactor::new(config2);
+
+        let text = "test@example.com";
+        let detection = create_detection(PIIType::Email, 0, 16, "test@example.com");
+
+        let redacted1 = redactor1.redact(text, std::slice::from_ref(&detection));
+        let redacted2 = redactor2.redact(text, std::slice::from_ref(&detection));
+
+        // Same secret should produce same derived key and thus same token
+        assert_eq!(redacted1, redacted2);
+    }
+
+    #[test]
+    fn test_custom_pattern_with_json_format() {
+        let config = RedactorConfig::default();
+        let custom_patterns = vec![CustomPattern {
+            name: "api_key".to_string(),
+            pattern: r"sk-[a-zA-Z0-9]{32}".to_string(),
+            confidence: 0.9,
+            redaction_mode: CustomRedactionMode::Mask,
+            placeholder: Some("[API_KEY]".to_string()),
+        }];
+
+        let redactor = StandardRedactor::with_custom_patterns(config, custom_patterns);
+        let text = "Key: sk-abcdefghijklmnopqrstuvwxyz123456";
+
+        // Use new JSON format for custom pattern detection
+        let json_text = r#"{"name":"api_key","text":"sk-abcdefghijklmnopqrstuvwxyz123456"}"#;
+        let detections = vec![create_detection(PIIType::Custom, 5, 40, json_text)];
+
+        let redacted = redactor.redact(text, &detections);
+        assert_eq!(redacted, "Key: [API_KEY]");
+    }
+
+    #[test]
+    fn test_custom_pattern_with_colon_in_text() {
+        let config = RedactorConfig::default();
+        let custom_patterns = vec![CustomPattern {
+            name: "connection_string".to_string(),
+            pattern: r"postgres://[^\s]+".to_string(),
+            confidence: 0.95,
+            redaction_mode: CustomRedactionMode::Mask,
+            placeholder: Some("[DB_STRING]".to_string()),
+        }];
+
+        let redactor = StandardRedactor::with_custom_patterns(config, custom_patterns);
+        let text = "DB: postgres://user:password@localhost:5432/db";
+
+        // Use JSON format to avoid colon splitting issues
+        let json_text = r#"{"name":"connection_string","text":"postgres://user:password@localhost:5432/db"}"#;
+        let detections = vec![create_detection(PIIType::Custom, 4, 46, json_text)];
+
+        let redacted = redactor.redact(text, &detections);
+        assert_eq!(redacted, "DB: [DB_STRING]");
+        assert!(!redacted.contains("postgres://"));
+        assert!(!redacted.contains("password"));
+    }
+
+    #[test]
+    fn test_multiple_overlapping_detections_highest_confidence_wins() {
+        let config = RedactorConfig::default();
+        let redactor = StandardRedactor::new(config);
+
+        let text = "Contact: test@example.com or call";
+        // Multiple overlapping detections with different confidence levels
+        let detections = vec![
+            Detection {
+                pii_type: PIIType::Email,
+                start: 9,
+                end: 25,
+                text: "test@example.com".to_string(),
+                confidence: 0.95,
+            },
+            Detection {
+                pii_type: PIIType::Phone,
+                start: 9,
+                end: 20,
+                text: "test@exampl".to_string(),
+                confidence: 0.6,
+            },
+            Detection {
+                pii_type: PIIType::SSN,
+                start: 15,
+                end: 25,
+                text: "example.com".to_string(),
+                confidence: 0.5,
+            },
+        ];
+
+        let redacted = redactor.redact(text, &detections);
+        // Should only have EMAIL (highest confidence)
+        assert!(redacted.contains("[EMAIL]"));
+        assert!(!redacted.contains("[PHONE]"));
+        assert!(!redacted.contains("[SSN]"));
     }
 }

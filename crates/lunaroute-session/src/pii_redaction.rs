@@ -17,6 +17,48 @@ pub struct SessionPIIRedactor {
 }
 
 impl SessionPIIRedactor {
+    /// Redact PII from a JSON string, preserving JSON structure
+    fn redact_json_string(&self, json_str: &str) -> String {
+        // Try to parse as JSON
+        match serde_json::from_str::<serde_json::Value>(json_str) {
+            Ok(mut value) => {
+                // Recursively redact string values in JSON
+                self.redact_json_value(&mut value);
+                // Serialize back to JSON
+                serde_json::to_string(&value).unwrap_or_else(|_| json_str.to_string())
+            }
+            Err(_) => {
+                // Not valid JSON, fall back to string redaction
+                let detections = self.detector.detect(json_str);
+                self.redactor.redact(json_str, &detections)
+            }
+        }
+    }
+
+    /// Recursively redact PII in JSON values
+    fn redact_json_value(&self, value: &mut serde_json::Value) {
+        use serde_json::Value;
+        match value {
+            Value::String(s) => {
+                let detections = self.detector.detect(s);
+                *s = self.redactor.redact(s, &detections);
+            }
+            Value::Array(arr) => {
+                for item in arr {
+                    self.redact_json_value(item);
+                }
+            }
+            Value::Object(obj) => {
+                for (_key, val) in obj.iter_mut() {
+                    self.redact_json_value(val);
+                }
+            }
+            _ => {
+                // Numbers, booleans, null - no PII to redact
+            }
+        }
+    }
+
     /// Create a new PII redactor from configuration
     pub fn from_config(config: &PIIConfig) -> Result<Self> {
         // Convert config to DetectorConfig
@@ -99,9 +141,8 @@ impl SessionPIIRedactor {
         // Redact PII from tool results if present
         for message in &mut request.messages {
             for tool_call in &mut message.tool_calls {
-                // Redact from arguments (which is a JSON string)
-                let detections = self.detector.detect(&tool_call.function.arguments);
-                tool_call.function.arguments = self.redactor.redact(&tool_call.function.arguments, &detections);
+                // Redact from arguments (which is a JSON string) - use JSON-aware redaction
+                tool_call.function.arguments = self.redact_json_string(&tool_call.function.arguments);
             }
 
             if let Some(tool_call_id) = &mut message.tool_call_id {
@@ -132,8 +173,8 @@ impl SessionPIIRedactor {
 
             // Redact from tool calls if present
             for tool_call in &mut choice.message.tool_calls {
-                let detections = self.detector.detect(&tool_call.function.arguments);
-                tool_call.function.arguments = self.redactor.redact(&tool_call.function.arguments, &detections);
+                // Use JSON-aware redaction for tool call arguments
+                tool_call.function.arguments = self.redact_json_string(&tool_call.function.arguments);
             }
         }
     }
@@ -150,6 +191,7 @@ impl SessionPIIRedactor {
             }
             NormalizedStreamEvent::ToolCallDelta { function, .. } => {
                 // Redact function arguments delta
+                // Note: streaming arguments may not be complete JSON, so we use string redaction
                 if let Some(func) = function
                     && let Some(arguments) = &mut func.arguments
                 {
