@@ -8,6 +8,8 @@ The async multi-writer session recording system provides:
 - **Configurable writers**: Enable/disable JSONL and SQLite independently
 - **Batched writes**: Efficient I/O with configurable batch sizes
 - **Schema versioning**: SQLite schema version tracking (v1)
+- **Disk space management**: Retention policies with automatic cleanup and compression
+- **Advanced search**: Powerful filtering, pagination, and analytics via SQLite
 
 ## Configuration
 
@@ -22,6 +24,13 @@ session_recording:
   jsonl:
     enabled: true
     directory: "~/.lunaroute/sessions"
+
+    # Retention policy (disk space management)
+    retention:
+      max_age_days: 30              # Delete sessions older than 30 days
+      max_total_size_gb: 10         # Enforce 10GB disk quota
+      compress_after_days: 7        # Compress sessions older than 7 days (Zstd level 3)
+      cleanup_interval_minutes: 60  # Run cleanup every hour
 
   # SQLite writer (queryable metadata)
   sqlite:
@@ -518,3 +527,298 @@ WARN Accumulated text reached maximum size (1000000 bytes), dropping further con
   - Review client streaming timeout configurations
   - Consider if this is expected behavior for your use case
 - **Note**: Final statistics still recorded with data up to the limit
+
+## Disk Space Management
+
+### Retention Policies
+
+Automatic disk space management prevents storage exhaustion with configurable retention policies:
+
+**Age-Based Deletion**
+```yaml
+retention:
+  max_age_days: 30  # Delete sessions older than 30 days
+```
+
+**Size-Based Quota**
+```yaml
+retention:
+  max_total_size_gb: 10  # Enforce 10GB total storage limit
+```
+When quota exceeded, oldest sessions are deleted first.
+
+**Automatic Compression**
+```yaml
+retention:
+  compress_after_days: 7  # Compress sessions older than 7 days
+```
+- Uses Zstd compression (level 3)
+- Original `.jsonl` replaced with `.jsonl.zst`
+- Typically 70-90% size reduction
+- Transparent decompression for queries
+
+**Cleanup Schedule**
+```yaml
+retention:
+  cleanup_interval_minutes: 60  # Run cleanup every hour
+```
+
+### Cleanup Algorithm
+
+1. **Delete old sessions**: Remove sessions older than `max_age_days`
+2. **Compress aging sessions**: Compress sessions older than `compress_after_days` (skip already compressed)
+3. **Enforce quota**: If total size exceeds `max_total_size_gb`, delete oldest sessions until under limit
+
+### Manual Cleanup
+
+```rust
+use lunaroute_session::{execute_cleanup, RetentionPolicy};
+
+let policy = RetentionPolicy {
+    max_age_days: Some(30),
+    max_total_size_gb: Some(10),
+    compress_after_days: Some(7),
+    cleanup_interval_minutes: 60,
+};
+
+let stats = execute_cleanup(Path::new("~/.lunaroute/sessions"), &policy).await?;
+
+println!("Deleted: {} sessions, {} bytes freed",
+    stats.sessions_deleted, stats.bytes_freed);
+println!("Compressed: {} sessions, {} bytes saved",
+    stats.sessions_compressed, stats.bytes_saved);
+```
+
+### Background Cleanup Task
+
+Spawn automatic cleanup task:
+
+```rust
+use lunaroute_session::spawn_cleanup_task;
+use std::sync::Arc;
+
+let task = spawn_cleanup_task(
+    PathBuf::from("~/.lunaroute/sessions"),
+    Arc::new(policy),
+);
+
+// ... application runs ...
+
+// Graceful shutdown
+task.shutdown().await;
+```
+
+### Disk Usage Monitoring
+
+```rust
+use lunaroute_session::calculate_disk_usage;
+
+let usage = calculate_disk_usage(Path::new("~/.lunaroute/sessions")).await?;
+
+println!("Total sessions: {}", usage.session_count);
+println!("Compressed: {}", usage.compressed_count);
+println!("Total size: {} bytes ({} GB)",
+    usage.total_bytes,
+    usage.total_bytes / 1_073_741_824
+);
+```
+
+## Advanced Search & Filtering
+
+### SQLite Search API
+
+The SQLite writer provides powerful search and analytics capabilities:
+
+```rust
+use lunaroute_session::{SqliteWriter, SessionFilter, SortOrder};
+
+let writer = SqliteWriter::new("~/.lunaroute/sessions.db").await?;
+
+// Build complex filter
+let filter = SessionFilter::builder()
+    .time_range(hour_ago, now)
+    .providers(vec!["openai".to_string()])
+    .models(vec!["gpt-4".to_string()])
+    .success(true)
+    .min_tokens(1000)
+    .streaming(true)
+    .page_size(50)
+    .page(0)
+    .sort(SortOrder::HighestTokens)
+    .build()?;
+
+// Search sessions
+let results = writer.search_sessions(&filter).await?;
+
+println!("Found {} sessions (page 1 of {})",
+    results.items.len(), results.total_pages);
+
+for session in results.items {
+    println!("{}: {} tokens, {}ms",
+        session.session_id,
+        session.total_tokens,
+        session.total_duration_ms.unwrap_or(0)
+    );
+}
+```
+
+### Filter Options
+
+**Time Range**
+```rust
+.time_range(start: DateTime<Utc>, end: DateTime<Utc>)
+```
+
+**Provider & Model**
+```rust
+.providers(vec!["openai".to_string(), "anthropic".to_string()])
+.models(vec!["gpt-4".to_string(), "claude-sonnet-4".to_string()])
+```
+
+**Token & Duration Ranges**
+```rust
+.min_tokens(100)
+.max_tokens(10000)
+.min_duration_ms(100)
+.max_duration_ms(30000)
+```
+
+**Status Filters**
+```rust
+.success(true)         // Only successful sessions
+.streaming(true)       // Only streaming sessions
+```
+
+**Client & Finish Reason**
+```rust
+.client_ips(vec!["192.168.1.1".to_string()])
+.finish_reasons(vec!["end_turn".to_string(), "max_tokens".to_string()])
+```
+
+**Full-Text Search**
+```rust
+.text_search("error handling".to_string())  // Search request/response text
+```
+
+**Specific IDs**
+```rust
+.request_ids(vec!["req-123".to_string()])
+.session_ids(vec!["session-456".to_string()])
+```
+
+### Sort Orders
+
+```rust
+pub enum SortOrder {
+    NewestFirst,       // Default: most recent first
+    OldestFirst,       // Oldest first
+    HighestTokens,     // Highest token count first
+    LongestDuration,   // Longest duration first
+    ShortestDuration,  // Shortest duration first
+}
+```
+
+### Pagination
+
+```rust
+let filter = SessionFilter::builder()
+    .page_size(50)   // 50 results per page (max 1000)
+    .page(0)         // First page (0-indexed)
+    .build()?;
+
+let results = writer.search_sessions(&filter).await?;
+
+println!("Page {} of {}", results.page + 1, results.total_pages);
+println!("Total matches: {}", results.total_count);
+
+if results.has_next_page() {
+    // Fetch next page
+    let next_filter = SessionFilter::builder()
+        .page_size(50)
+        .page(results.page + 1)
+        .build()?;
+    let next_results = writer.search_sessions(&next_filter).await?;
+}
+```
+
+### Session Analytics
+
+Get aggregate statistics for filtered sessions:
+
+```rust
+let filter = SessionFilter::builder()
+    .time_range(day_ago, now)
+    .providers(vec!["openai".to_string()])
+    .build()?;
+
+let agg = writer.get_aggregates(&filter).await?;
+
+println!("Total sessions: {}", agg.total_sessions);
+println!("Success rate: {:.1}%",
+    (agg.successful_sessions as f64 / agg.total_sessions as f64) * 100.0
+);
+println!("Total tokens: {}", agg.total_tokens);
+println!("Avg duration: {:.0}ms", agg.avg_duration_ms);
+println!("P95 duration: {}ms", agg.p95_duration_ms.unwrap_or(0));
+
+// Breakdown by provider
+for (provider, count) in &agg.sessions_by_provider {
+    println!("  {}: {} sessions", provider, count);
+}
+
+// Breakdown by model
+for (model, count) in &agg.sessions_by_model {
+    println!("  {}: {} sessions", model, count);
+}
+```
+
+### Example: Dashboard Queries
+
+**High Token Sessions**
+```rust
+let filter = SessionFilter::builder()
+    .time_range(day_ago, now)
+    .min_tokens(10000)
+    .sort(SortOrder::HighestTokens)
+    .page_size(20)
+    .build()?;
+```
+
+**Failed Sessions**
+```rust
+let filter = SessionFilter::builder()
+    .success(false)
+    .sort(SortOrder::NewestFirst)
+    .build()?;
+```
+
+**Slow Streaming Sessions**
+```rust
+let filter = SessionFilter::builder()
+    .streaming(true)
+    .min_duration_ms(5000)  // > 5 seconds
+    .sort(SortOrder::LongestDuration)
+    .build()?;
+```
+
+**Provider Comparison**
+```rust
+// OpenAI sessions
+let openai_agg = writer.get_aggregates(
+    &SessionFilter::builder()
+        .providers(vec!["openai".to_string()])
+        .time_range(day_ago, now)
+        .build()?
+).await?;
+
+// Anthropic sessions
+let anthropic_agg = writer.get_aggregates(
+    &SessionFilter::builder()
+        .providers(vec!["anthropic".to_string()])
+        .time_range(day_ago, now)
+        .build()?
+).await?;
+
+println!("OpenAI avg latency: {:.0}ms", openai_agg.avg_duration_ms);
+println!("Anthropic avg latency: {:.0}ms", anthropic_agg.avg_duration_ms);
+```
