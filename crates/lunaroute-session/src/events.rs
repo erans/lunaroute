@@ -16,8 +16,16 @@ pub enum SessionEvent {
         model_requested: String,
         provider: String,
         listener: String,
+        is_streaming: bool,
         #[serde(flatten)]
         metadata: SessionMetadata,
+    },
+
+    StreamStarted {
+        session_id: String,
+        request_id: String,
+        timestamp: DateTime<Utc>,
+        time_to_first_token_ms: u64,
     },
 
     RequestRecorded {
@@ -78,6 +86,7 @@ impl SessionEvent {
     pub fn session_id(&self) -> &str {
         match self {
             Self::Started { session_id, .. } => session_id,
+            Self::StreamStarted { session_id, .. } => session_id,
             Self::RequestRecorded { session_id, .. } => session_id,
             Self::ResponseRecorded { session_id, .. } => session_id,
             Self::ToolCallRecorded { session_id, .. } => session_id,
@@ -89,6 +98,7 @@ impl SessionEvent {
     pub fn request_id(&self) -> &str {
         match self {
             Self::Started { request_id, .. } => request_id,
+            Self::StreamStarted { request_id, .. } => request_id,
             Self::RequestRecorded { request_id, .. } => request_id,
             Self::ResponseRecorded { request_id, .. } => request_id,
             Self::ToolCallRecorded { request_id, .. } => request_id,
@@ -131,6 +141,10 @@ pub struct ResponseStats {
     pub response_size_bytes: usize,
     pub content_blocks: usize,
     pub has_refusal: bool,
+    // Streaming-specific fields
+    pub is_streaming: bool,
+    pub chunk_count: Option<u32>,
+    pub streaming_duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,7 +193,21 @@ pub struct FinalSessionStats {
     pub tool_summary: ToolUsageSummary,
     #[serde(flatten)]
     pub performance: PerformanceMetrics,
+    pub streaming_stats: Option<StreamingStats>,
     pub estimated_cost: Option<CostEstimate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamingStats {
+    pub time_to_first_token_ms: u64,
+    pub total_chunks: u32,
+    pub streaming_duration_ms: u64,
+    pub avg_chunk_latency_ms: f64,
+    pub p50_chunk_latency_ms: Option<u64>,
+    pub p95_chunk_latency_ms: Option<u64>,
+    pub p99_chunk_latency_ms: Option<u64>,
+    pub max_chunk_latency_ms: u64,
+    pub min_chunk_latency_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

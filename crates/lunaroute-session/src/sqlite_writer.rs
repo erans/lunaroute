@@ -102,6 +102,10 @@ impl SqliteWriter {
                 response_text TEXT,
                 client_ip TEXT,
                 user_agent TEXT,
+                is_streaming BOOLEAN DEFAULT 0,
+                time_to_first_token_ms INTEGER,
+                chunk_count INTEGER,
+                streaming_duration_ms INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             "#,
@@ -133,6 +137,12 @@ impl SqliteWriter {
 
         // Composite index for filtering by provider and model together
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_provider_model ON sessions(provider, model_used, created_at DESC)")
+            .execute(pool)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
+        // Index for streaming sessions
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_streaming ON sessions(is_streaming, created_at DESC)")
             .execute(pool)
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
@@ -224,6 +234,47 @@ impl SqliteWriter {
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
+        // Stream metrics table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS stream_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                time_to_first_token_ms INTEGER NOT NULL,
+                total_chunks INTEGER NOT NULL,
+                streaming_duration_ms INTEGER NOT NULL,
+                avg_chunk_latency_ms REAL,
+                p50_chunk_latency_ms INTEGER,
+                p95_chunk_latency_ms INTEGER,
+                p99_chunk_latency_ms INTEGER,
+                max_chunk_latency_ms INTEGER,
+                min_chunk_latency_ms INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| WriterError::Database(e.to_string()))?;
+
+        // Stream metrics indexes
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_stream_metrics_session ON stream_metrics(session_id)")
+            .execute(pool)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_stream_metrics_ttft ON stream_metrics(time_to_first_token_ms)")
+            .execute(pool)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_stream_metrics_chunks ON stream_metrics(total_chunks DESC)")
+            .execute(pool)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
         Ok(())
     }
 }
@@ -251,12 +302,13 @@ impl SessionWriter for SqliteWriter {
                     model_requested,
                     provider,
                     listener,
+                    is_streaming,
                     metadata,
                 } => {
                     sqlx::query(
                         r#"
-                        INSERT INTO sessions (session_id, request_id, started_at, model_requested, provider, listener, client_ip, user_agent)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO sessions (session_id, request_id, started_at, model_requested, provider, listener, client_ip, user_agent, is_streaming)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(session_id) DO NOTHING
                         "#,
                     )
@@ -268,6 +320,26 @@ impl SessionWriter for SqliteWriter {
                     .bind(listener)
                     .bind(&metadata.client_ip)
                     .bind(&metadata.user_agent)
+                    .bind(is_streaming)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| WriterError::Database(e.to_string()))?;
+                }
+
+                SessionEvent::StreamStarted {
+                    session_id,
+                    time_to_first_token_ms,
+                    ..
+                } => {
+                    sqlx::query(
+                        r#"
+                        UPDATE sessions
+                        SET time_to_first_token_ms = ?
+                        WHERE session_id = ?
+                        "#,
+                    )
+                    .bind(*time_to_first_token_ms as i64)
+                    .bind(session_id)
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| WriterError::Database(e.to_string()))?;
@@ -311,7 +383,9 @@ impl SessionWriter for SqliteWriter {
                             output_tokens = ?,
                             thinking_tokens = ?,
                             input_tokens = ?,
-                            provider_latency_ms = ?
+                            provider_latency_ms = ?,
+                            chunk_count = ?,
+                            streaming_duration_ms = ?
                         WHERE session_id = ?
                         "#,
                     )
@@ -321,6 +395,8 @@ impl SessionWriter for SqliteWriter {
                     .bind(stats.tokens.thinking_tokens.map(|t| t as i64))
                     .bind(stats.tokens.input_tokens as i64)
                     .bind(stats.provider_latency_ms as i64)
+                    .bind(stats.chunk_count.map(|c| c as i64))
+                    .bind(stats.streaming_duration_ms.map(|d| d as i64))
                     .bind(session_id)
                     .execute(&mut *tx)
                     .await
@@ -379,6 +455,7 @@ impl SessionWriter for SqliteWriter {
 
                 SessionEvent::Completed {
                     session_id,
+                    request_id,
                     success,
                     error,
                     finish_reason,
@@ -404,6 +481,34 @@ impl SessionWriter for SqliteWriter {
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| WriterError::Database(e.to_string()))?;
+
+                    // Insert stream metrics if this was a streaming session
+                    if let Some(streaming_stats) = &final_stats.streaming_stats {
+                        sqlx::query(
+                            r#"
+                            INSERT INTO stream_metrics (
+                                session_id, request_id,
+                                time_to_first_token_ms, total_chunks, streaming_duration_ms,
+                                avg_chunk_latency_ms, p50_chunk_latency_ms, p95_chunk_latency_ms,
+                                p99_chunk_latency_ms, max_chunk_latency_ms, min_chunk_latency_ms
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            "#,
+                        )
+                        .bind(session_id)
+                        .bind(request_id)
+                        .bind(streaming_stats.time_to_first_token_ms as i64)
+                        .bind(streaming_stats.total_chunks as i64)
+                        .bind(streaming_stats.streaming_duration_ms as i64)
+                        .bind(streaming_stats.avg_chunk_latency_ms)
+                        .bind(streaming_stats.p50_chunk_latency_ms.map(|p| p as i64))
+                        .bind(streaming_stats.p95_chunk_latency_ms.map(|p| p as i64))
+                        .bind(streaming_stats.p99_chunk_latency_ms.map(|p| p as i64))
+                        .bind(streaming_stats.max_chunk_latency_ms as i64)
+                        .bind(streaming_stats.min_chunk_latency_ms as i64)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| WriterError::Database(e.to_string()))?;
+                    }
                 }
 
                 _ => {
@@ -464,6 +569,7 @@ mod tests {
                 model_requested: "gpt-4".to_string(),
                 provider: "openai".to_string(),
                 listener: "openai".to_string(),
+                is_streaming: false,
                 metadata: SessionMetadata {
                     client_ip: Some("127.0.0.1".to_string()),
                     user_agent: Some("test".to_string()),
@@ -497,6 +603,9 @@ mod tests {
                     response_size_bytes: 100,
                     content_blocks: 1,
                     has_refusal: false,
+                    is_streaming: false,
+                    chunk_count: None,
+                    streaming_duration_ms: None,
                 },
             },
         ];
@@ -518,5 +627,134 @@ mod tests {
             .unwrap();
 
         assert_eq!(stats_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_writer_streaming_session() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "stream-test-123";
+        let request_id = "req-stream-456";
+
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                model_requested: "claude-sonnet-4".to_string(),
+                provider: "anthropic".to_string(),
+                listener: "anthropic".to_string(),
+                is_streaming: true,
+                metadata: SessionMetadata {
+                    client_ip: Some("192.168.1.1".to_string()),
+                    user_agent: Some("test-client".to_string()),
+                    api_version: Some("2023-06-01".to_string()),
+                    request_headers: HashMap::new(),
+                    session_tags: vec!["streaming".to_string()],
+                },
+            },
+            SessionEvent::StreamStarted {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                time_to_first_token_ms: 150,
+            },
+            SessionEvent::Completed {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: Some("end_turn".to_string()),
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: 5000,
+                    provider_time_ms: 4800,
+                    proxy_overhead_ms: 200.0,
+                    total_tokens: TokenTotals {
+                        total_input: 100,
+                        total_output: 500,
+                        total_thinking: 50,
+                        total_cached: 20,
+                        grand_total: 650,
+                        by_model: HashMap::new(),
+                    },
+                    tool_summary: ToolUsageSummary::default(),
+                    performance: PerformanceMetrics {
+                        avg_provider_latency_ms: 4800.0,
+                        p50_latency_ms: Some(4500),
+                        p95_latency_ms: Some(5000),
+                        p99_latency_ms: Some(5200),
+                        max_latency_ms: 5500,
+                        min_latency_ms: 4000,
+                        avg_pre_processing_ms: 10.0,
+                        avg_post_processing_ms: 15.0,
+                        proxy_overhead_percentage: 4.2,
+                    },
+                    streaming_stats: Some(StreamingStats {
+                        time_to_first_token_ms: 150,
+                        total_chunks: 42,
+                        streaming_duration_ms: 4850,
+                        avg_chunk_latency_ms: 115.5,
+                        p50_chunk_latency_ms: Some(100),
+                        p95_chunk_latency_ms: Some(200),
+                        p99_chunk_latency_ms: Some(250),
+                        max_chunk_latency_ms: 300,
+                        min_chunk_latency_ms: 50,
+                    }),
+                    estimated_cost: None,
+                }),
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        // Verify session was created with streaming flag
+        let is_streaming: bool = sqlx::query_scalar(
+            "SELECT is_streaming FROM sessions WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+        assert!(is_streaming);
+
+        // Verify TTFT was recorded
+        let ttft: Option<i64> = sqlx::query_scalar(
+            "SELECT time_to_first_token_ms FROM sessions WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+        assert_eq!(ttft, Some(150));
+
+        // Verify stream_metrics table has the data
+        let stream_metrics_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM stream_metrics WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+        assert_eq!(stream_metrics_count, 1);
+
+        // Verify streaming stats details
+        let (total_chunks, streaming_duration, avg_latency, p95_latency): (i64, i64, f64, Option<i64>) =
+            sqlx::query_as(
+                "SELECT total_chunks, streaming_duration_ms, avg_chunk_latency_ms, p95_chunk_latency_ms
+                 FROM stream_metrics WHERE session_id = ?",
+            )
+            .bind(session_id)
+            .fetch_one(&writer.pool)
+            .await
+            .unwrap();
+
+        assert_eq!(total_chunks, 42);
+        assert_eq!(streaming_duration, 4850);
+        assert_eq!(avg_latency, 115.5);
+        assert_eq!(p95_latency, Some(200));
     }
 }

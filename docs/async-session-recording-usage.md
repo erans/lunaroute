@@ -97,7 +97,19 @@ SessionEvent::Started {
     model_requested: String,
     provider: String,
     listener: String,
+    is_streaming: bool,  // NEW: Indicates if this is a streaming request
     metadata: SessionMetadata,
+}
+```
+
+### StreamStarted (NEW - Streaming Only)
+Records the time-to-first-token for streaming requests:
+```rust
+SessionEvent::StreamStarted {
+    session_id: String,
+    request_id: String,
+    timestamp: DateTime<Utc>,
+    time_to_first_token_ms: u64,  // Time from request to first chunk
 }
 ```
 
@@ -119,6 +131,10 @@ SessionEvent::ResponseRecorded {
         response_size_bytes: usize,
         content_blocks: usize,
         has_refusal: bool,
+        // NEW: Streaming fields
+        is_streaming: bool,
+        chunk_count: Option<u32>,
+        streaming_duration_ms: Option<u64>,
     },
 }
 ```
@@ -132,7 +148,33 @@ SessionEvent::Completed {
     success: bool,
     error: Option<String>,
     finish_reason: Option<String>,
-    final_stats: FinalSessionStats { /* ... */ },
+    final_stats: FinalSessionStats {
+        total_duration_ms: u64,
+        provider_time_ms: u64,
+        proxy_overhead_ms: f64,
+        total_tokens: TokenTotals { /* ... */ },
+        tool_summary: ToolUsageSummary { /* ... */ },
+        performance: PerformanceMetrics { /* ... */ },
+        // NEW: Streaming statistics (only present for streaming requests)
+        streaming_stats: Option<StreamingStats>,
+        estimated_cost: Option<CostEstimate>,
+    },
+}
+```
+
+### StreamingStats (NEW)
+Detailed streaming performance metrics:
+```rust
+pub struct StreamingStats {
+    pub time_to_first_token_ms: u64,     // TTFT - critical UX metric
+    pub total_chunks: u32,                // Total number of SSE chunks
+    pub streaming_duration_ms: u64,       // Total time from first to last chunk
+    pub avg_chunk_latency_ms: f64,        // Average time between chunks
+    pub p50_chunk_latency_ms: Option<u64>, // Median chunk latency
+    pub p95_chunk_latency_ms: Option<u64>, // 95th percentile
+    pub p99_chunk_latency_ms: Option<u64>, // 99th percentile
+    pub max_chunk_latency_ms: u64,        // Maximum chunk latency
+    pub min_chunk_latency_ms: u64,        // Minimum chunk latency
 }
 ```
 
@@ -149,12 +191,14 @@ CREATE TABLE schema_version (
 
 **sessions**: Core session metadata
 - Includes: `session_id`, `request_id`, `model_used`, `tokens`, `latency`
+- NEW Streaming fields: `is_streaming`, `time_to_first_token_ms`, `chunk_count`, `streaming_duration_ms`
 - Indexes:
   - `idx_sessions_created`: `created_at DESC`
   - `idx_sessions_provider`: `provider, created_at DESC`
   - `idx_sessions_model`: `model_used, created_at DESC`
   - `idx_sessions_request_id`: `request_id`
   - `idx_sessions_provider_model`: `provider, model_used, created_at DESC`
+  - `idx_sessions_streaming`: `is_streaming, created_at DESC` (NEW)
 
 **session_stats**: Detailed stats per session
 - Includes: `session_id`, `request_id`, `model_name`, timing/token stats
@@ -169,6 +213,14 @@ CREATE TABLE schema_version (
   - `idx_tool_calls_model`: `model_name, created_at DESC`
   - `idx_tool_calls_session`: `session_id`
   - `idx_tool_calls_name`: `tool_name, created_at DESC`
+
+**stream_metrics** (NEW): Detailed streaming performance analytics
+- Includes: `session_id`, `request_id`, `time_to_first_token_ms`, `total_chunks`, `streaming_duration_ms`
+- Latency metrics: `avg_chunk_latency_ms`, `p50/p95/p99_chunk_latency_ms`, `max/min_chunk_latency_ms`
+- Indexes:
+  - `idx_stream_metrics_session`: `session_id`
+  - `idx_stream_metrics_ttft`: `time_to_first_token_ms`
+  - `idx_stream_metrics_chunks`: `total_chunks DESC`
 
 ### Query Examples
 
@@ -201,6 +253,42 @@ FROM sessions s
 JOIN session_stats st ON s.session_id = st.session_id
 WHERE st.model_name = 'claude-sonnet-4'
 ORDER BY st.tokens_per_second DESC;
+
+-- Streaming performance analysis (NEW)
+SELECT
+    s.session_id,
+    s.model_used,
+    sm.time_to_first_token_ms,
+    sm.total_chunks,
+    sm.avg_chunk_latency_ms,
+    sm.p95_chunk_latency_ms
+FROM sessions s
+JOIN stream_metrics sm ON s.session_id = sm.session_id
+WHERE s.is_streaming = 1
+ORDER BY sm.time_to_first_token_ms ASC
+LIMIT 10;
+
+-- Slow TTFT detection
+SELECT
+    session_id,
+    model_used,
+    time_to_first_token_ms,
+    total_chunks
+FROM sessions
+WHERE is_streaming = 1
+  AND time_to_first_token_ms > 1000  -- TTFT > 1 second
+ORDER BY time_to_first_token_ms DESC;
+
+-- Streaming vs non-streaming comparison
+SELECT
+    is_streaming,
+    COUNT(*) as request_count,
+    AVG(provider_latency_ms) as avg_latency,
+    AVG(input_tokens) as avg_input_tokens,
+    AVG(output_tokens) as avg_output_tokens
+FROM sessions
+WHERE started_at > datetime('now', '-24 hours')
+GROUP BY is_streaming;
 ```
 
 ## JSONL Format
@@ -208,10 +296,19 @@ ORDER BY st.tokens_per_second DESC;
 Each session creates a file: `~/.lunaroute/sessions/YYYY-MM-DD/session-id.jsonl`
 
 Each line is a JSON event:
+
+**Non-streaming session:**
 ```json
-{"type":"started","session_id":"abc-123","request_id":"req-456","timestamp":"2025-10-01T12:00:00Z","model_requested":"gpt-4",...}
-{"type":"response_recorded","session_id":"abc-123","request_id":"req-456","tokens":{"input_tokens":100,"output_tokens":200},...}
+{"type":"started","session_id":"abc-123","request_id":"req-456","is_streaming":false,...}
+{"type":"response_recorded","session_id":"abc-123","request_id":"req-456","tokens":{...},...}
 {"type":"completed","session_id":"abc-123","request_id":"req-456","success":true,...}
+```
+
+**Streaming session (NEW):**
+```json
+{"type":"started","session_id":"stream-789","request_id":"req-012","is_streaming":true,...}
+{"type":"stream_started","session_id":"stream-789","request_id":"req-012","time_to_first_token_ms":150,...}
+{"type":"completed","session_id":"stream-789","request_id":"req-012","streaming_stats":{"time_to_first_token_ms":150,"total_chunks":42,"p95_chunk_latency_ms":200,...},...}
 ```
 
 ### Query with jq
@@ -226,6 +323,22 @@ jq -r '.session_id' ~/.lunaroute/sessions/2025-10-01/*.jsonl | sort -u
 
 # Count events by type
 jq -r '.type' ~/.lunaroute/sessions/2025-10-01/*.jsonl | sort | uniq -c
+
+# Find streaming sessions with slow TTFT (NEW)
+jq 'select(.type == "stream_started" and .time_to_first_token_ms > 500)' \
+  ~/.lunaroute/sessions/2025-10-01/*.jsonl
+
+# Analyze streaming performance (NEW)
+jq 'select(.type == "completed" and .streaming_stats != null) |
+    {session_id, ttft: .streaming_stats.time_to_first_token_ms,
+     chunks: .streaming_stats.total_chunks,
+     p95: .streaming_stats.p95_chunk_latency_ms}' \
+  ~/.lunaroute/sessions/2025-10-01/*.jsonl
+
+# Compare streaming vs non-streaming latencies (NEW)
+jq 'select(.type == "started") | {is_streaming, model_requested}' \
+  ~/.lunaroute/sessions/2025-10-01/*.jsonl | \
+  jq -s 'group_by(.is_streaming) | map({streaming: .[0].is_streaming, count: length})'
 ```
 
 ## Feature Flags
@@ -291,6 +404,70 @@ if let Some(recorder) = async_recorder {
 ```
 
 If the recorder is dropped without calling `shutdown()`, a warning will be logged and pending events may not be fully flushed.
+
+## Streaming Support
+
+The async session recording system fully supports streaming requests with comprehensive metrics:
+
+### What's Recorded
+
+**Time-to-First-Token (TTFT)**
+- Critical UX metric: time from request to first SSE chunk
+- Recorded in `StreamStarted` event and `streaming_stats.time_to_first_token_ms`
+- Indexed for fast queries on slow TTFT detection
+
+**Chunk Metrics**
+- Total chunk count
+- Individual chunk latencies
+- Percentile analysis (P50, P95, P99)
+- Min/max chunk latencies
+- Average chunk latency
+
+**Streaming Duration**
+- Total time from first to last chunk
+- Automatically calculated: `total_duration_ms - time_to_first_token_ms`
+
+### Event Flow for Streaming
+
+1. **Request starts** → `Started` event with `is_streaming: true`
+2. **First chunk received** → `StreamStarted` event with TTFT
+3. **Stream completes** → `Completed` event with full `streaming_stats`
+
+### Performance Considerations
+
+**Zero-Copy Passthrough**
+- Anthropic→Anthropic streaming uses passthrough mode
+- SSE events forwarded directly to client
+- Metrics extracted without buffering full response
+- Minimal latency overhead (< 1ms per chunk)
+
+**Chunk Tracking**
+- Each SSE chunk latency measured in real-time
+- Percentiles calculated on stream completion
+- No memory overhead during streaming (only latency array)
+
+### Example: Analyzing Streaming Performance
+
+```sql
+-- Find sessions with slow TTFT (> 500ms)
+SELECT session_id, model_used, time_to_first_token_ms, total_chunks
+FROM sessions s
+JOIN stream_metrics sm ON s.session_id = sm.session_id
+WHERE time_to_first_token_ms > 500
+ORDER BY time_to_first_token_ms DESC;
+
+-- Identify inconsistent chunk latencies (high P99/P50 ratio)
+SELECT
+    session_id,
+    model_used,
+    p50_chunk_latency_ms,
+    p99_chunk_latency_ms,
+    (p99_chunk_latency_ms * 1.0 / NULLIF(p50_chunk_latency_ms, 0)) as p99_p50_ratio
+FROM stream_metrics
+WHERE p50_chunk_latency_ms > 0
+ORDER BY p99_p50_ratio DESC
+LIMIT 20;
+```
 
 ## Troubleshooting
 

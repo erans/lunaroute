@@ -25,6 +25,10 @@ The session recording system now captures comprehensive statistics alongside req
   - Tokens per second
 - **Tool calls**: Name, ID, execution time, input/output size
 - **Response characteristics**: Size, content blocks, refusal detection
+- **Streaming metrics** (for streaming requests):
+  - Is streaming flag
+  - Chunk count
+  - Streaming duration
 
 ### Session-Level Stats (in completed event)
 - **Duration metrics**:
@@ -48,6 +52,13 @@ The session recording system now captures comprehensive statistics alongside req
   - Min/max/average latencies
   - Average pre/post processing times
 
+- **Streaming statistics** (for streaming sessions):
+  - Time-to-first-token (TTFT)
+  - Total chunks streamed
+  - Chunk latency percentiles (p50, p95, p99)
+  - Average/min/max chunk latencies
+  - Total streaming duration
+
 ## File Structure
 
 ```
@@ -64,21 +75,29 @@ The session recording system now captures comprehensive statistics alongside req
 ## SQLite Schema
 
 - **schema_version** table: Single column tracking schema version (currently 1)
-- **sessions** table: Core session metadata with session_id, request_id, model info
+- **sessions** table: Core session metadata with session_id, request_id, model info, streaming flags
 - **session_stats** table: Detailed stats per session with session_id, request_id, model_name
 - **tool_calls** table: Tool usage tracking with session_id, request_id, model_name
-- **stream_events** table: Streaming events with session_id, request_id, model_name
+- **stream_metrics** table: Detailed streaming analytics (TTFT, chunk latencies, percentiles)
 - **daily_stats** table: Aggregated daily statistics
 
 All stats tables include **session_id**, **request_id**, and **model_name** for comprehensive querying.
 
 ## Event Flow
 
-1. **Started**: Session initialized with metadata
+### Non-Streaming Sessions
+1. **Started**: Session initialized with metadata (is_streaming: false)
 2. **RequestRecorded**: User request with pre-processing stats
 3. **ResponseRecorded**: Assistant response with detailed stats
 4. **StatsSnapshot**: (Optional) Periodic stats for long sessions
 5. **Completed**: Final comprehensive statistics
+
+### Streaming Sessions
+1. **Started**: Session initialized with metadata (is_streaming: true)
+2. **StreamStarted**: First chunk received, TTFT recorded
+3. **RequestRecorded**: (Optional) User request with pre-processing stats
+4. **ResponseRecorded**: (Optional) Partial response with stats
+5. **Completed**: Final statistics including StreamingStats with percentiles
 
 ## Querying Capabilities
 
@@ -139,10 +158,11 @@ print(f"Total cost: ${stats['estimated_cost.total_cost_usd'].sum():.2f}")
 6. **Tool analytics**: Usage patterns and performance
 7. **Audit compliance**: Full request/response preservation
 
-## Implementation Priority
+## Implementation Status
 
-1. **Phase 1**: Core JSONL writer with stats
-2. **Phase 2**: SQLite metadata database
-3. **Phase 3**: Query tools and dashboards
-4. **Phase 4**: Compression and archival
-5. **Phase 5**: Real-time streaming support
+1. ✅ **Phase 1**: Core JSONL writer with stats
+2. ✅ **Phase 2**: SQLite metadata database
+3. ✅ **Phase 3**: Query tools and basic analytics
+4. ✅ **Phase 5**: Real-time streaming support with comprehensive metrics
+5. 🔄 **Phase 4**: Compression and archival (planned)
+6. 🔄 **Phase 6**: Advanced dashboards and visualization (planned)

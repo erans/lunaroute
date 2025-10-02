@@ -140,6 +140,7 @@ mod tests {
             model_requested: "gpt-4".to_string(),
             provider: "openai".to_string(),
             listener: "openai".to_string(),
+            is_streaming: false,
             metadata: SessionMetadata {
                 client_ip: Some("127.0.0.1".to_string()),
                 user_agent: Some("test".to_string()),
@@ -175,6 +176,7 @@ mod tests {
                 model_requested: "gpt-4".to_string(),
                 provider: "openai".to_string(),
                 listener: "openai".to_string(),
+                is_streaming: false,
                 metadata: SessionMetadata {
                     client_ip: None,
                     user_agent: None,
@@ -220,6 +222,7 @@ mod tests {
                         avg_post_processing_ms: 50.0,
                         proxy_overhead_percentage: 10.0,
                     },
+                    streaming_stats: None,
                     estimated_cost: None,
                 }),
             },
@@ -269,6 +272,7 @@ mod tests {
             model_requested: "gpt-4".to_string(),
             provider: "openai".to_string(),
             listener: "openai".to_string(),
+            is_streaming: false,
             metadata: SessionMetadata {
                 client_ip: None,
                 user_agent: None,
@@ -287,5 +291,106 @@ mod tests {
 
         // Verify that no files were created outside the temp directory
         assert!(!std::path::Path::new("/etc/passwd.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn test_jsonl_writer_streaming_session() {
+        let dir = tempdir().unwrap();
+        let writer = JsonlWriter::new(dir.path().to_path_buf());
+
+        let session_id = "streaming-session-789";
+        let request_id = "req-stream-012";
+
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                model_requested: "claude-sonnet-4".to_string(),
+                provider: "anthropic".to_string(),
+                listener: "anthropic".to_string(),
+                is_streaming: true,
+                metadata: SessionMetadata {
+                    client_ip: Some("10.0.0.1".to_string()),
+                    user_agent: Some("test-streaming".to_string()),
+                    api_version: Some("2023-06-01".to_string()),
+                    request_headers: HashMap::new(),
+                    session_tags: vec!["test".to_string(), "streaming".to_string()],
+                },
+            },
+            SessionEvent::StreamStarted {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                time_to_first_token_ms: 125,
+            },
+            SessionEvent::Completed {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: Some("end_turn".to_string()),
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: 3500,
+                    provider_time_ms: 3400,
+                    proxy_overhead_ms: 100.0,
+                    total_tokens: TokenTotals {
+                        total_input: 50,
+                        total_output: 300,
+                        total_thinking: 25,
+                        total_cached: 10,
+                        grand_total: 375,
+                        by_model: HashMap::new(),
+                    },
+                    tool_summary: ToolUsageSummary::default(),
+                    performance: PerformanceMetrics::default(),
+                    streaming_stats: Some(StreamingStats {
+                        time_to_first_token_ms: 125,
+                        total_chunks: 28,
+                        streaming_duration_ms: 3375,
+                        avg_chunk_latency_ms: 120.5,
+                        p50_chunk_latency_ms: Some(110),
+                        p95_chunk_latency_ms: Some(180),
+                        p99_chunk_latency_ms: Some(200),
+                        max_chunk_latency_ms: 250,
+                        min_chunk_latency_ms: 80,
+                    }),
+                    estimated_cost: None,
+                }),
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        let today = Utc::now().format("%Y-%m-%d");
+        let expected_path = dir.path().join(today.to_string()).join(format!("{}.jsonl", session_id));
+        assert!(expected_path.exists());
+
+        // Read and verify the content
+        let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 3); // Started, StreamStarted, Completed
+
+        // Parse and verify each event
+        let started: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(started["type"], "started");
+        assert_eq!(started["is_streaming"], true);
+
+        let stream_started: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(stream_started["type"], "stream_started");
+        assert_eq!(stream_started["time_to_first_token_ms"], 125);
+
+        let completed: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(completed["type"], "completed");
+
+        // streaming_stats is flattened at the top level of Completed event
+        let streaming_stats = &completed["streaming_stats"];
+        assert!(!streaming_stats.is_null(), "streaming_stats should not be null");
+        assert!(streaming_stats.is_object(), "streaming_stats should be an object");
+        assert_eq!(streaming_stats["total_chunks"], 28);
+        assert_eq!(streaming_stats["time_to_first_token_ms"], 125);
+        assert_eq!(streaming_stats["streaming_duration_ms"], 3375);
+        assert_eq!(streaming_stats["p95_chunk_latency_ms"], 180);
     }
 }

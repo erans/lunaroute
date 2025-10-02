@@ -841,12 +841,6 @@ pub async fn messages_passthrough(
 
     let is_streaming = req.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    if is_streaming {
-        return Err(IngressError::UnsupportedFeature(
-            "Streaming not yet supported in passthrough mode".to_string(),
-        ));
-    }
-
     let before_provider = std::time::Instant::now();
     let pre_provider_overhead = before_provider.duration_since(start_time);
     tracing::debug!(
@@ -886,6 +880,7 @@ pub async fn messages_passthrough(
             model_requested: model.clone(),
             provider: "anthropic".to_string(),
             listener: "anthropic".to_string(),
+            is_streaming,
             metadata: V2Metadata {
                 client_ip: None,
                 user_agent: None,
@@ -896,7 +891,242 @@ pub async fn messages_passthrough(
         });
     }
 
-    // Send directly to Anthropic API
+    if is_streaming {
+        // Handle streaming passthrough
+        let stream_response = state.connector
+            .stream_passthrough(req, passthrough_headers)
+            .await
+            .map_err(|e| IngressError::ProviderError(e.to_string()))?;
+
+        // Track streaming metrics
+        use futures::StreamExt;
+        use std::sync::{Arc as StdArc, Mutex as StdMutex};
+
+        // State for tracking streaming metrics
+        let ttft_time: StdArc<StdMutex<Option<std::time::Instant>>> = StdArc::new(StdMutex::new(None));
+        let chunk_count = StdArc::new(StdMutex::new(0u32));
+        let chunk_latencies: StdArc<StdMutex<Vec<u64>>> = StdArc::new(StdMutex::new(Vec::new()));
+        let last_chunk_time: StdArc<StdMutex<std::time::Instant>> = StdArc::new(StdMutex::new(before_provider));
+        let accumulated_text = StdArc::new(StdMutex::new(String::new()));
+        let stream_model = StdArc::new(StdMutex::new(None::<String>));
+        let stream_finish_reason = StdArc::new(StdMutex::new(None::<String>));
+
+        let byte_stream = stream_response.bytes_stream();
+        let sse_stream = eventsource_stream::EventStream::new(byte_stream);
+
+        let ttft_clone = ttft_time.clone();
+        let chunk_count_clone = chunk_count.clone();
+        let latencies_clone = chunk_latencies.clone();
+        let last_chunk_clone = last_chunk_time.clone();
+        let text_clone = accumulated_text.clone();
+        let model_clone = stream_model.clone();
+        let finish_reason_clone = stream_finish_reason.clone();
+
+        let tracked_stream = sse_stream.map(move |event_result| {
+            match event_result {
+                Ok(event) => {
+                    let now = std::time::Instant::now();
+
+                    // Track TTFT on first chunk
+                    {
+                        if let Ok(mut ttft) = ttft_clone.lock() {
+                            if ttft.is_none() {
+                                *ttft = Some(now);
+                            }
+                        } else {
+                            tracing::error!("Streaming metrics: TTFT mutex poisoned");
+                        }
+                    }
+
+                    // Track chunk latency (with bounds to prevent unbounded growth)
+                    {
+                        if let (Ok(mut last), Ok(mut latencies)) = (
+                            last_chunk_clone.lock(),
+                            latencies_clone.lock()
+                        ) {
+                            let latency = now.duration_since(*last).as_millis() as u64;
+                            // Cap latency array at 10,000 entries to prevent OOM
+                            if latencies.len() < 10_000 {
+                                latencies.push(latency);
+                            }
+                            *last = now;
+                        } else {
+                            tracing::error!("Streaming metrics: latency tracking mutex poisoned");
+                        }
+                    }
+
+                    // Increment chunk count
+                    {
+                        if let Ok(mut count) = chunk_count_clone.lock() {
+                            *count += 1;
+                        } else {
+                            tracing::error!("Streaming metrics: chunk count mutex poisoned");
+                        }
+                    }
+
+                    // Parse event data to extract text and metadata
+                    if let Ok(anthropic_event) = serde_json::from_str::<serde_json::Value>(&event.data) {
+                        // Extract text deltas (with size limit to prevent OOM)
+                        if let Some("content_block_delta") = anthropic_event.get("type").and_then(|t| t.as_str())
+                            && let Some("text_delta") = anthropic_event.get("delta").and_then(|d| d.get("type")).and_then(|t| t.as_str())
+                            && let Some(text) = anthropic_event.get("delta").and_then(|d| d.get("text")).and_then(|t| t.as_str())
+                            && let Ok(mut accumulated) = text_clone.lock()
+                        {
+                            // Cap accumulated text at 1MB to prevent OOM
+                            if accumulated.len() + text.len() <= 1_000_000 {
+                                accumulated.push_str(text);
+                            }
+                        }
+
+                        // Extract model from message_start
+                        if let Some("message_start") = anthropic_event.get("type").and_then(|t| t.as_str())
+                            && let Some(model_str) = anthropic_event.get("message").and_then(|m| m.get("model")).and_then(|m| m.as_str())
+                            && let Ok(mut model) = model_clone.lock()
+                        {
+                            *model = Some(model_str.to_string());
+                        }
+
+                        // Extract finish reason from message_delta
+                        if let Some("message_delta") = anthropic_event.get("type").and_then(|t| t.as_str())
+                            && let Some(reason) = anthropic_event.get("delta").and_then(|d| d.get("stop_reason")).and_then(|r| r.as_str())
+                            && let Ok(mut finish) = finish_reason_clone.lock()
+                        {
+                            *finish = Some(reason.to_string());
+                        }
+                    }
+
+                    // Forward the event
+                    match serde_json::from_str::<serde_json::Value>(&event.data) {
+                        Ok(json) => Event::default().json_data(json)
+                            .map_err(|e| IngressError::Internal(format!("Failed to create SSE event: {}", e))),
+                        Err(e) => Err(IngressError::Internal(format!("Failed to parse SSE event data: {}", e)))
+                    }
+                }
+                Err(e) => {
+                    Err(IngressError::Internal(format!("SSE stream error: {}", e)))
+                }
+            }
+        });
+
+        // Add completion handler to record session stats when stream ends
+        let recorder_clone = state.session_recorder.clone();
+        let session_id_clone = recording_session_id.clone();
+        let request_id_clone = recording_request_id.clone();
+        let start_clone = start_time;
+        let before_provider_clone = before_provider;
+
+        let completion_stream = tracked_stream.chain(futures::stream::once(async move {
+            // Record StreamStarted and Completed events after stream ends
+            if let (Some(recorder), Some(session_id), Some(request_id)) =
+                (recorder_clone.as_ref(), session_id_clone.as_ref(), request_id_clone.as_ref())
+            {
+                use lunaroute_session::{SessionEvent, events::{StreamingStats, FinalSessionStats, TokenTotals, ToolUsageSummary, PerformanceMetrics}};
+
+                // Calculate streaming metrics (handle poisoned mutexes gracefully)
+                let ttft_ms = ttft_time.lock()
+                    .ok()
+                    .and_then(|guard| *guard)
+                    .map(|ttft| ttft.duration_since(before_provider_clone).as_millis() as u64)
+                    .unwrap_or(0);
+
+                let total_chunks = chunk_count.lock().ok().map(|c| *c).unwrap_or(0);
+                let latencies = chunk_latencies.lock().ok().map(|l| l.clone()).unwrap_or_default();
+
+                // Calculate percentiles (safe index calculation to avoid out-of-bounds)
+                let (p50, p95, p99, max, min, avg) = if !latencies.is_empty() {
+                    let mut sorted = latencies.clone();
+                    sorted.sort_unstable();
+                    let len = sorted.len();
+
+                    // Safe percentile index calculation: clamp to valid range
+                    let p50_idx = ((len - 1) * 50 / 100).min(len - 1);
+                    let p95_idx = ((len - 1) * 95 / 100).min(len - 1);
+                    let p99_idx = ((len - 1) * 99 / 100).min(len - 1);
+
+                    let p50 = sorted[p50_idx];
+                    let p95 = sorted[p95_idx];
+                    let p99 = sorted[p99_idx];
+                    let max = sorted[len - 1];  // Safe: len > 0
+                    let min = sorted[0];        // Safe: len > 0
+                    let avg = (sorted.iter().sum::<u64>() as f64) / (len as f64);
+
+                    (Some(p50), Some(p95), Some(p99), max, min, avg)
+                } else {
+                    (None, None, None, 0, 0, 0.0)
+                };
+
+                let total_duration_ms = start_clone.elapsed().as_millis() as u64;
+                let streaming_duration_ms = total_duration_ms.saturating_sub(ttft_ms);
+
+                // Record StreamStarted event
+                if ttft_ms > 0 {
+                    recorder.record_event(SessionEvent::StreamStarted {
+                        session_id: session_id.clone(),
+                        request_id: request_id.clone(),
+                        timestamp: chrono::Utc::now(),
+                        time_to_first_token_ms: ttft_ms,
+                    });
+                }
+
+                // Record Completed event with streaming_stats
+                let _model_used = stream_model.lock()
+                    .ok()
+                    .and_then(|m| m.clone())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let finish_reason = stream_finish_reason.lock()
+                    .ok()
+                    .and_then(|f| f.clone());
+
+                recorder.record_event(SessionEvent::Completed {
+                    session_id: session_id.clone(),
+                    request_id: request_id.clone(),
+                    timestamp: chrono::Utc::now(),
+                    success: true,
+                    error: None,
+                    finish_reason,
+                    final_stats: Box::new(FinalSessionStats {
+                        total_duration_ms,
+                        provider_time_ms: total_duration_ms, // Entire duration is provider time in streaming
+                        proxy_overhead_ms: 0.0, // Minimal overhead in passthrough mode
+                        total_tokens: TokenTotals::default(), // Tokens not available in passthrough streaming
+                        tool_summary: ToolUsageSummary::default(),
+                        performance: PerformanceMetrics::default(),
+                        streaming_stats: Some(StreamingStats {
+                            time_to_first_token_ms: ttft_ms,
+                            total_chunks,
+                            streaming_duration_ms,
+                            avg_chunk_latency_ms: avg,
+                            p50_chunk_latency_ms: p50,
+                            p95_chunk_latency_ms: p95,
+                            p99_chunk_latency_ms: p99,
+                            max_chunk_latency_ms: max,
+                            min_chunk_latency_ms: min,
+                        }),
+                        estimated_cost: None,
+                    }),
+                });
+            }
+
+            // Return empty event to complete the stream
+            Err(IngressError::Internal("Stream completed".to_string()))
+        }));
+
+        // Filter out the completion marker
+        let final_stream = completion_stream.filter_map(|result| {
+            futures::future::ready(match result {
+                Ok(event) => Some(Ok(event)),
+                Err(e) if e.to_string().contains("Stream completed") => None,
+                Err(e) => Some(Err(e)),
+            })
+        });
+
+        // Create SSE response
+        let sse_response = Sse::new(final_stream).keep_alive(KeepAlive::default());
+
+        return Ok(sse_response.into_response());
+    }
+
+    // Send directly to Anthropic API (non-streaming)
     let response_result = state.connector
         .send_passthrough(req, passthrough_headers)
         .await;
@@ -924,6 +1154,7 @@ pub async fn messages_passthrough(
                         total_tokens: Default::default(),
                         tool_summary: Default::default(),
                         performance: Default::default(),
+                        streaming_stats: None,
                         estimated_cost: None,
                     }),
                 });
@@ -1033,6 +1264,9 @@ pub async fn messages_passthrough(
                     response_size_bytes: response_text.len(),
                     content_blocks: anthropic_resp.content.len(),
                     has_refusal: false,
+                    is_streaming: false,
+                    chunk_count: None,
+                    streaming_duration_ms: None,
                 },
             });
 
@@ -1074,6 +1308,7 @@ pub async fn messages_passthrough(
                         avg_post_processing_ms: 0.0,
                         proxy_overhead_percentage: 0.0,
                     },
+                    streaming_stats: None,
                     estimated_cost: None,
                 }),
             });
