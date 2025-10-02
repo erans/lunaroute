@@ -534,4 +534,112 @@ mod tests {
             deserialized.cleanup_interval_minutes
         );
     }
+
+    #[test]
+    fn test_pii_config_default() {
+        let config = PIIConfig::default();
+        assert!(config.enabled);
+        assert!(config.detect_email);
+        assert!(config.detect_phone);
+        assert!(config.detect_ssn);
+        assert!(config.detect_credit_card);
+        assert!(config.detect_ip_address);
+        assert_eq!(config.min_confidence, 0.7);
+        assert_eq!(config.redaction_mode, "mask");
+        assert_eq!(config.partial_show_chars, 4);
+        assert_eq!(config.custom_patterns.len(), 0);
+    }
+
+    #[test]
+    fn test_pii_config_serde() {
+        let config = PIIConfig {
+            enabled: true,
+            detect_email: true,
+            detect_phone: false,
+            detect_ssn: true,
+            detect_credit_card: false,
+            detect_ip_address: true,
+            min_confidence: 0.85,
+            redaction_mode: "tokenize".to_string(),
+            hmac_secret: Some("secret".to_string()),
+            partial_show_chars: 6,
+            custom_patterns: vec![CustomPatternConfig {
+                name: "test".to_string(),
+                pattern: r"\d+".to_string(),
+                confidence: 0.9,
+                redaction_mode: "mask".to_string(),
+                placeholder: Some("[REDACTED]".to_string()),
+            }],
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: PIIConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(config.enabled, deserialized.enabled);
+        assert_eq!(config.detect_email, deserialized.detect_email);
+        assert_eq!(config.min_confidence, deserialized.min_confidence);
+        assert_eq!(config.redaction_mode, deserialized.redaction_mode);
+        assert_eq!(config.custom_patterns.len(), deserialized.custom_patterns.len());
+    }
+
+    #[test]
+    fn test_is_pii_enabled() {
+        let config = SessionRecordingConfig {
+            enabled: true,
+            jsonl: None,
+            sqlite: None,
+            worker: WorkerConfig::default(),
+            pii: Some(PIIConfig {
+                enabled: true,
+                ..PIIConfig::default()
+            }),
+        };
+
+        assert!(config.is_pii_enabled());
+    }
+
+    #[test]
+    fn test_is_pii_disabled_when_session_disabled() {
+        let config = SessionRecordingConfig {
+            enabled: false,
+            jsonl: None,
+            sqlite: None,
+            worker: WorkerConfig::default(),
+            pii: Some(PIIConfig {
+                enabled: true,
+                ..PIIConfig::default()
+            }),
+        };
+
+        assert!(!config.is_pii_enabled());
+    }
+
+    #[test]
+    fn test_is_pii_disabled_when_pii_disabled() {
+        let config = SessionRecordingConfig {
+            enabled: true,
+            jsonl: None,
+            sqlite: None,
+            worker: WorkerConfig::default(),
+            pii: Some(PIIConfig {
+                enabled: false,
+                ..PIIConfig::default()
+            }),
+        };
+
+        assert!(!config.is_pii_enabled());
+    }
+
+    #[test]
+    fn test_is_pii_disabled_when_no_pii_config() {
+        let config = SessionRecordingConfig {
+            enabled: true,
+            jsonl: None,
+            sqlite: None,
+            worker: WorkerConfig::default(),
+            pii: None,
+        };
+
+        assert!(!config.is_pii_enabled());
+    }
 }

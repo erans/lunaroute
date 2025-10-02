@@ -164,5 +164,6 @@ impl SessionPIIRedactor {
     }
 }
 
-// TODO: Add comprehensive tests for PII redaction
-// Tests are disabled for now to allow the integration to proceed
+#[cfg(test)]
+#[path = "pii_redaction_tests.rs"]
+mod tests;
