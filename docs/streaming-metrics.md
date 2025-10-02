@@ -273,6 +273,63 @@ Streaming metrics provide real-time aggregated statistics, while session recordi
 
 Use metrics for alerting and dashboards, session recording for debugging specific issues.
 
+## Implementation Architecture
+
+Streaming metrics are implemented via a shared `StreamingMetricsTracker` module in `lunaroute-ingress/src/streaming_metrics.rs`:
+
+### StreamingMetricsTracker
+
+Centralized tracker for all streaming metrics, eliminating code duplication between OpenAI and Anthropic handlers:
+
+```rust
+pub struct StreamingMetricsTracker {
+    ttft_time: Arc<Mutex<Option<Instant>>>,
+    chunk_count: Arc<Mutex<u32>>,
+    chunk_latencies: Arc<Mutex<Vec<u64>>>,
+    last_chunk_time: Arc<Mutex<Instant>>,
+    accumulated_text: Arc<Mutex<String>>,
+    stream_model: Arc<Mutex<Option<String>>>,
+    stream_finish_reason: Arc<Mutex<Option<String>>>,
+}
+```
+
+**Key methods:**
+- `new(start_time)` - Create tracker
+- `record_ttft(now)` - Record first token time
+- `record_chunk_latency(now, provider, model, metrics)` - Track latencies with bounds
+- `increment_chunk_count()` - Increment chunk counter
+- `accumulate_text(text, provider, model, metrics)` - Accumulate text with bounds
+- `set_model(model)` / `set_finish_reason(reason)` - Set metadata
+- `finalize(start, before_provider)` - Compute final statistics
+
+### FinalizedStreamingMetrics
+
+Computed statistics after stream completion:
+
+```rust
+pub struct FinalizedStreamingMetrics {
+    ttft_ms: u64,
+    total_chunks: u32,
+    streaming_duration_ms: u64,
+    total_duration_ms: u64,
+    latencies: Vec<u64>,
+    p50/p95/p99/max/min/avg: Statistics,
+    finish_reason: Option<String>,
+}
+```
+
+**Key methods:**
+- `record_to_prometheus(metrics, provider, model)` - Record all metrics to Prometheus
+- `to_streaming_stats()` - Convert to session recording format
+
+### Benefits
+
+- **Code reuse**: ~256 lines eliminated, single source of truth
+- **Consistency**: Same metrics computation for all providers
+- **Extensibility**: Easy to add new providers (just use the tracker)
+- **Testability**: Comprehensive unit tests in shared module (9 tests)
+- **Safety**: Memory bounds protection built-in (10K chunks, 1MB text)
+
 ## Performance Impact
 
 - **TTFT/Duration/Chunk Count**: Recorded once per streaming request (~3 histogram observations)

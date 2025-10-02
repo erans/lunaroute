@@ -133,10 +133,14 @@ See `crates/lunaroute-integration-tests/README.md` for details.
   - Anthropic streaming with event sequence (message_start, content_block_delta, etc.)
   - Proper error handling in streams
   - Tool call streaming support
+  - **Shared streaming metrics module** (StreamingMetricsTracker)
+    - TTFT, chunk latencies, memory bounds tracking
+    - Eliminates ~256 lines of duplicated code
+    - 9 comprehensive unit tests
 - Middleware (CORS, security headers, request tracing)
 - Comprehensive input validation
 - Production-ready security hardening
-- 95 tests passing (76 unit + 19 integration)
+- 106 tests passing (87 unit + 19 integration)
 
 **Security Features:**
 - Cryptographically secure RNG for trace/span IDs
@@ -227,9 +231,9 @@ See `crates/lunaroute-integration-tests/README.md` for details.
 - **Complete streaming pipeline**: Client → Ingress SSE → Normalized events → Egress SSE → Provider
 - Error propagation (validation errors, provider errors)
 - Production server (`lunaroute-server`) with configuration file support
-- **359 unit tests passing across workspace:**
+- **370 unit tests passing across workspace:**
   - Core types: 16 tests
-  - Ingress: 95 tests (76 unit + 19 integration)
+  - Ingress: 106 tests (87 unit + 19 integration)
   - Egress: 58 tests (46 unit + 12 integration)
   - Routing: 84 tests (72 unit + 6 integration + 6 streaming)
   - Observability: 34 tests (27 unit + 7 integration)
@@ -316,7 +320,7 @@ See `crates/lunaroute-integration-tests/README.md` for details.
 - See `crates/lunaroute-integration-tests/README.md` for usage
 
 **Phase 8: Observability** ✅ Complete
-- **Prometheus metrics** (18 metric types)
+- **Prometheus metrics** (24 metric types)
   - Request counters (total, success, failure by listener/model/provider)
   - Latency histograms (request, ingress, routing, egress durations)
   - Proxy overhead histograms (post-processing, total overhead)
@@ -325,6 +329,12 @@ See `crates/lunaroute-integration-tests/README.md` for details.
   - Token usage counters (prompt, completion, total)
   - Tool call counters (breakdown by tool name: Read, Write, Bash, etc.)
   - Fallback trigger tracking
+  - **Streaming metrics** (6 metric types)
+    - Time-to-First-Token (TTFT) - critical UX metric
+    - Chunk latency percentiles (P50, P95, P99)
+    - Streaming duration and chunk count
+    - Memory bounds hit tracking
+    - Shared `StreamingMetricsTracker` module (~256 lines of code eliminated)
 - **Health endpoints**
   - `/healthz` - Liveness probe for Kubernetes
   - `/readyz` - Readiness probe with provider status
@@ -383,9 +393,10 @@ See `crates/lunaroute-integration-tests/README.md` for details.
 - ✅ Bidirectional API translation (OpenAI ⇄ Anthropic via normalized format)
 - ✅ Tool/function calling with streaming
 - ✅ Comprehensive security hardening
-- ✅ **359 unit tests passing with 73.35% code coverage** (2042/2784 lines)
+- ✅ **370 unit tests passing with 73.35% code coverage** (2042/2784 lines)
   - Including router+observability integration tests
   - Full streaming E2E pipeline tests
+  - Shared streaming metrics module tests (9 tests)
   - High concurrency stress tests (1000+ requests)
   - Real API streaming tests for GPT-5 and Claude
   - Session recording lifecycle tests
