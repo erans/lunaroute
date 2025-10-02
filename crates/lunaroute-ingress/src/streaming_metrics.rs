@@ -4,7 +4,7 @@
 //! across different provider implementations, reducing code duplication and ensuring
 //! consistent metrics collection.
 
-use std::sync::{Arc as StdArc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// Maximum number of chunk latencies to track (prevent OOM)
@@ -14,34 +14,38 @@ pub const MAX_CHUNK_LATENCIES: usize = 10_000;
 pub const MAX_ACCUMULATED_TEXT_BYTES: usize = 1_000_000;
 
 /// Tracker for streaming metrics (TTFT, chunk latencies, chunk count, etc.)
+///
+/// This tracker is cheaply cloneable - all internal state is Arc-wrapped,
+/// so cloning creates a new handle to the same shared state.
+#[derive(Clone)]
 pub struct StreamingMetricsTracker {
     /// Time when first token was received (TTFT tracking)
-    pub ttft_time: StdArc<StdMutex<Option<Instant>>>,
+    pub ttft_time: Arc<Mutex<Option<Instant>>>,
     /// Count of chunks received
-    pub chunk_count: StdArc<StdMutex<u32>>,
+    pub chunk_count: Arc<Mutex<u32>>,
     /// Latencies between consecutive chunks
-    pub chunk_latencies: StdArc<StdMutex<Vec<u64>>>,
+    pub chunk_latencies: Arc<Mutex<Vec<u64>>>,
     /// Time of last chunk (for calculating next latency)
-    pub last_chunk_time: StdArc<StdMutex<Instant>>,
+    pub last_chunk_time: Arc<Mutex<Instant>>,
     /// Accumulated response text
-    pub accumulated_text: StdArc<StdMutex<String>>,
+    pub accumulated_text: Arc<Mutex<String>>,
     /// Model extracted from stream
-    pub stream_model: StdArc<StdMutex<Option<String>>>,
+    pub stream_model: Arc<Mutex<Option<String>>>,
     /// Finish reason from stream
-    pub stream_finish_reason: StdArc<StdMutex<Option<String>>>,
+    pub stream_finish_reason: Arc<Mutex<Option<String>>>,
 }
 
 impl StreamingMetricsTracker {
     /// Create a new streaming metrics tracker
     pub fn new(start_time: Instant) -> Self {
         Self {
-            ttft_time: StdArc::new(StdMutex::new(None)),
-            chunk_count: StdArc::new(StdMutex::new(0)),
-            chunk_latencies: StdArc::new(StdMutex::new(Vec::new())),
-            last_chunk_time: StdArc::new(StdMutex::new(start_time)),
-            accumulated_text: StdArc::new(StdMutex::new(String::new())),
-            stream_model: StdArc::new(StdMutex::new(None)),
-            stream_finish_reason: StdArc::new(StdMutex::new(None)),
+            ttft_time: Arc::new(Mutex::new(None)),
+            chunk_count: Arc::new(Mutex::new(0)),
+            chunk_latencies: Arc::new(Mutex::new(Vec::new())),
+            last_chunk_time: Arc::new(Mutex::new(start_time)),
+            accumulated_text: Arc::new(Mutex::new(String::new())),
+            stream_model: Arc::new(Mutex::new(None)),
+            stream_finish_reason: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -110,18 +114,26 @@ impl StreamingMetricsTracker {
         metrics: &Option<std::sync::Arc<lunaroute_observability::Metrics>>,
     ) {
         if let Ok(mut accumulated) = self.accumulated_text.lock() {
-            // Cap accumulated text to prevent OOM
-            if accumulated.len() + text.len() <= MAX_ACCUMULATED_TEXT_BYTES {
-                accumulated.push_str(text);
-            } else if accumulated.len() < MAX_ACCUMULATED_TEXT_BYTES {
-                // Log once when limit is first reached
-                tracing::warn!(
-                    "Accumulated text reached maximum size ({} bytes), dropping further content",
-                    MAX_ACCUMULATED_TEXT_BYTES
-                );
-                // Record metrics for memory bound hit
-                if let Some(m) = metrics {
-                    m.record_memory_bound_hit(provider, model, "text_buffer");
+            let remaining = MAX_ACCUMULATED_TEXT_BYTES.saturating_sub(accumulated.len());
+
+            if remaining > 0 {
+                if text.len() <= remaining {
+                    // Full text fits within limit
+                    accumulated.push_str(text);
+                } else {
+                    // Partial text - accumulate what we can up to the limit
+                    let truncated = &text[..remaining];
+                    accumulated.push_str(truncated);
+
+                    // Log once when limit is first reached
+                    tracing::warn!(
+                        "Accumulated text reached maximum size ({} bytes), truncating further content",
+                        MAX_ACCUMULATED_TEXT_BYTES
+                    );
+                    // Record metrics for memory bound hit
+                    if let Some(m) = metrics {
+                        m.record_memory_bound_hit(provider, model, "text_buffer");
+                    }
                 }
             }
         }
@@ -391,13 +403,51 @@ mod tests {
         let large_text = "a".repeat(MAX_ACCUMULATED_TEXT_BYTES - 100);
         tracker.accumulate_text(&large_text, "test", "model", &None);
 
-        // This should be accepted
+        // This should be accepted (fits within remaining space)
         tracker.accumulate_text("b".repeat(50).as_str(), "test", "model", &None);
 
-        // This should be rejected (would exceed limit)
+        // This should be partially accepted (truncated to fit exactly to limit)
         tracker.accumulate_text("c".repeat(100).as_str(), "test", "model", &None);
 
         let len = tracker.accumulated_text.lock().unwrap().len();
-        assert!(len < MAX_ACCUMULATED_TEXT_BYTES);
+        // Should be exactly at the limit after partial accumulation
+        assert_eq!(len, MAX_ACCUMULATED_TEXT_BYTES);
+
+        // Further accumulation should be ignored (no remaining space)
+        tracker.accumulate_text("d".repeat(50).as_str(), "test", "model", &None);
+        let len_after = tracker.accumulated_text.lock().unwrap().len();
+        assert_eq!(len_after, MAX_ACCUMULATED_TEXT_BYTES);
+    }
+
+    #[test]
+    fn test_concurrent_access() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let start = Instant::now();
+        let tracker = Arc::new(StreamingMetricsTracker::new(start));
+        let mut handles = vec![];
+
+        // Spawn 10 threads that concurrently update metrics
+        for i in 0..10 {
+            let tracker_clone = tracker.clone();
+            handles.push(thread::spawn(move || {
+                tracker_clone.record_ttft(Instant::now());
+                tracker_clone.increment_chunk_count();
+                tracker_clone.accumulate_text(&format!("thread{}", i), "test", "model", &None);
+                let _ = tracker_clone.record_chunk_latency(Instant::now(), "test", "model", &None);
+            }));
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify all operations were recorded
+        assert_eq!(*tracker.chunk_count.lock().unwrap(), 10);
+        assert!(tracker.ttft_time.lock().unwrap().is_some());
+        assert!(!tracker.accumulated_text.lock().unwrap().is_empty());
+        assert!(!tracker.chunk_latencies.lock().unwrap().is_empty());
     }
 }

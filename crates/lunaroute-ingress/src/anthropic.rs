@@ -903,8 +903,8 @@ pub async fn messages_passthrough(
         use crate::streaming_metrics::StreamingMetricsTracker;
 
         let tracker = StreamingMetricsTracker::new(before_provider);
-        let tracker_clone = std::sync::Arc::new(tracker);
-        let tracker_ref = tracker_clone.clone();
+        let tracker_ref = tracker.clone();
+        let tracker_for_finalize = tracker.clone();
         let metrics_clone = state.metrics.clone();
         let model_clone = model.clone();
 
@@ -978,7 +978,7 @@ pub async fn messages_passthrough(
                 use lunaroute_session::{SessionEvent, events::{FinalSessionStats, TokenTotals, ToolUsageSummary, PerformanceMetrics}};
 
                 // Finalize streaming metrics using tracker
-                let finalized = tracker_clone.finalize(start_clone, before_provider_clone);
+                let finalized = tracker_for_finalize.finalize(start_clone, before_provider_clone);
 
                 // Record Prometheus metrics
                 finalized.record_to_prometheus(&state.metrics, "anthropic", &model);

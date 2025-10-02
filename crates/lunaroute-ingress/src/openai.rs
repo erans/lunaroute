@@ -859,8 +859,8 @@ pub async fn chat_completions_passthrough(
         use crate::streaming_metrics::StreamingMetricsTracker;
 
         let tracker = StreamingMetricsTracker::new(before_provider);
-        let tracker_clone = std::sync::Arc::new(tracker);
-        let tracker_ref = tracker_clone.clone();
+        let tracker_ref = tracker.clone();
+        let tracker_for_finalize = tracker.clone();
         let metrics_clone = state.metrics.clone();
         let model_name_clone = model.clone();
 
@@ -935,7 +935,7 @@ pub async fn chat_completions_passthrough(
 
         let completion_stream = tracked_stream.chain(futures::stream::once(async move {
             // Finalize metrics using shared module
-            let finalized = tracker_clone.finalize(start_clone, before_provider_clone);
+            let finalized = tracker_for_finalize.finalize(start_clone, before_provider_clone);
 
             // Record to Prometheus
             finalized.record_to_prometheus(&metrics_for_finalize, "openai", &model_for_finalize);
