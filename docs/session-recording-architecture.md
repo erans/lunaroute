@@ -68,7 +68,15 @@ pub enum SessionEvent {
         model_requested: String,
         provider: String,
         listener: String,
+        is_streaming: bool,     // NEW: Indicates streaming request
         metadata: SessionMetadata,
+    },
+
+    StreamStarted {              // NEW: Streaming-specific event
+        session_id: String,
+        request_id: String,
+        timestamp: DateTime<Utc>,
+        time_to_first_token_ms: u64,  // TTFT - critical UX metric
     },
 
     RequestRecorded {
@@ -148,6 +156,11 @@ pub struct ResponseStats {
     pub response_size_bytes: usize,
     pub content_blocks: usize,
     pub has_refusal: bool,
+
+    // Streaming metrics (NEW)
+    pub is_streaming: bool,
+    pub chunk_count: Option<u32>,
+    pub streaming_duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +213,9 @@ pub struct FinalSessionStats {
 
     // Performance metrics
     pub performance: PerformanceMetrics,
+
+    // Streaming statistics (NEW - only present for streaming requests)
+    pub streaming_stats: Option<StreamingStats>,
 
     // Cost estimation (optional)
     pub estimated_cost: Option<CostEstimate>,
@@ -256,6 +272,19 @@ pub struct CostEstimate {
     pub thinking_cost_usd: Option<f64>,
     pub total_cost_usd: f64,
     pub cost_per_1k_tokens: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamingStats {
+    pub time_to_first_token_ms: u64,     // TTFT - critical UX metric
+    pub total_chunks: u32,                // Total number of SSE chunks
+    pub streaming_duration_ms: u64,       // Total time from first to last chunk
+    pub avg_chunk_latency_ms: f64,        // Average time between chunks
+    pub p50_chunk_latency_ms: Option<u64>, // Median chunk latency
+    pub p95_chunk_latency_ms: Option<u64>, // 95th percentile
+    pub p99_chunk_latency_ms: Option<u64>, // 99th percentile
+    pub max_chunk_latency_ms: u64,        // Maximum chunk latency
+    pub min_chunk_latency_ms: u64,        // Minimum chunk latency
 }
 ```
 
@@ -678,6 +707,8 @@ pub async fn messages_passthrough(
 
     let request_text = extract_user_message(&req);
 
+    let is_streaming = req.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+
     // Fire and forget - non-blocking
     if let Some(recorder) = &state.session_recorder {
         recorder.record_event(SessionEvent::Started {
@@ -687,6 +718,8 @@ pub async fn messages_passthrough(
             model_requested: model_requested.clone(),
             provider: "anthropic".to_string(),
             listener: "anthropic".to_string(),
+            is_streaming,
+            metadata: SessionMetadata::default(),
         });
 
         recorder.record_event(SessionEvent::RequestRecorded {
@@ -737,6 +770,131 @@ pub async fn messages_passthrough(
     Ok(Json(response).into_response())
 }
 ```
+
+### Streaming Passthrough Example
+
+For streaming requests, record TTFT and comprehensive streaming statistics:
+
+```rust
+pub async fn messages_passthrough_streaming(
+    State(state): State<Arc<PassthroughState>>,
+    Json(req): Json<Value>,
+) -> Result<Response, IngressError> {
+    let start_time = Instant::now();
+    let session_id = Uuid::new_v4().to_string();
+    let request_id = Uuid::new_v4().to_string();
+    let model = req.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+
+    // Record session start with is_streaming: true
+    if let Some(recorder) = &state.session_recorder {
+        recorder.record_event(SessionEvent::Started {
+            session_id: session_id.clone(),
+            request_id: request_id.clone(),
+            timestamp: Utc::now(),
+            model_requested: model.clone(),
+            provider: "anthropic".to_string(),
+            listener: "anthropic".to_string(),
+            is_streaming: true,
+            metadata: SessionMetadata::default(),
+        });
+    }
+
+    // Streaming metrics tracking
+    let ttft = Arc::new(Mutex::new(None));
+    let chunk_latencies = Arc::new(Mutex::new(Vec::new()));
+    let accumulated_text = Arc::new(Mutex::new(String::new()));
+
+    // Stream SSE events with metrics extraction
+    let stream = stream_with_metrics(
+        connector.stream_passthrough(req).await?,
+        ttft.clone(),
+        chunk_latencies.clone(),
+        accumulated_text.clone(),
+    );
+
+    // Add completion handler to record stats after stream ends
+    let stream_with_completion = stream.chain(futures::stream::once(async move {
+        if let (Some(recorder), Some(ttft_ms), Ok(latencies), Ok(text)) = (
+            &state.session_recorder,
+            *ttft.lock().unwrap(),
+            chunk_latencies.lock().map(|l| l.clone()),
+            accumulated_text.lock().map(|t| t.clone()),
+        ) {
+            // Calculate streaming statistics
+            let streaming_stats = calculate_streaming_stats(ttft_ms, &latencies);
+
+            // Record StreamStarted event
+            recorder.record_event(SessionEvent::StreamStarted {
+                session_id: session_id.clone(),
+                request_id: request_id.clone(),
+                timestamp: Utc::now(),
+                time_to_first_token_ms: ttft_ms,
+            });
+
+            // Record Completed event with streaming_stats
+            recorder.record_event(SessionEvent::Completed {
+                session_id,
+                request_id,
+                timestamp: Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: Some("end_turn".to_string()),
+                final_stats: FinalSessionStats {
+                    total_duration_ms: start_time.elapsed().as_millis() as u64,
+                    provider_time_ms: start_time.elapsed().as_millis() as u64,
+                    proxy_overhead_ms: 0.0,
+                    total_tokens: extract_token_totals(&text),
+                    tool_summary: ToolUsageSummary::default(),
+                    performance: PerformanceMetrics::default(),
+                    streaming_stats: Some(streaming_stats),
+                    estimated_cost: None,
+                },
+            });
+        }
+        Ok(Bytes::new()) // Completion marker (filtered out before sending)
+    }))
+    .filter_map(|result| async move {
+        match result {
+            Ok(bytes) if bytes.is_empty() => None, // Filter out completion marker
+            other => Some(other),
+        }
+    });
+
+    Ok(Sse::new(stream_with_completion).into_response())
+}
+
+fn calculate_streaming_stats(ttft_ms: u64, latencies: &[u64]) -> StreamingStats {
+    let mut sorted = latencies.to_vec();
+    sorted.sort_unstable();
+
+    let len = sorted.len();
+    let p50 = if len > 0 { Some(sorted[(len.saturating_sub(1) * 50 / 100).min(len - 1)]) } else { None };
+    let p95 = if len > 0 { Some(sorted[(len.saturating_sub(1) * 95 / 100).min(len - 1)]) } else { None };
+    let p99 = if len > 0 { Some(sorted[(len.saturating_sub(1) * 99 / 100).min(len - 1)]) } else { None };
+
+    StreamingStats {
+        time_to_first_token_ms: ttft_ms,
+        total_chunks: latencies.len() as u32,
+        streaming_duration_ms: latencies.iter().sum(),
+        avg_chunk_latency_ms: if !latencies.is_empty() {
+            latencies.iter().sum::<u64>() as f64 / latencies.len() as f64
+        } else { 0.0 },
+        p50_chunk_latency_ms: p50,
+        p95_chunk_latency_ms: p95,
+        p99_chunk_latency_ms: p99,
+        max_chunk_latency_ms: sorted.last().copied().unwrap_or(0),
+        min_chunk_latency_ms: sorted.first().copied().unwrap_or(0),
+    }
+}
+```
+
+This example shows:
+1. Recording `is_streaming: true` in Started event
+2. Tracking TTFT and chunk latencies during streaming
+3. Recording StreamStarted event with TTFT
+4. Recording Completed event with comprehensive StreamingStats
+5. Safe percentile calculation with bounds checking
+6. Zero-copy passthrough while extracting metrics
 
 ## Configuration
 

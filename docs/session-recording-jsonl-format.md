@@ -12,10 +12,12 @@ Each session is stored as a series of newline-delimited JSON events in a single 
 {
   "type": "started",
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "request_id": "req-abc-123",
   "timestamp": "2024-01-20T10:30:45.123Z",
   "model_requested": "claude-3-5-sonnet-20241022",
   "provider": "anthropic",
   "listener": "anthropic",
+  "is_streaming": false,
   "metadata": {
     "client_ip": "192.168.1.100",
     "user_agent": "Claude Code/1.0",
@@ -479,19 +481,94 @@ def migrate_session(old_jsonl_path: Path, new_jsonl_path: Path):
             f_out.write(json.dumps(event) + '\n')
 ```
 
-## Real-time Streaming
+## Streaming Sessions
 
-For streaming responses, emit delta events:
+For streaming requests, additional events and metrics are recorded:
+
+### Stream Started Event
+
+Records time-to-first-token (TTFT), a critical UX metric:
 
 ```json
 {
-  "type": "stream_delta",
-  "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "timestamp": "2024-01-20T10:30:46.123Z",
-  "delta_index": 0,
-  "content": "I'll help you",
-  "delta_type": "text"
+  "type": "stream_started",
+  "session_id": "stream-789",
+  "request_id": "req-stream-012",
+  "timestamp": "2024-01-20T10:30:45.275Z",
+  "time_to_first_token_ms": 150
 }
 ```
 
-This allows reconstruction of the streaming experience and analysis of token generation patterns.
+### Streaming Statistics in Completed Event
+
+The `Completed` event includes comprehensive streaming statistics:
+
+```json
+{
+  "type": "completed",
+  "session_id": "stream-789",
+  "request_id": "req-stream-012",
+  "timestamp": "2024-01-20T10:30:48.650Z",
+  "success": true,
+  "error": null,
+  "finish_reason": "end_turn",
+  "final_stats": {
+    "total_duration_ms": 3375,
+    "provider_time_ms": 3275,
+    "proxy_overhead_ms": 100.0,
+    "total_tokens": {
+      "total_input": 50,
+      "total_output": 300,
+      "total_thinking": 25,
+      "total_cached": 10,
+      "grand_total": 375,
+      "by_model": {}
+    },
+    "tool_summary": {
+      "total_tool_calls": 0,
+      "unique_tool_count": 0,
+      "by_tool": {},
+      "total_tool_time_ms": 0,
+      "tool_error_count": 0
+    },
+    "performance": {
+      "avg_provider_latency_ms": 3275.0,
+      "p50_latency_ms": 3275,
+      "p95_latency_ms": 3275,
+      "p99_latency_ms": 3275,
+      "max_latency_ms": 3275,
+      "min_latency_ms": 3275,
+      "avg_pre_processing_ms": 50.0,
+      "avg_post_processing_ms": 50.0,
+      "proxy_overhead_percentage": 2.96
+    },
+    "streaming_stats": {
+      "time_to_first_token_ms": 150,
+      "total_chunks": 28,
+      "streaming_duration_ms": 3225,
+      "avg_chunk_latency_ms": 115.2,
+      "p50_chunk_latency_ms": 110,
+      "p95_chunk_latency_ms": 180,
+      "p99_chunk_latency_ms": 200,
+      "max_chunk_latency_ms": 250,
+      "min_chunk_latency_ms": 80
+    },
+    "estimated_cost": null
+  }
+}
+```
+
+### Streaming Session Flow
+
+A complete streaming session includes these events:
+
+1. **Started** with `is_streaming: true`
+2. **StreamStarted** with TTFT (time to first chunk)
+3. **Completed** with `streaming_stats` containing:
+   - Time-to-first-token (TTFT)
+   - Total chunk count
+   - Chunk latency percentiles (P50, P95, P99)
+   - Min/max/avg chunk latencies
+   - Total streaming duration
+
+This approach captures comprehensive streaming performance metrics without recording every individual chunk, keeping file sizes manageable while providing detailed analytics.
