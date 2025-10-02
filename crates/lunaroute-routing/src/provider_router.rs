@@ -686,4 +686,460 @@ mod tests {
         use crate::health::HealthStatus;
         assert_eq!(health_status, HealthStatus::Healthy);
     }
+
+    // ========== STRATEGY INTEGRATION TESTS ==========
+
+    #[tokio::test]
+    async fn test_router_round_robin_strategy() {
+        use crate::router::{RoutingRule, RuleMatcher};
+        use crate::strategy::RoutingStrategy;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        // Track which provider was called
+        let p1_calls = StdArc::new(AtomicUsize::new(0));
+        let p2_calls = StdArc::new(AtomicUsize::new(0));
+        let p3_calls = StdArc::new(AtomicUsize::new(0));
+
+        // Create mock providers that track calls
+        let p1_calls_clone = p1_calls.clone();
+        let mut mock_p1 = MockTestProvider::new();
+        mock_p1.expect_send().returning(move |_| {
+            p1_calls_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(create_test_response())
+        });
+
+        let p2_calls_clone = p2_calls.clone();
+        let mut mock_p2 = MockTestProvider::new();
+        mock_p2.expect_send().returning(move |_| {
+            p2_calls_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(create_test_response())
+        });
+
+        let p3_calls_clone = p3_calls.clone();
+        let mut mock_p3 = MockTestProvider::new();
+        mock_p3.expect_send().returning(move |_| {
+            p3_calls_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(create_test_response())
+        });
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert("p1".to_string(), Arc::new(mock_p1));
+        providers.insert("p2".to_string(), Arc::new(mock_p2));
+        providers.insert("p3".to_string(), Arc::new(mock_p3));
+
+        // Create routing rule with round-robin strategy
+        let rule = RoutingRule {
+            priority: 10,
+            name: Some("round-robin-rule".to_string()),
+            matcher: RuleMatcher::Always,
+            strategy: Some(RoutingStrategy::RoundRobin {
+                providers: vec!["p1".to_string(), "p2".to_string(), "p3".to_string()],
+            }),
+            primary: None,
+            fallbacks: vec![],
+        };
+
+        let route_table = RouteTable::with_rules(vec![rule]);
+        let router = Router::with_defaults(route_table, providers);
+
+        // Send 9 requests - should distribute evenly (3 each)
+        for _ in 0..9 {
+            let request = create_test_request("test-model");
+            router.send(request).await.unwrap();
+        }
+
+        // Verify round-robin distribution
+        assert_eq!(p1_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(p2_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(p3_calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_router_weighted_round_robin_strategy() {
+        use crate::router::{RoutingRule, RuleMatcher};
+        use crate::strategy::{RoutingStrategy, WeightedProvider};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        // Track which provider was called
+        let p1_calls = StdArc::new(AtomicUsize::new(0));
+        let p2_calls = StdArc::new(AtomicUsize::new(0));
+
+        let p1_calls_clone = p1_calls.clone();
+        let mut mock_p1 = MockTestProvider::new();
+        mock_p1.expect_send().returning(move |_| {
+            p1_calls_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(create_test_response())
+        });
+
+        let p2_calls_clone = p2_calls.clone();
+        let mut mock_p2 = MockTestProvider::new();
+        mock_p2.expect_send().returning(move |_| {
+            p2_calls_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(create_test_response())
+        });
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert("p1".to_string(), Arc::new(mock_p1));
+        providers.insert("p2".to_string(), Arc::new(mock_p2));
+
+        // Create routing rule with weighted round-robin (70/30)
+        let rule = RoutingRule {
+            priority: 10,
+            name: Some("weighted-rule".to_string()),
+            matcher: RuleMatcher::Always,
+            strategy: Some(RoutingStrategy::WeightedRoundRobin {
+                providers: vec![
+                    WeightedProvider {
+                        id: "p1".to_string(),
+                        weight: 70,
+                    },
+                    WeightedProvider {
+                        id: "p2".to_string(),
+                        weight: 30,
+                    },
+                ],
+            }),
+            primary: None,
+            fallbacks: vec![],
+        };
+
+        let route_table = RouteTable::with_rules(vec![rule]);
+        let router = Router::with_defaults(route_table, providers);
+
+        // Send 100 requests - should distribute 70/30
+        for _ in 0..100 {
+            let request = create_test_request("test-model");
+            router.send(request).await.unwrap();
+        }
+
+        // Verify weighted distribution
+        assert_eq!(p1_calls.load(Ordering::SeqCst), 70);
+        assert_eq!(p2_calls.load(Ordering::SeqCst), 30);
+    }
+
+    #[tokio::test]
+    async fn test_router_strategy_with_fallbacks() {
+        use crate::router::{RoutingRule, RuleMatcher};
+        use crate::strategy::RoutingStrategy;
+
+        // Create mock providers - p1 and p2 fail, p3 succeeds
+        let mut mock_p1 = MockTestProvider::new();
+        mock_p1
+            .expect_send()
+            .returning(|_| Err(Error::Provider("p1 failed".to_string())));
+
+        let mut mock_p2 = MockTestProvider::new();
+        mock_p2
+            .expect_send()
+            .returning(|_| Err(Error::Provider("p2 failed".to_string())));
+
+        let mut mock_p3 = MockTestProvider::new();
+        mock_p3
+            .expect_send()
+            .returning(|_| Ok(create_test_response()));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert("p1".to_string(), Arc::new(mock_p1));
+        providers.insert("p2".to_string(), Arc::new(mock_p2));
+        providers.insert("p3".to_string(), Arc::new(mock_p3));
+
+        // Strategy selects p1/p2, but p3 is fallback
+        let rule = RoutingRule {
+            priority: 10,
+            name: Some("strategy-with-fallback".to_string()),
+            matcher: RuleMatcher::Always,
+            strategy: Some(RoutingStrategy::RoundRobin {
+                providers: vec!["p1".to_string(), "p2".to_string()],
+            }),
+            primary: None,
+            fallbacks: vec!["p3".to_string()],
+        };
+
+        let route_table = RouteTable::with_rules(vec![rule]);
+        let router = Router::with_defaults(route_table, providers);
+
+        // First request: strategy picks p1, fails, should fallback to p3
+        let request = create_test_request("test-model");
+        let response = router.send(request).await.unwrap();
+        assert_eq!(response.model, "test-model");
+
+        // Second request: strategy picks p2, fails, should fallback to p3
+        let request = create_test_request("test-model");
+        let response = router.send(request).await.unwrap();
+        assert_eq!(response.model, "test-model");
+    }
+
+    #[tokio::test]
+    async fn test_router_strategy_state_persistence() {
+        use crate::router::{RoutingRule, RuleMatcher};
+        use crate::strategy::RoutingStrategy;
+        use std::sync::Arc as StdArc;
+
+        let call_sequence = StdArc::new(std::sync::Mutex::new(Vec::new()));
+
+        // Track call order
+        let seq1 = call_sequence.clone();
+        let mut mock_p1 = MockTestProvider::new();
+        mock_p1.expect_send().returning(move |_| {
+            seq1.lock().unwrap().push("p1");
+            Ok(create_test_response())
+        });
+
+        let seq2 = call_sequence.clone();
+        let mut mock_p2 = MockTestProvider::new();
+        mock_p2.expect_send().returning(move |_| {
+            seq2.lock().unwrap().push("p2");
+            Ok(create_test_response())
+        });
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert("p1".to_string(), Arc::new(mock_p1));
+        providers.insert("p2".to_string(), Arc::new(mock_p2));
+
+        let rule = RoutingRule {
+            priority: 10,
+            name: Some("persistent-state".to_string()),
+            matcher: RuleMatcher::Always,
+            strategy: Some(RoutingStrategy::RoundRobin {
+                providers: vec!["p1".to_string(), "p2".to_string()],
+            }),
+            primary: None,
+            fallbacks: vec![],
+        };
+
+        let route_table = RouteTable::with_rules(vec![rule]);
+        let router = Router::with_defaults(route_table, providers);
+
+        // Send 4 requests
+        for _ in 0..4 {
+            let request = create_test_request("test-model");
+            router.send(request).await.unwrap();
+        }
+
+        // Verify state was maintained: p1, p2, p1, p2
+        let sequence = call_sequence.lock().unwrap();
+        assert_eq!(*sequence, vec!["p1", "p2", "p1", "p2"]);
+    }
+
+    #[tokio::test]
+    async fn test_router_strategy_concurrent_requests() {
+        use crate::router::{RoutingRule, RuleMatcher};
+        use crate::strategy::RoutingStrategy;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let p1_calls = StdArc::new(AtomicUsize::new(0));
+        let p2_calls = StdArc::new(AtomicUsize::new(0));
+
+        let p1_clone = p1_calls.clone();
+        let mut mock_p1 = MockTestProvider::new();
+        mock_p1.expect_send().returning(move |_| {
+            p1_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(create_test_response())
+        });
+
+        let p2_clone = p2_calls.clone();
+        let mut mock_p2 = MockTestProvider::new();
+        mock_p2.expect_send().returning(move |_| {
+            p2_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(create_test_response())
+        });
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert("p1".to_string(), Arc::new(mock_p1));
+        providers.insert("p2".to_string(), Arc::new(mock_p2));
+
+        let rule = RoutingRule {
+            priority: 10,
+            name: Some("concurrent-rule".to_string()),
+            matcher: RuleMatcher::Always,
+            strategy: Some(RoutingStrategy::RoundRobin {
+                providers: vec!["p1".to_string(), "p2".to_string()],
+            }),
+            primary: None,
+            fallbacks: vec![],
+        };
+
+        let route_table = RouteTable::with_rules(vec![rule]);
+        let router = Arc::new(Router::with_defaults(route_table, providers));
+
+        // Send 20 concurrent requests
+        let mut handles = vec![];
+        for _ in 0..20 {
+            let router_clone = router.clone();
+            let handle = tokio::spawn(async move {
+                let request = create_test_request("test-model");
+                router_clone.send(request).await.unwrap();
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all requests to complete
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Should be distributed roughly evenly (10 each)
+        let p1_count = p1_calls.load(Ordering::SeqCst);
+        let p2_count = p2_calls.load(Ordering::SeqCst);
+
+        assert_eq!(p1_count + p2_count, 20);
+        assert_eq!(p1_count, 10);
+        assert_eq!(p2_count, 10);
+    }
+
+    #[tokio::test]
+    async fn test_router_streaming_with_strategy() {
+        use crate::router::{RoutingRule, RuleMatcher};
+        use crate::strategy::RoutingStrategy;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let p1_calls = StdArc::new(AtomicUsize::new(0));
+        let p2_calls = StdArc::new(AtomicUsize::new(0));
+
+        let p1_clone = p1_calls.clone();
+        let mut mock_p1 = MockTestProvider::new();
+        mock_p1.expect_stream().returning(move |_| {
+            p1_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(tokio_stream::empty()))
+        });
+
+        let p2_clone = p2_calls.clone();
+        let mut mock_p2 = MockTestProvider::new();
+        mock_p2.expect_stream().returning(move |_| {
+            p2_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(tokio_stream::empty()))
+        });
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert("p1".to_string(), Arc::new(mock_p1));
+        providers.insert("p2".to_string(), Arc::new(mock_p2));
+
+        let rule = RoutingRule {
+            priority: 10,
+            name: Some("streaming-strategy".to_string()),
+            matcher: RuleMatcher::Always,
+            strategy: Some(RoutingStrategy::RoundRobin {
+                providers: vec!["p1".to_string(), "p2".to_string()],
+            }),
+            primary: None,
+            fallbacks: vec![],
+        };
+
+        let route_table = RouteTable::with_rules(vec![rule]);
+        let router = Router::with_defaults(route_table, providers);
+
+        // Send 4 streaming requests
+        for _ in 0..4 {
+            let request = create_test_request("test-model");
+            let _ = router.stream(request).await.unwrap();
+        }
+
+        // Verify round-robin for streaming
+        assert_eq!(p1_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(p2_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_router_strategy_validation_no_primary_or_strategy() {
+        use crate::router::{RoutingRule, RuleMatcher};
+
+        // Rule with neither strategy nor primary should fail validation
+        let rule = RoutingRule {
+            priority: 10,
+            name: Some("invalid-rule".to_string()),
+            matcher: RuleMatcher::Always,
+            strategy: None,
+            primary: None,
+            fallbacks: vec![],
+        };
+
+        // Validation should fail
+        assert!(rule.validate().is_err());
+        let err = rule.validate().unwrap_err();
+        assert!(err.contains("strategy") || err.contains("primary"));
+    }
+
+    #[tokio::test]
+    async fn test_router_multiple_rules_with_different_strategies() {
+        use crate::router::{RoutingRule, RuleMatcher};
+        use crate::strategy::RoutingStrategy;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let p1_calls = StdArc::new(AtomicUsize::new(0));
+        let p2_calls = StdArc::new(AtomicUsize::new(0));
+        let p3_calls = StdArc::new(AtomicUsize::new(0));
+
+        let p1_clone = p1_calls.clone();
+        let mut mock_p1 = MockTestProvider::new();
+        mock_p1.expect_send().returning(move |_| {
+            p1_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(create_test_response())
+        });
+
+        let p2_clone = p2_calls.clone();
+        let mut mock_p2 = MockTestProvider::new();
+        mock_p2.expect_send().returning(move |_| {
+            p2_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(create_test_response())
+        });
+
+        let p3_clone = p3_calls.clone();
+        let mut mock_p3 = MockTestProvider::new();
+        mock_p3.expect_send().returning(move |_| {
+            p3_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(create_test_response())
+        });
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert("p1".to_string(), Arc::new(mock_p1));
+        providers.insert("p2".to_string(), Arc::new(mock_p2));
+        providers.insert("p3".to_string(), Arc::new(mock_p3));
+
+        // Rule 1: gpt models use round-robin between p1 and p2
+        let rule1 = RoutingRule {
+            priority: 20,
+            name: Some("gpt-rule".to_string()),
+            matcher: RuleMatcher::model_pattern("^gpt-.*"),
+            strategy: Some(RoutingStrategy::RoundRobin {
+                providers: vec!["p1".to_string(), "p2".to_string()],
+            }),
+            primary: None,
+            fallbacks: vec![],
+        };
+
+        // Rule 2: claude models go to p3 only
+        let rule2 = RoutingRule {
+            priority: 20,
+            name: Some("claude-rule".to_string()),
+            matcher: RuleMatcher::model_pattern("^claude-.*"),
+            strategy: None,
+            primary: Some("p3".to_string()),
+            fallbacks: vec![],
+        };
+
+        let route_table = RouteTable::with_rules(vec![rule1, rule2]);
+        let router = Router::with_defaults(route_table, providers);
+
+        // Send 4 gpt requests (should round-robin p1/p2)
+        for _ in 0..4 {
+            let request = create_test_request("gpt-4");
+            router.send(request).await.unwrap();
+        }
+
+        // Send 4 claude requests (should all go to p3)
+        for _ in 0..4 {
+            let request = create_test_request("claude-3");
+            router.send(request).await.unwrap();
+        }
+
+        // Verify distribution
+        assert_eq!(p1_calls.load(Ordering::SeqCst), 2); // gpt requests
+        assert_eq!(p2_calls.load(Ordering::SeqCst), 2); // gpt requests
+        assert_eq!(p3_calls.load(Ordering::SeqCst), 4); // claude requests
+    }
 }
