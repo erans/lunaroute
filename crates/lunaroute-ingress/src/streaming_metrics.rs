@@ -121,9 +121,22 @@ impl StreamingMetricsTracker {
                     // Full text fits within limit
                     accumulated.push_str(text);
                 } else {
-                    // Partial text - accumulate what we can up to the limit
-                    let truncated = &text[..remaining];
-                    accumulated.push_str(truncated);
+                    // Partial text - find safe UTF-8 boundary for truncation
+                    let safe_boundary = if text.is_char_boundary(remaining) {
+                        remaining
+                    } else {
+                        // Find the last valid char boundary before remaining
+                        let mut boundary = remaining;
+                        while boundary > 0 && !text.is_char_boundary(boundary) {
+                            boundary -= 1;
+                        }
+                        boundary
+                    };
+
+                    if safe_boundary > 0 {
+                        let truncated = &text[..safe_boundary];
+                        accumulated.push_str(truncated);
+                    }
 
                     // Log once when limit is first reached
                     tracing::warn!(
@@ -449,5 +462,34 @@ mod tests {
         assert!(tracker.ttft_time.lock().unwrap().is_some());
         assert!(!tracker.accumulated_text.lock().unwrap().is_empty());
         assert!(!tracker.chunk_latencies.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_utf8_boundary_handling() {
+        let start = Instant::now();
+        let tracker = StreamingMetricsTracker::new(start);
+
+        // Create a string with multi-byte UTF-8 characters (emoji are 4 bytes each)
+        // Fill buffer to just before the limit
+        let base_text = "a".repeat(MAX_ACCUMULATED_TEXT_BYTES - 10);
+        tracker.accumulate_text(&base_text, "test", "model", &None);
+
+        // Now try to add a string with multi-byte characters that would exceed limit
+        // This string is 20 bytes (5 emoji × 4 bytes each)
+        let emoji_text = "🎉🎊🎈🎁🎀";
+
+        // This should truncate safely at a UTF-8 boundary (not panic)
+        tracker.accumulate_text(emoji_text, "test", "model", &None);
+
+        let accumulated = tracker.accumulated_text.lock().unwrap();
+
+        // Should not exceed the limit
+        assert!(accumulated.len() <= MAX_ACCUMULATED_TEXT_BYTES);
+
+        // Should be valid UTF-8 (if it wasn't, this would panic)
+        assert!(std::str::from_utf8(accumulated.as_bytes()).is_ok());
+
+        // Should have accumulated some of the base text and possibly some emojis
+        assert!(accumulated.len() > MAX_ACCUMULATED_TEXT_BYTES - 20);
     }
 }
