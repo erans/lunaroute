@@ -7,6 +7,8 @@
 //! - Async multi-writer recording (v2)
 //! - Disk space management with retention policies
 //! - Automatic cleanup and compression
+//! - Advanced session search and filtering (SQLite)
+//! - Session analytics and aggregation
 
 pub mod recorder;
 pub mod session;
@@ -18,6 +20,7 @@ pub mod writer;
 pub mod jsonl_writer;
 pub mod config;
 pub mod cleanup;
+pub mod search;
 
 #[cfg(feature = "sqlite-writer")]
 pub mod sqlite_writer;
@@ -38,6 +41,10 @@ pub use cleanup::{
     CleanupError, CleanupResult, CleanupStats, CleanupTask, DiskUsage,
     calculate_disk_usage, execute_cleanup, compress_session_file, delete_session_file,
     spawn_cleanup_task,
+};
+pub use search::{
+    SearchResults, SessionAggregates, SessionFilter, SessionFilterBuilder, SessionRecord,
+    SortOrder, TimeRange,
 };
 
 #[cfg(feature = "sqlite-writer")]

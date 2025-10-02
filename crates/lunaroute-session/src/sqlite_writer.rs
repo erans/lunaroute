@@ -3,11 +3,17 @@
 #[cfg(feature = "sqlite-writer")]
 use crate::events::SessionEvent;
 #[cfg(feature = "sqlite-writer")]
+use crate::search::{SearchResults, SessionAggregates, SessionFilter, SessionRecord, SortOrder};
+#[cfg(feature = "sqlite-writer")]
 use crate::writer::{SessionWriter, WriterError, WriterResult};
 #[cfg(feature = "sqlite-writer")]
 use async_trait::async_trait;
 #[cfg(feature = "sqlite-writer")]
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous};
+#[cfg(feature = "sqlite-writer")]
+use sqlx::Row;
+#[cfg(feature = "sqlite-writer")]
+use std::collections::HashMap;
 #[cfg(feature = "sqlite-writer")]
 use std::path::Path;
 
@@ -276,6 +282,339 @@ impl SqliteWriter {
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Search for sessions matching the given filter
+    pub async fn search_sessions(
+        &self,
+        filter: &SessionFilter,
+    ) -> WriterResult<SearchResults<SessionRecord>> {
+        filter.validate().map_err(|e| WriterError::Database(e))?;
+
+        // Build the WHERE clause
+        let (where_clause, bind_values) = Self::build_where_clause(filter);
+
+        // Build the ORDER BY clause
+        let order_by = match filter.sort {
+            SortOrder::NewestFirst => "created_at DESC",
+            SortOrder::OldestFirst => "created_at ASC",
+            SortOrder::HighestTokens => "total_tokens DESC",
+            SortOrder::LongestDuration => "total_duration_ms DESC NULLS LAST",
+            SortOrder::ShortestDuration => "total_duration_ms ASC NULLS LAST",
+        };
+
+        // Get total count
+        let count_query = format!(
+            "SELECT COUNT(*) FROM sessions {}",
+            if where_clause.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", where_clause)
+            }
+        );
+
+        let total_count: i64 = {
+            let mut query = sqlx::query_scalar(&count_query);
+            for value in &bind_values {
+                query = query.bind(value);
+            }
+            query
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?
+        };
+
+        // Get paginated results
+        let offset = filter.page * filter.page_size;
+        let results_query = format!(
+            "SELECT session_id, request_id, started_at, completed_at, provider,
+                    model_requested, model_used, success, error_message, finish_reason,
+                    total_duration_ms, input_tokens, output_tokens, total_tokens,
+                    is_streaming, client_ip
+             FROM sessions {}
+             ORDER BY {}
+             LIMIT ? OFFSET ?",
+            if where_clause.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", where_clause)
+            },
+            order_by
+        );
+
+        let records: Vec<SessionRecord> = {
+            let mut query = sqlx::query_as::<_, SessionRecord>(&results_query);
+            for value in &bind_values {
+                query = query.bind(value);
+            }
+            query
+                .bind(filter.page_size as i64)
+                .bind(offset as i64)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?
+        };
+
+        Ok(SearchResults::new(
+            records,
+            total_count as u64,
+            filter.page,
+            filter.page_size,
+        ))
+    }
+
+    /// Get session aggregates for the given filter
+    pub async fn get_aggregates(
+        &self,
+        filter: &SessionFilter,
+    ) -> WriterResult<SessionAggregates> {
+        filter.validate().map_err(|e| WriterError::Database(e))?;
+
+        let (where_clause, bind_values) = Self::build_where_clause(filter);
+
+        // Aggregates query
+        let agg_query = format!(
+            "SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful,
+                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failed,
+                COALESCE(SUM(total_tokens), 0) as total_tokens,
+                COALESCE(SUM(input_tokens), 0) as total_input,
+                COALESCE(SUM(output_tokens), 0) as total_output,
+                COALESCE(AVG(total_duration_ms), 0) as avg_duration
+             FROM sessions {}",
+            if where_clause.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", where_clause)
+            }
+        );
+
+        let row = {
+            let mut query = sqlx::query(&agg_query);
+            for value in &bind_values {
+                query = query.bind(value);
+            }
+            query
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?
+        };
+
+        let total_sessions: i64 = row.get("total");
+        let successful: i64 = row.get("successful");
+        let failed: i64 = row.get("failed");
+        let total_tokens: i64 = row.get("total_tokens");
+        let total_input: i64 = row.get("total_input");
+        let total_output: i64 = row.get("total_output");
+        let avg_duration: f64 = row.get("avg_duration");
+
+        // Get percentiles
+        let percentile_query = format!(
+            "WITH ordered AS (
+                SELECT total_duration_ms,
+                       ROW_NUMBER() OVER (ORDER BY total_duration_ms) as row_num,
+                       COUNT(*) OVER () as total_rows
+                FROM sessions
+                WHERE total_duration_ms IS NOT NULL {}
+            )
+            SELECT
+                MAX(CASE WHEN row_num = CAST(total_rows * 0.50 AS INTEGER) THEN total_duration_ms END) as p50,
+                MAX(CASE WHEN row_num = CAST(total_rows * 0.95 AS INTEGER) THEN total_duration_ms END) as p95,
+                MAX(CASE WHEN row_num = CAST(total_rows * 0.99 AS INTEGER) THEN total_duration_ms END) as p99
+            FROM ordered",
+            if where_clause.is_empty() {
+                String::new()
+            } else {
+                format!("AND {}", where_clause)
+            }
+        );
+
+        let percentiles = {
+            let mut query = sqlx::query(&percentile_query);
+            for value in &bind_values {
+                query = query.bind(value);
+            }
+            query
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?
+        };
+
+        let (p50, p95, p99) = if let Some(row) = percentiles {
+            (
+                row.get::<Option<i64>, _>("p50").map(|v| v as u64),
+                row.get::<Option<i64>, _>("p95").map(|v| v as u64),
+                row.get::<Option<i64>, _>("p99").map(|v| v as u64),
+            )
+        } else {
+            (None, None, None)
+        };
+
+        // Get sessions by provider
+        let provider_query = format!(
+            "SELECT provider, COUNT(*) as count
+             FROM sessions {}
+             GROUP BY provider",
+            if where_clause.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", where_clause)
+            }
+        );
+
+        let sessions_by_provider: HashMap<String, u64> = {
+            let mut query = sqlx::query(&provider_query);
+            for value in &bind_values {
+                query = query.bind(value);
+            }
+            query
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?
+                .into_iter()
+                .map(|row| {
+                    let provider: String = row.get("provider");
+                    let count: i64 = row.get("count");
+                    (provider, count as u64)
+                })
+                .collect()
+        };
+
+        // Get sessions by model
+        let model_query = format!(
+            "SELECT COALESCE(model_used, model_requested) as model, COUNT(*) as count
+             FROM sessions {}
+             GROUP BY model",
+            if where_clause.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", where_clause)
+            }
+        );
+
+        let sessions_by_model: HashMap<String, u64> = {
+            let mut query = sqlx::query(&model_query);
+            for value in &bind_values {
+                query = query.bind(value);
+            }
+            query
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?
+                .into_iter()
+                .map(|row| {
+                    let model: String = row.get("model");
+                    let count: i64 = row.get("count");
+                    (model, count as u64)
+                })
+                .collect()
+        };
+
+        Ok(SessionAggregates {
+            total_sessions: total_sessions as u64,
+            successful_sessions: successful as u64,
+            failed_sessions: failed as u64,
+            total_tokens: total_tokens as u64,
+            total_input_tokens: total_input as u64,
+            total_output_tokens: total_output as u64,
+            avg_duration_ms: avg_duration,
+            p50_duration_ms: p50,
+            p95_duration_ms: p95,
+            p99_duration_ms: p99,
+            sessions_by_provider,
+            sessions_by_model,
+        })
+    }
+
+    /// Build WHERE clause from filter
+    fn build_where_clause(filter: &SessionFilter) -> (String, Vec<String>) {
+        let mut conditions = Vec::new();
+        let mut bind_values = Vec::new();
+
+        if let Some(ref time_range) = filter.time_range {
+            conditions.push("started_at >= ?".to_string());
+            bind_values.push(time_range.start.to_rfc3339());
+            conditions.push("started_at <= ?".to_string());
+            bind_values.push(time_range.end.to_rfc3339());
+        }
+
+        if !filter.providers.is_empty() {
+            let placeholders = filter.providers.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            conditions.push(format!("provider IN ({})", placeholders));
+            bind_values.extend(filter.providers.clone());
+        }
+
+        if !filter.models.is_empty() {
+            let placeholders = filter.models.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            conditions.push(format!("(model_requested IN ({}) OR model_used IN ({}))", placeholders, placeholders));
+            bind_values.extend(filter.models.clone());
+            bind_values.extend(filter.models.clone());
+        }
+
+        if !filter.request_ids.is_empty() {
+            let placeholders = filter.request_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            conditions.push(format!("request_id IN ({})", placeholders));
+            bind_values.extend(filter.request_ids.clone());
+        }
+
+        if !filter.session_ids.is_empty() {
+            let placeholders = filter.session_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            conditions.push(format!("session_id IN ({})", placeholders));
+            bind_values.extend(filter.session_ids.clone());
+        }
+
+        if let Some(success) = filter.success {
+            conditions.push("success = ?".to_string());
+            bind_values.push(if success { "1".to_string() } else { "0".to_string() });
+        }
+
+        if let Some(is_streaming) = filter.is_streaming {
+            conditions.push("is_streaming = ?".to_string());
+            bind_values.push(if is_streaming { "1".to_string() } else { "0".to_string() });
+        }
+
+        if let Some(min_tokens) = filter.min_tokens {
+            conditions.push("total_tokens >= ?".to_string());
+            bind_values.push(min_tokens.to_string());
+        }
+
+        if let Some(max_tokens) = filter.max_tokens {
+            conditions.push("total_tokens <= ?".to_string());
+            bind_values.push(max_tokens.to_string());
+        }
+
+        if let Some(min_duration) = filter.min_duration_ms {
+            conditions.push("total_duration_ms >= ?".to_string());
+            bind_values.push(min_duration.to_string());
+        }
+
+        if let Some(max_duration) = filter.max_duration_ms {
+            conditions.push("total_duration_ms <= ?".to_string());
+            bind_values.push(max_duration.to_string());
+        }
+
+        if !filter.client_ips.is_empty() {
+            let placeholders = filter.client_ips.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            conditions.push(format!("client_ip IN ({})", placeholders));
+            bind_values.extend(filter.client_ips.clone());
+        }
+
+        if !filter.finish_reasons.is_empty() {
+            let placeholders = filter.finish_reasons.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            conditions.push(format!("finish_reason IN ({})", placeholders));
+            bind_values.extend(filter.finish_reasons.clone());
+        }
+
+        if let Some(ref text_search) = filter.text_search {
+            conditions.push("(request_text LIKE ? OR response_text LIKE ?)".to_string());
+            let pattern = format!("%{}%", text_search);
+            bind_values.push(pattern.clone());
+            bind_values.push(pattern);
+        }
+
+        let where_clause = conditions.join(" AND ");
+        (where_clause, bind_values)
     }
 }
 
@@ -756,5 +1095,212 @@ mod tests {
         assert_eq!(streaming_duration, 4850);
         assert_eq!(avg_latency, 115.5);
         assert_eq!(p95_latency, Some(200));
+    }
+
+    #[tokio::test]
+    async fn test_search_sessions_basic() {
+        use crate::search::SessionFilter;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        // Create test sessions
+        for i in 0..10 {
+            let events = vec![
+                SessionEvent::Started {
+                    session_id: format!("session-{}", i),
+                    request_id: format!("req-{}", i),
+                    timestamp: Utc::now() - chrono::Duration::minutes(i),
+                    model_requested: if i % 2 == 0 { "gpt-4".to_string() } else { "claude-3".to_string() },
+                    provider: if i % 2 == 0 { "openai".to_string() } else { "anthropic".to_string() },
+                    listener: "test".to_string(),
+                    is_streaming: i % 3 == 0,
+                    metadata: SessionMetadata {
+                        client_ip: Some(format!("192.168.1.{}", i)),
+                        user_agent: Some("test".to_string()),
+                        api_version: Some("v1".to_string()),
+                        request_headers: HashMap::new(),
+                        session_tags: vec![],
+                    },
+                },
+                SessionEvent::ResponseRecorded {
+                    session_id: format!("session-{}", i),
+                    request_id: format!("req-{}", i),
+                    timestamp: Utc::now(),
+                    response_text: format!("Response {}", i),
+                    response_json: serde_json::json!({}),
+                    model_used: if i % 2 == 0 { "gpt-4".to_string() } else { "claude-3".to_string() },
+                    stats: ResponseStats {
+                        provider_latency_ms: 100 + (i as u64 * 10),
+                        post_processing_ms: 10.0,
+                        total_proxy_overhead_ms: 15.0,
+                        tokens: TokenStats {
+                            input_tokens: 10,
+                            output_tokens: 20 + (i as u32 * 5),
+                            thinking_tokens: None,
+                            cache_read_tokens: None,
+                            cache_write_tokens: None,
+                            total_tokens: 30 + (i as u32 * 5),
+                            thinking_percentage: None,
+                            tokens_per_second: Some(200.0),
+                        },
+                        tool_calls: vec![],
+                        response_size_bytes: 100,
+                        content_blocks: 1,
+                        has_refusal: false,
+                        is_streaming: false,
+                        chunk_count: None,
+                        streaming_duration_ms: None,
+                    },
+                },
+            ];
+            writer.write_batch(&events).await.unwrap();
+        }
+
+        // Test basic search
+        let filter = SessionFilter::default();
+        let results = writer.search_sessions(&filter).await.unwrap();
+        assert_eq!(results.items.len(), 10);
+        assert_eq!(results.total_count, 10);
+
+        // Test provider filter
+        let filter = SessionFilter::builder()
+            .providers(vec!["openai".to_string()])
+            .build()
+            .unwrap();
+        let results = writer.search_sessions(&filter).await.unwrap();
+        assert_eq!(results.total_count, 5);
+
+        // Test model filter
+        let filter = SessionFilter::builder()
+            .models(vec!["claude-3".to_string()])
+            .build()
+            .unwrap();
+        let results = writer.search_sessions(&filter).await.unwrap();
+        assert_eq!(results.total_count, 5);
+
+        // Test pagination
+        let filter = SessionFilter::builder()
+            .page_size(3)
+            .page(0)
+            .build()
+            .unwrap();
+        let results = writer.search_sessions(&filter).await.unwrap();
+        assert_eq!(results.items.len(), 3);
+        assert_eq!(results.total_count, 10);
+        assert_eq!(results.total_pages, 4);
+        assert!(results.has_next_page());
+        assert!(!results.has_prev_page());
+    }
+
+    #[tokio::test]
+    async fn test_search_sessions_aggregates() {
+        use crate::search::SessionFilter;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        // Create test sessions with varied stats
+        for i in 0..5 {
+            let events = vec![
+                SessionEvent::Started {
+                    session_id: format!("agg-session-{}", i),
+                    request_id: format!("agg-req-{}", i),
+                    timestamp: Utc::now(),
+                    model_requested: "gpt-4".to_string(),
+                    provider: "openai".to_string(),
+                    listener: "test".to_string(),
+                    is_streaming: false,
+                    metadata: SessionMetadata {
+                        client_ip: None,
+                        user_agent: None,
+                        api_version: None,
+                        request_headers: HashMap::new(),
+                        session_tags: vec![],
+                    },
+                },
+                SessionEvent::ResponseRecorded {
+                    session_id: format!("agg-session-{}", i),
+                    request_id: format!("agg-req-{}", i),
+                    timestamp: Utc::now(),
+                    response_text: "Response".to_string(),
+                    response_json: serde_json::json!({}),
+                    model_used: "gpt-4".to_string(),
+                    stats: ResponseStats {
+                        provider_latency_ms: 100,
+                        post_processing_ms: 10.0,
+                        total_proxy_overhead_ms: 15.0,
+                        tokens: TokenStats {
+                            input_tokens: 100,
+                            output_tokens: 200,
+                            thinking_tokens: None,
+                            cache_read_tokens: None,
+                            cache_write_tokens: None,
+                            total_tokens: 300,
+                            thinking_percentage: None,
+                            tokens_per_second: Some(200.0),
+                        },
+                        tool_calls: vec![],
+                        response_size_bytes: 100,
+                        content_blocks: 1,
+                        has_refusal: false,
+                        is_streaming: false,
+                        chunk_count: None,
+                        streaming_duration_ms: None,
+                    },
+                },
+                SessionEvent::Completed {
+                    session_id: format!("agg-session-{}", i),
+                    request_id: format!("agg-req-{}", i),
+                    timestamp: Utc::now(),
+                    success: i < 4, // First 4 successful, last one fails
+                    error: if i >= 4 { Some("Error".to_string()) } else { None },
+                    finish_reason: Some("end_turn".to_string()),
+                    final_stats: Box::new(FinalSessionStats {
+                        total_duration_ms: 1000 + (i * 100),
+                        provider_time_ms: 900,
+                        proxy_overhead_ms: 100.0,
+                        total_tokens: TokenTotals {
+                            total_input: 100,
+                            total_output: 200,
+                            total_thinking: 0,
+                            total_cached: 0,
+                            grand_total: 300,
+                            by_model: HashMap::new(),
+                        },
+                        tool_summary: ToolUsageSummary::default(),
+                        performance: PerformanceMetrics {
+                            avg_provider_latency_ms: 900.0,
+                            p50_latency_ms: Some(900),
+                            p95_latency_ms: Some(950),
+                            p99_latency_ms: Some(980),
+                            max_latency_ms: 1000,
+                            min_latency_ms: 800,
+                            avg_pre_processing_ms: 50.0,
+                            avg_post_processing_ms: 50.0,
+                            proxy_overhead_percentage: 10.0,
+                        },
+                        streaming_stats: None,
+                        estimated_cost: None,
+                    }),
+                },
+            ];
+            writer.write_batch(&events).await.unwrap();
+        }
+
+        let filter = SessionFilter::default();
+        let agg = writer.get_aggregates(&filter).await.unwrap();
+
+        assert_eq!(agg.total_sessions, 5);
+        assert_eq!(agg.successful_sessions, 4);
+        assert_eq!(agg.failed_sessions, 1);
+        assert_eq!(agg.total_tokens, 1500); // 300 * 5
+        assert_eq!(agg.total_input_tokens, 500); // 100 * 5
+        assert_eq!(agg.total_output_tokens, 1000); // 200 * 5
+        assert!(agg.avg_duration_ms > 0.0);
+        assert_eq!(*agg.sessions_by_provider.get("openai").unwrap(), 5);
+        assert_eq!(*agg.sessions_by_model.get("gpt-4").unwrap(), 5);
     }
 }
