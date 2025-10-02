@@ -1082,22 +1082,23 @@ mod tests {
     #[tokio::test]
     async fn test_health_check_readonly_directory() {
         use std::fs;
+        use std::os::unix::fs::PermissionsExt;
 
         let dir = tempdir().unwrap();
         let sessions_dir = dir.path().join("readonly-dir");
         fs::create_dir(&sessions_dir).unwrap();
 
-        // Make directory read-only
+        // Make directory read-only (remove write permissions)
         let mut perms = fs::metadata(&sessions_dir).unwrap().permissions();
-        perms.set_readonly(true);
+        perms.set_mode(0o555); // r-xr-xr-x (read and execute only)
         fs::set_permissions(&sessions_dir, perms).unwrap();
 
         let writer = JsonlWriter::new(sessions_dir.clone());
         let health = writer.health_check().await;
 
-        // Restore permissions for cleanup
+        // Restore write permissions for cleanup
         let mut perms = fs::metadata(&sessions_dir).unwrap().permissions();
-        perms.set_readonly(false);
+        perms.set_mode(0o755); // rwxr-xr-x (owner has write)
         fs::set_permissions(&sessions_dir, perms).unwrap();
 
         assert!(!health.healthy, "Health check should fail for read-only directory");
