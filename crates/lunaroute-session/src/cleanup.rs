@@ -574,7 +574,7 @@ mod tests {
 
         // Verify we're now under the limit
         let final_usage = calculate_disk_usage(temp_dir.path()).unwrap();
-        let limit_bytes = 1u64 * 1_073_741_824; // 1 GB in bytes
+        let limit_bytes = 1_073_741_824u64; // 1 GB in bytes
         assert!(final_usage.total_bytes <= limit_bytes);
     }
 

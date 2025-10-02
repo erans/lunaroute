@@ -295,7 +295,7 @@ impl SqliteWriter {
         &self,
         filter: &SessionFilter,
     ) -> WriterResult<SearchResults<SessionRecord>> {
-        filter.validate().map_err(|e| WriterError::Database(e))?;
+        filter.validate().map_err(WriterError::Database)?;
 
         // Build the WHERE clause
         let (where_clause, bind_values) = Self::build_where_clause(filter);
@@ -374,7 +374,7 @@ impl SqliteWriter {
         &self,
         filter: &SessionFilter,
     ) -> WriterResult<SessionAggregates> {
-        filter.validate().map_err(|e| WriterError::Database(e))?;
+        filter.validate().map_err(WriterError::Database)?;
 
         let (where_clause, bind_values) = Self::build_where_clause(filter);
 

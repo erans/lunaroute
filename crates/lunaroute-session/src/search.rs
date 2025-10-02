@@ -115,9 +115,10 @@ pub struct TimeRange {
 }
 
 /// Sort order for search results
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum SortOrder {
     /// Newest first (default)
+    #[default]
     NewestFirst,
 
     /// Oldest first
@@ -131,12 +132,6 @@ pub enum SortOrder {
 
     /// Shortest duration first
     ShortestDuration,
-}
-
-impl Default for SortOrder {
-    fn default() -> Self {
-        SortOrder::NewestFirst
-    }
 }
 
 /// Search results with pagination metadata
@@ -161,7 +156,7 @@ pub struct SearchResults<T> {
 impl<T> SearchResults<T> {
     pub fn new(items: Vec<T>, total_count: u64, page: usize, page_size: usize) -> Self {
         let total_pages = if page_size > 0 {
-            ((total_count as usize + page_size - 1) / page_size).max(1)
+            (total_count as usize).div_ceil(page_size).max(1)
         } else {
             1
         };
@@ -330,16 +325,16 @@ impl SessionFilter {
             // so no additional runtime validation is needed for timezone correctness
         }
 
-        if let (Some(min), Some(max)) = (self.min_tokens, self.max_tokens) {
-            if min > max {
-                return Err("min_tokens must be less than or equal to max_tokens".to_string());
-            }
+        if let (Some(min), Some(max)) = (self.min_tokens, self.max_tokens)
+            && min > max
+        {
+            return Err("min_tokens must be less than or equal to max_tokens".to_string());
         }
 
-        if let (Some(min), Some(max)) = (self.min_duration_ms, self.max_duration_ms) {
-            if min > max {
-                return Err("min_duration_ms must be less than or equal to max_duration_ms".to_string());
-            }
+        if let (Some(min), Some(max)) = (self.min_duration_ms, self.max_duration_ms)
+            && min > max
+        {
+            return Err("min_duration_ms must be less than or equal to max_duration_ms".to_string());
         }
 
         if self.page_size == 0 {
@@ -356,13 +351,13 @@ impl SessionFilter {
         }
 
         // Validate text search length to prevent memory exhaustion
-        if let Some(ref text_search) = self.text_search {
-            if text_search.len() > Self::MAX_TEXT_SEARCH_LEN {
-                return Err(format!(
-                    "text_search exceeds maximum length of {}",
-                    Self::MAX_TEXT_SEARCH_LEN
-                ));
-            }
+        if let Some(ref text_search) = self.text_search
+            && text_search.len() > Self::MAX_TEXT_SEARCH_LEN
+        {
+            return Err(format!(
+                "text_search exceeds maximum length of {}",
+                Self::MAX_TEXT_SEARCH_LEN
+            ));
         }
 
         // Validate array lengths to prevent DOS via large IN clauses
