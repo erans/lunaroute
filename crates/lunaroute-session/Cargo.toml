@@ -24,6 +24,8 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 zstd = { workspace = true }
 lru = "0.12"
+rand = { workspace = true }
+hex = "0.4"
 
 # SQLite support for session recording
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"], optional = true }

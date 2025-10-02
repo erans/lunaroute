@@ -4,6 +4,7 @@ use crate::events::SessionEvent;
 use crate::writer::{SessionWriter, WriterResult};
 use async_trait::async_trait;
 use chrono::Utc;
+use lunaroute_storage::encryption::{encrypt, derive_key_from_password, generate_salt, KeyDerivationParams};
 use lru::LruCache;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -18,6 +19,8 @@ pub struct JsonlWriter {
     config: JsonlConfig,
     // LRU cache for file handles - uses tokio::sync::Mutex for async compatibility
     file_cache: Mutex<LruCache<String, BufWriter<tokio::fs::File>>>,
+    // Encryption key (if encryption is enabled)
+    encryption_key: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +29,11 @@ pub struct JsonlConfig {
     pub cache_size: usize,
     /// Buffer size in bytes for each file (default: 64KB)
     pub buffer_size: usize,
+    /// Encryption password for AES-256-GCM encryption at rest (optional)
+    pub encryption_password: Option<String>,
+    /// Salt for key derivation (if None, will be generated per-installation)
+    /// WARNING: Changing the salt will make existing encrypted sessions unreadable
+    pub encryption_salt: Option<[u8; 16]>,
 }
 
 impl Default for JsonlConfig {
@@ -33,6 +41,8 @@ impl Default for JsonlConfig {
         Self {
             cache_size: 100,
             buffer_size: 64 * 1024, // 64KB
+            encryption_password: None,
+            encryption_salt: None,
         }
     }
 }
@@ -54,10 +64,20 @@ impl JsonlWriter {
 
     pub fn with_config(sessions_dir: PathBuf, config: JsonlConfig) -> Self {
         let cache_size = NonZeroUsize::new(config.cache_size).expect("cache_size must be > 0");
+
+        // Derive encryption key if password is provided
+        let encryption_key = config.encryption_password.as_ref().map(|password| {
+            let salt = config.encryption_salt.unwrap_or_else(generate_salt);
+            let params = KeyDerivationParams::default();
+            derive_key_from_password(password, &salt, &params)
+                .expect("Failed to derive encryption key")
+        });
+
         Self {
             sessions_dir,
             config,
             file_cache: Mutex::new(LruCache::new(cache_size)),
+            encryption_key,
         }
     }
 
@@ -129,6 +149,17 @@ impl JsonlWriter {
         Ok(())
     }
 
+    /// Optionally encrypt data before writing
+    fn encrypt_if_enabled(&self, data: &[u8]) -> WriterResult<Vec<u8>> {
+        if let Some(key) = &self.encryption_key {
+            Ok(encrypt(data, key).map_err(|e| {
+                std::io::Error::other(format!("Encryption failed: {}", e))
+            })?)
+        } else {
+            Ok(data.to_vec())
+        }
+    }
+
     /// Write data to cached file
     async fn write_to_file(&self, session_id: &str, data: &[u8]) -> WriterResult<()> {
         // Ensure file is cached
@@ -153,9 +184,15 @@ impl SessionWriter for JsonlWriter {
         // Serialize event
         let json = serde_json::to_string(event)?;
 
+        // Prepare JSON line (with newline)
+        let mut line = json.into_bytes();
+        line.push(b'\n');
+
+        // Encrypt if enabled
+        let data = self.encrypt_if_enabled(&line)?;
+
         // Write to cached file handle
-        self.write_to_file(session_id, json.as_bytes()).await?;
-        self.write_to_file(session_id, b"\n").await?;
+        self.write_to_file(session_id, &data).await?;
 
         Ok(())
     }
@@ -176,8 +213,16 @@ impl SessionWriter for JsonlWriter {
         for (session_id, session_events) in by_session {
             for event in session_events {
                 let json = serde_json::to_string(event)?;
-                self.write_to_file(&session_id, json.as_bytes()).await?;
-                self.write_to_file(&session_id, b"\n").await?;
+
+                // Prepare JSON line (with newline)
+                let mut line = json.into_bytes();
+                line.push(b'\n');
+
+                // Encrypt if enabled
+                let data = self.encrypt_if_enabled(&line)?;
+
+                // Write to cached file handle
+                self.write_to_file(&session_id, &data).await?;
             }
         }
 
@@ -483,6 +528,8 @@ mod tests {
         let config = JsonlConfig {
             cache_size: 2, // Small cache to test eviction
             buffer_size: 1024,
+            encryption_password: None,
+            encryption_salt: None,
         };
         let writer = JsonlWriter::with_config(dir.path().to_path_buf(), config);
 
@@ -590,6 +637,8 @@ mod tests {
         let config = JsonlConfig {
             cache_size: 10,
             buffer_size: 512, // Small buffer for testing
+            encryption_password: None,
+            encryption_salt: None,
         };
         let writer = JsonlWriter::with_config(dir.path().to_path_buf(), config);
 
@@ -623,5 +672,136 @@ mod tests {
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 10, "All 10 events should be written");
+    }
+
+    #[tokio::test]
+    async fn test_encryption_at_rest() {
+        let dir = tempdir().unwrap();
+        let password = "test-encryption-password-123";
+        let salt = [42u8; 16]; // Fixed salt for deterministic testing
+
+        let config = JsonlConfig {
+            cache_size: 10,
+            buffer_size: 1024,
+            encryption_password: Some(password.to_string()),
+            encryption_salt: Some(salt),
+        };
+        let writer = JsonlWriter::with_config(dir.path().to_path_buf(), config);
+
+        let event = SessionEvent::Started {
+            session_id: "encrypted-session".to_string(),
+            request_id: "req-encrypted-1".to_string(),
+            timestamp: Utc::now(),
+            model_requested: "gpt-4".to_string(),
+            provider: "openai".to_string(),
+            listener: "openai".to_string(),
+            is_streaming: false,
+            metadata: SessionMetadata {
+                client_ip: Some("192.168.1.1".to_string()),
+                user_agent: Some("test-agent".to_string()),
+                api_version: Some("v1".to_string()),
+                request_headers: HashMap::new(),
+                session_tags: vec!["sensitive".to_string()],
+            },
+        };
+
+        writer.write_event(&event).await.unwrap();
+        writer.flush().await.unwrap();
+
+        // Read the raw file - should be encrypted (not readable JSON)
+        let today = Utc::now().format("%Y-%m-%d");
+        let path = dir.path().join(today.to_string()).join("encrypted-session.jsonl");
+        assert!(path.exists());
+
+        let raw_content = tokio::fs::read(&path).await.unwrap();
+
+        // Raw content should NOT contain plaintext
+        let raw_str = String::from_utf8_lossy(&raw_content);
+        assert!(!raw_str.contains("encrypted-session"), "Session ID should be encrypted");
+        assert!(!raw_str.contains("req-encrypted-1"), "Request ID should be encrypted");
+        assert!(!raw_str.contains("192.168.1.1"), "IP address should be encrypted");
+        assert!(!raw_str.contains("sensitive"), "Tags should be encrypted");
+
+        // File should contain binary data (encrypted)
+        assert!(raw_content.len() > 12, "Should have nonce + ciphertext");
+
+        // Each line should start with 12 bytes of nonce (binary)
+        // This is a basic check that encryption was applied
+        assert!(raw_content[0..12].iter().any(|&b| b != 0), "Should have non-zero nonce bytes");
+    }
+
+    #[tokio::test]
+    async fn test_crypto_secure_session_ids() {
+        use crate::recorder::{FileSessionRecorder, SessionRecorder};
+
+        let dir = tempdir().unwrap();
+        let recorder = FileSessionRecorder::new(dir.path());
+
+        // Generate multiple session IDs
+        let id1 = recorder.generate_session_id();
+        let id2 = recorder.generate_session_id();
+        let id3 = recorder.generate_session_id();
+
+        // Should be 32 hex characters (16 bytes * 2)
+        assert_eq!(id1.len(), 32, "Session ID should be 32 hex characters");
+        assert_eq!(id2.len(), 32, "Session ID should be 32 hex characters");
+        assert_eq!(id3.len(), 32, "Session ID should be 32 hex characters");
+
+        // Should be unique
+        assert_ne!(id1, id2, "Session IDs should be unique");
+        assert_ne!(id2, id3, "Session IDs should be unique");
+        assert_ne!(id1, id3, "Session IDs should be unique");
+
+        // Should be valid hex
+        assert!(id1.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(id2.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(id3.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Should be filesystem-safe (no special characters)
+        assert!(id1.chars().all(|c| c.is_alphanumeric()));
+        assert!(id2.chars().all(|c| c.is_alphanumeric()));
+        assert!(id3.chars().all(|c| c.is_alphanumeric()));
+    }
+
+    #[tokio::test]
+    async fn test_encryption_disabled_by_default() {
+        let dir = tempdir().unwrap();
+        let config = JsonlConfig::default(); // No encryption
+        let writer = JsonlWriter::with_config(dir.path().to_path_buf(), config);
+
+        let event = SessionEvent::Started {
+            session_id: "unencrypted-session".to_string(),
+            request_id: "req-plain-1".to_string(),
+            timestamp: Utc::now(),
+            model_requested: "gpt-4".to_string(),
+            provider: "openai".to_string(),
+            listener: "openai".to_string(),
+            is_streaming: false,
+            metadata: SessionMetadata {
+                client_ip: None,
+                user_agent: None,
+                api_version: None,
+                request_headers: HashMap::new(),
+                session_tags: vec![],
+            },
+        };
+
+        writer.write_event(&event).await.unwrap();
+        writer.flush().await.unwrap();
+
+        // Read the file - should be plaintext JSON
+        let today = Utc::now().format("%Y-%m-%d");
+        let path = dir.path().join(today.to_string()).join("unencrypted-session.jsonl");
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+
+        // Should contain readable JSON
+        assert!(content.contains("unencrypted-session"), "Should contain plaintext session ID");
+        assert!(content.contains("req-plain-1"), "Should contain plaintext request ID");
+
+        // Should be parseable as JSON
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(parsed["type"], "started");
     }
 }

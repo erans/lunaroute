@@ -9,10 +9,19 @@ use lunaroute_core::{
     Result, Error,
 };
 use async_trait::async_trait;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+
+/// Generate a cryptographically secure session ID using OsRng
+/// Format: 32 hex characters (128 bits of entropy)
+fn generate_secure_session_id() -> String {
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
 
 /// Recorded session data
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,9 +42,10 @@ pub struct RecordedSession {
 /// Session recorder trait
 #[async_trait]
 pub trait SessionRecorder: Send + Sync {
-    /// Generate a new session ID
+    /// Generate a new cryptographically secure session ID
+    /// Uses OsRng for 128 bits of entropy
     fn generate_session_id(&self) -> SessionId {
-        uuid::Uuid::new_v4().to_string()
+        generate_secure_session_id()
     }
 
     /// Start recording a new session
