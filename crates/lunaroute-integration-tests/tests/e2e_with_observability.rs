@@ -109,7 +109,8 @@ async fn test_e2e_openai_request_with_metrics() {
         priority: 10,
         name: Some("gpt-to-openai".to_string()),
         matcher: RuleMatcher::model_pattern("^gpt-.*"),
-        primary: "openai".to_string(),
+        strategy: None,
+        primary: Some("openai".to_string()),
         fallbacks: vec!["anthropic".to_string()],
     }];
 
@@ -167,7 +168,8 @@ async fn test_e2e_health_checks_with_router() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "openai".to_string(),
+        strategy: None,
+        primary: Some("openai".to_string()),
         fallbacks: vec![],
     }];
 
@@ -248,7 +250,8 @@ async fn test_e2e_fallback_with_observability() {
         priority: 10,
         name: Some("gpt-to-openai".to_string()),
         matcher: RuleMatcher::model_pattern("^gpt-.*"),
-        primary: "openai".to_string(),
+        strategy: None,
+        primary: Some("openai".to_string()),
         fallbacks: vec!["anthropic".to_string()],
     }];
 
@@ -310,14 +313,16 @@ async fn test_e2e_multiple_models_routing() {
             priority: 10,
             name: Some("gpt-to-openai".to_string()),
             matcher: RuleMatcher::model_pattern("^gpt-.*"),
-            primary: "openai".to_string(),
+            strategy: None,
+            primary: Some("openai".to_string()),
             fallbacks: vec![],
         },
         RoutingRule {
             priority: 10,
             name: Some("claude-to-anthropic".to_string()),
             matcher: RuleMatcher::model_pattern("^claude-.*"),
-            primary: "anthropic".to_string(),
+            strategy: None,
+            primary: Some("anthropic".to_string()),
             fallbacks: vec![],
         },
     ];
@@ -389,7 +394,8 @@ async fn test_e2e_invalid_request_handling() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test".to_string(),
+        strategy: None,
+        primary: Some("test".to_string()),
         fallbacks: vec![],
     }];
 

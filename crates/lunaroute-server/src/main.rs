@@ -375,7 +375,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             priority: 10,
             name: Some("gpt-to-openai".to_string()),
             matcher: RuleMatcher::model_pattern("^gpt-.*"),
-            primary: "openai".to_string(),
+            strategy: None,
+            primary: Some("openai".to_string()),
             fallbacks: if providers.contains_key("anthropic") {
                 vec!["anthropic".to_string()]
             } else {
@@ -390,7 +391,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             priority: 10,
             name: Some("claude-to-anthropic".to_string()),
             matcher: RuleMatcher::model_pattern("^claude-.*"),
-            primary: "anthropic".to_string(),
+            strategy: None,
+            primary: Some("anthropic".to_string()),
             fallbacks: if providers.contains_key("openai") {
                 vec!["openai".to_string()]
             } else {
@@ -404,17 +406,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         priority: 1,
         name: Some("default-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: if providers.contains_key("openai") {
+        strategy: None,
+        primary: Some(if providers.contains_key("openai") {
             "openai".to_string()
         } else {
             "anthropic".to_string()
-        },
+        }),
         fallbacks: vec![],
     });
 
     info!("📋 Created {} routing rules", rules.len());
     for rule in &rules {
-        info!("   - {:?}: {:?} → {} (fallbacks: {:?})",
+        info!("   - {:?}: {:?} → {:?} (fallbacks: {:?})",
             rule.name, rule.matcher, rule.primary, rule.fallbacks);
     }
 

@@ -129,7 +129,8 @@ async fn test_e2e_streaming_basic() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test-provider".to_string(),
+        strategy: None,
+        primary: Some("test-provider".to_string()),
         fallbacks: vec![],
     }];
 
@@ -230,7 +231,8 @@ async fn test_e2e_streaming_multiple_chunks() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "multi-chunk".to_string(),
+        strategy: None,
+        primary: Some("multi-chunk".to_string()),
         fallbacks: vec![],
     }];
 
@@ -302,7 +304,8 @@ async fn test_e2e_streaming_with_router_fallback() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "primary".to_string(),
+        strategy: None,
+        primary: Some("primary".to_string()),
         fallbacks: vec!["fallback".to_string()],
     }];
 
@@ -364,7 +367,8 @@ async fn test_e2e_streaming_concurrent_clients() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test-provider".to_string(),
+        strategy: None,
+        primary: Some("test-provider".to_string()),
         fallbacks: vec![],
     }];
 
@@ -471,7 +475,8 @@ async fn test_e2e_streaming_non_streaming_provider_error() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "non-streaming".to_string(),
+        strategy: None,
+        primary: Some("non-streaming".to_string()),
         fallbacks: vec![],
     }];
 

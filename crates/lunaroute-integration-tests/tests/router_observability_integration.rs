@@ -143,7 +143,8 @@ async fn test_router_with_metrics_integration() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test-provider".to_string(),
+        strategy: None,
+        primary: Some("test-provider".to_string()),
         fallbacks: vec![],
     }];
 
@@ -197,7 +198,8 @@ async fn test_circuit_breaker_with_metrics_tracking() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test-provider".to_string(),
+        strategy: None,
+        primary: Some("test-provider".to_string()),
         fallbacks: vec![],
     }];
 
@@ -267,7 +269,8 @@ async fn test_fallback_with_metrics_tracking() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "primary".to_string(),
+        strategy: None,
+        primary: Some("primary".to_string()),
         fallbacks: vec!["fallback".to_string()],
     }];
 
@@ -306,7 +309,8 @@ async fn test_high_concurrency_with_metrics() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test-provider".to_string(),
+        strategy: None,
+        primary: Some("test-provider".to_string()),
         fallbacks: vec![],
     }];
 
@@ -378,7 +382,8 @@ async fn test_provider_latency_tracking() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test-provider".to_string(),
+        strategy: None,
+        primary: Some("test-provider".to_string()),
         fallbacks: vec![],
     }];
 
@@ -424,7 +429,8 @@ async fn test_health_status_with_metrics() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test-provider".to_string(),
+        strategy: None,
+        primary: Some("test-provider".to_string()),
         fallbacks: vec![],
     }];
 
@@ -486,7 +492,8 @@ async fn test_provider_timeout_scenario() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "slow-provider".to_string(),
+        strategy: None,
+        primary: Some("slow-provider".to_string()),
         fallbacks: vec!["fast-fallback".to_string()],
     }];
 
@@ -518,7 +525,8 @@ async fn test_mixed_success_failure_metrics() {
         priority: 10,
         name: Some("test-route".to_string()),
         matcher: RuleMatcher::Always,
-        primary: "test-provider".to_string(),
+        strategy: None,
+        primary: Some("test-provider".to_string()),
         fallbacks: vec![],
     }];
 
