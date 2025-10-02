@@ -175,7 +175,7 @@ async fn test_openai_with_system_message() {
 
     let response = connector.send(request).await.unwrap();
 
-    assert!(response.choices.len() > 0);
+    assert!(!response.choices.is_empty());
     if let MessageContent::Text(text) = &response.choices[0].message.content {
         // Should be a very short answer due to system prompt
         assert!(text.len() < 20);
@@ -218,7 +218,7 @@ async fn test_anthropic_with_system_message() {
 
     let response = connector.send(request).await.unwrap();
 
-    assert!(response.choices.len() > 0);
+    assert!(!response.choices.is_empty());
     if let MessageContent::Text(text) = &response.choices[0].message.content {
         // Should be a very short answer due to system prompt
         assert!(text.len() < 20);
@@ -300,7 +300,7 @@ async fn test_both_providers_sequential() {
     };
 
     let openai_response = openai_connector.send(openai_request).await.unwrap();
-    assert!(openai_response.choices.len() > 0);
+    assert!(!openai_response.choices.is_empty());
 
     // Test Anthropic
     let anthropic_config = AnthropicConfig {
@@ -333,7 +333,7 @@ async fn test_both_providers_sequential() {
     };
 
     let anthropic_response = anthropic_connector.send(anthropic_request).await.unwrap();
-    assert!(anthropic_response.choices.len() > 0);
+    assert!(!anthropic_response.choices.is_empty());
 }
 
 #[tokio::test]
@@ -525,11 +525,10 @@ async fn test_openai_streaming_with_system_prompt() {
     while let Some(event_result) = stream.next().await {
         let event = event_result.unwrap();
 
-        if let lunaroute_core::normalized::NormalizedStreamEvent::Delta { delta, .. } = event {
-            if let Some(chunk) = delta.content {
+        if let lunaroute_core::normalized::NormalizedStreamEvent::Delta { delta, .. } = event
+            && let Some(chunk) = delta.content {
                 content.push_str(&chunk);
             }
-        }
     }
 
     // Response should be very short due to system prompt
@@ -580,11 +579,10 @@ async fn test_anthropic_streaming_with_system_prompt() {
     while let Some(event_result) = stream.next().await {
         let event = event_result.unwrap();
 
-        if let lunaroute_core::normalized::NormalizedStreamEvent::Delta { delta, .. } = event {
-            if let Some(chunk) = delta.content {
+        if let lunaroute_core::normalized::NormalizedStreamEvent::Delta { delta, .. } = event
+            && let Some(chunk) = delta.content {
                 content.push_str(&chunk);
             }
-        }
     }
 
     // Response should be very short due to system prompt

@@ -400,6 +400,203 @@
   - [ ] Add session tagging and categorization
   - [ ] Implement session sampling (record X% of requests)
 
+## Phase 7b: Async Multi-Writer Session Recording (Priority: High)
+
+### Core Event Infrastructure
+- [ ] Define enhanced SessionEvent enum in lunaroute-session
+  - [ ] **All events must include: session_id, request_id**
+  - [ ] Started event (session_id, request_id, timestamp, model, provider, metadata)
+  - [ ] RequestRecorded event (session_id, request_id, request_text, request_json, stats)
+  - [ ] ResponseRecorded event (session_id, request_id, response_text, response_json, model_used, stats)
+  - [ ] ToolCallRecorded event (session_id, request_id, tool_name, tool_id, execution_time, input/output)
+  - [ ] StatsSnapshot event (session_id, request_id, periodic stats for long sessions)
+  - [ ] Completed event (session_id, request_id, final_stats, success, error, finish_reason)
+- [ ] Implement comprehensive stats structures:
+  - [ ] RequestStats (pre_processing_ms, post_processing_ms, request_size, message_count)
+  - [ ] ResponseStats (provider_latency_ms, tokens breakdown, tools, response_size)
+  - [ ] FinalSessionStats (duration, tokens, tool_summary, performance, costs)
+  - [ ] TokenTotals (input, output, thinking, cache_read, cache_write)
+  - [ ] ToolUsageSummary (by_tool map with count/avg_time/errors)
+  - [ ] PerformanceMetrics (latency percentiles, min/max/avg)
+  - [ ] CostEstimate (input_cost, output_cost, total_cost_usd)
+
+### Async Recording Infrastructure
+- [ ] Implement MultiWriterRecorder with async channel
+  - [ ] Create MPSC unbounded channel for event publishing
+  - [ ] Implement background worker with Tokio spawn
+  - [ ] Add batching logic (100 events or 100ms timeout)
+  - [ ] Implement graceful shutdown with flush_all()
+  - [ ] Add error handling and logging for writer failures
+  - [ ] Thread-safe event publishing with Arc/Mutex
+- [ ] Create SessionWriter trait
+  - [ ] async fn write_event(&self, event: SessionEvent) -> Result<()>
+  - [ ] async fn flush(&self) -> Result<()>
+  - [ ] fn supports_batching(&self) -> bool
+  - [ ] Arc-safe design for multi-threading
+
+### JSONL Writer Implementation
+- [ ] Implement JsonlSessionWriter with SessionWriter trait
+  - [ ] Date-based directory organization (YYYY-MM-DD/)
+  - [ ] Session file naming (session_id.jsonl)
+  - [ ] Append-only writes with immediate flush
+  - [ ] File handle caching with LRU eviction
+  - [ ] Atomic file creation (temp + rename)
+- [ ] Add compression support (optional)
+  - [ ] Zstd compression for archived sessions
+  - [ ] Configurable compression level
+  - [ ] Archive old sessions (7+ days) to .jsonl.zst
+- [ ] Implement cleanup and rotation
+  - [ ] Configurable retention (max_age_days, max_total_size_gb)
+  - [ ] Background cleanup task
+  - [ ] Disk space monitoring
+
+### SQLite Writer Implementation
+- [ ] Create database schema with migrations
+  - [ ] **schema_version table (version INTEGER PRIMARY KEY) - initialize to 1**
+  - [ ] sessions table (session_id PK, request_id, model_requested, model_used, etc.)
+  - [ ] tool_calls table (session_id, request_id, model_name, tool_name, call_count, etc.)
+  - [ ] stream_events table (session_id, request_id, model_name, event_type, etc.)
+  - [ ] **session_stats table (session_id, request_id, model_name, timing/token stats)**
+  - [ ] daily_stats table (date, aggregated counts and tokens)
+  - [ ] Indexes: (session_id), (started_at DESC), (model_used, started_at), (request_id)
+  - [ ] **Ensure all stats tables include: session_id, request_id, model_name**
+- [ ] Implement SqliteSessionWriter with SessionWriter trait
+  - [ ] **Verify schema_version = 1 on startup (fail if mismatch)**
+  - [ ] Batched INSERT operations (100 events buffer)
+  - [ ] Transaction-based writes for consistency
+  - [ ] Prepared statement caching
+  - [ ] Connection pooling with r2d2 or sqlx
+  - [ ] WAL mode for concurrent reads during writes
+  - [ ] **Include request_id in all INSERT/UPDATE operations**
+  - [ ] **Track model_name in session_stats, tool_calls, stream_events tables**
+- [ ] Add query optimizations
+  - [ ] Covering indexes for common queries
+  - [ ] Partial indexes (WHERE success = 0)
+  - [ ] Statistics collection (ANALYZE)
+  - [ ] Query result caching for dashboards
+
+### Stats Extraction and Integration
+- [ ] Create stats extractor utilities
+  - [ ] Extract RequestStats from NormalizedRequest
+  - [ ] Extract ResponseStats from NormalizedResponse
+  - [ ] Calculate proxy overhead (pre/post processing time)
+  - [ ] Estimate costs from token counts and model pricing
+  - [ ] Track tool execution time and results
+- [ ] Integrate with session tracking
+  - [ ] Add session_start_time to session metadata
+  - [ ] Track request processing timestamps
+  - [ ] Calculate latency breakdowns
+  - [ ] Aggregate stats across multi-turn sessions
+  - [ ] Compute percentiles for performance metrics
+
+### Provider Integration
+- [ ] Update RecordingProvider wrapper
+  - [ ] Switch from FileSessionRecorder to MultiWriterRecorder
+  - [ ] Record RequestRecorded events with stats
+  - [ ] Record ResponseRecorded events with stats
+  - [ ] Record ToolCallRecorded events during execution
+  - [ ] Record Completed event with final_stats
+  - [ ] Handle streaming events (StatsSnapshot for progress)
+- [ ] Update passthrough mode recording
+  - [ ] Add MultiWriterRecorder to PassthroughState
+  - [ ] Extract stats from raw JSON responses
+  - [ ] Record events without normalization overhead
+  - [ ] Handle Anthropic-specific stats (thinking tokens)
+
+### Configuration and Setup
+- [ ] Add session recording configuration
+  - [ ] Enable/disable JSONL writer
+  - [ ] Enable/disable SQLite writer
+  - [ ] Configure retention policies
+  - [ ] Set batch sizes and flush intervals
+  - [ ] Configure compression settings
+- [ ] Create builder pattern for MultiWriterRecorder
+  - [ ] with_jsonl_writer(path, config)
+  - [ ] with_sqlite_writer(db_path, config)
+  - [ ] with_batch_config(size, timeout)
+  - [ ] with_retention_policy(policy)
+  - [ ] build() returns Arc<MultiWriterRecorder>
+
+### Query and Analysis Tools
+- [ ] Implement session query API
+  - [ ] Query by session_id, date range, model, provider
+  - [ ] Filter by success, error type, token thresholds
+  - [ ] Aggregate stats (daily totals, model usage)
+  - [ ] Export to CSV/JSON for external analysis
+- [ ] Create analysis utilities
+  - [ ] Token usage reports (by model, by day)
+  - [ ] Cost estimation reports
+  - [ ] Performance analysis (latency percentiles)
+  - [ ] Tool usage patterns
+  - [ ] Error rate analysis
+
+### Test Coverage
+- [ ] Unit tests for event types
+  - [ ] SessionEvent serialization/deserialization
+  - [ ] Stats structures validation
+  - [ ] Edge cases (missing fields, large values)
+- [ ] Unit tests for MultiWriterRecorder
+  - [ ] Event publishing and batching
+  - [ ] Multiple writers coordination
+  - [ ] Error handling (writer failures)
+  - [ ] Graceful shutdown and flush
+  - [ ] High concurrency (1000+ parallel events)
+- [ ] Unit tests for JSONL writer
+  - [ ] File creation and appending
+  - [ ] Directory organization
+  - [ ] Compression and archival
+  - [ ] File handle caching
+  - [ ] Cleanup and retention
+- [ ] Unit tests for SQLite writer
+  - [ ] Schema creation and migration
+  - [ ] Batched inserts
+  - [ ] Transaction handling
+  - [ ] Connection pooling
+  - [ ] Query performance
+- [ ] Integration tests
+  - [ ] End-to-end recording flow (request → JSONL + SQLite)
+  - [ ] Concurrent session recording (100+ parallel sessions)
+  - [ ] Query across both storage backends
+  - [ ] Stats accuracy (token counts, latency, costs)
+  - [ ] Long-running sessions (10+ requests)
+  - [ ] Error recovery (writer failures, disk full)
+- [ ] Performance benchmarks
+  - [ ] Overhead measurement (< 1ms per event target)
+  - [ ] Throughput testing (10k+ events/sec)
+  - [ ] Memory usage (bounded growth)
+  - [ ] Disk I/O efficiency (batching effectiveness)
+
+### Documentation
+- [ ] Create user guide for session recording v2
+  - [ ] Configuration examples
+  - [ ] Query patterns and examples
+  - [ ] Performance tuning guide
+  - [ ] Retention policy recommendations
+- [ ] Document JSONL event format
+  - [ ] Event type specifications
+  - [ ] Stats field descriptions
+  - [ ] Example queries with jq/Python
+- [ ] Document SQLite schema
+  - [ ] Table descriptions
+  - [ ] Index usage guide
+  - [ ] Example SQL queries
+  - [ ] Optimization tips
+- [ ] Create migration guide from v1
+  - [ ] Breaking changes
+  - [ ] Data migration scripts
+  - [ ] Configuration updates
+
+### Migration Path from Phase 7 (v1)
+- [ ] Create compatibility layer
+  - [ ] Support reading old NDJSON format
+  - [ ] Translate to new event format
+  - [ ] Backfill SQLite from existing sessions
+- [ ] Implement gradual rollout
+  - [ ] Feature flag for v2 recording
+  - [ ] Dual-write mode (v1 + v2)
+  - [ ] Validation of output parity
+  - [ ] Safe rollback mechanism
+
 ## Phase 8: Observability (Priority: High) ✅ COMPLETE
 
 ### Metrics Collection ✅

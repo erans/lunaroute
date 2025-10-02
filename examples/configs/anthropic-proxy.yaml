@@ -9,7 +9,7 @@ providers:
     # API key will be read from ANTHROPIC_API_KEY env var
 
 session_recording:
-  enabled: false  # No disk writes
+  enabled: true  # No disk writes
 
 logging:
   level: "debug"

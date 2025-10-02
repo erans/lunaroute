@@ -22,5 +22,12 @@ uuid = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
 
+# SQLite support for session recording
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"], optional = true }
+
+[features]
+default = []
+sqlite-writer = ["sqlx"]
+
 [dev-dependencies]
 tempfile = { workspace = true }

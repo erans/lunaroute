@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -24,7 +24,7 @@ pub struct ServerConfig {
     pub providers: ProvidersConfig,
 
     #[serde(default)]
-    pub session_recording: SessionRecordingConfig,
+    pub session_recording: lunaroute_session::SessionRecordingConfig,
 
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -54,14 +54,7 @@ pub struct ProviderSettings {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionRecordingConfig {
-    #[serde(default = "default_false")]
-    pub enabled: bool,
-
-    #[serde(default = "default_sessions_dir")]
-    pub directory: String,
-}
+// SessionRecordingConfig is now imported from lunaroute_session crate
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
@@ -96,19 +89,10 @@ impl Default for ServerConfig {
             port: default_port(),
             api_dialect: ApiDialect::default(),
             providers: ProvidersConfig::default(),
-            session_recording: SessionRecordingConfig::default(),
+            session_recording: lunaroute_session::SessionRecordingConfig::default(),
             logging: LoggingConfig::default(),
             routing: RoutingConfig::default(),
             session_stats_max_sessions: Some(100),
-        }
-    }
-}
-
-impl Default for SessionRecordingConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            directory: default_sessions_dir(),
         }
     }
 }
@@ -168,14 +152,52 @@ impl ServerConfig {
         }
 
         // Session recording settings
-        if let Ok(val) = std::env::var("LUNAROUTE_SESSIONS_DIR") {
-            self.session_recording.directory = val;
-        }
-
         if let Ok(val) = std::env::var("LUNAROUTE_ENABLE_SESSION_RECORDING")
             && let Ok(enabled) = val.parse::<bool>()
         {
             self.session_recording.enabled = enabled;
+        }
+
+        // JSONL writer settings
+        if let Ok(val) = std::env::var("LUNAROUTE_SESSIONS_DIR") {
+            if self.session_recording.jsonl.is_none() {
+                self.session_recording.jsonl = Some(lunaroute_session::JsonlConfig::default());
+            }
+            if let Some(jsonl) = &mut self.session_recording.jsonl {
+                jsonl.directory = PathBuf::from(val);
+            }
+        }
+
+        if let Ok(val) = std::env::var("LUNAROUTE_ENABLE_JSONL_WRITER")
+            && let Ok(enabled) = val.parse::<bool>()
+        {
+            if self.session_recording.jsonl.is_none() {
+                self.session_recording.jsonl = Some(lunaroute_session::JsonlConfig::default());
+            }
+            if let Some(jsonl) = &mut self.session_recording.jsonl {
+                jsonl.enabled = enabled;
+            }
+        }
+
+        // SQLite writer settings
+        if let Ok(val) = std::env::var("LUNAROUTE_SESSIONS_DB_PATH") {
+            if self.session_recording.sqlite.is_none() {
+                self.session_recording.sqlite = Some(lunaroute_session::SqliteConfig::default());
+            }
+            if let Some(sqlite) = &mut self.session_recording.sqlite {
+                sqlite.path = PathBuf::from(val);
+            }
+        }
+
+        if let Ok(val) = std::env::var("LUNAROUTE_ENABLE_SQLITE_WRITER")
+            && let Ok(enabled) = val.parse::<bool>()
+        {
+            if self.session_recording.sqlite.is_none() {
+                self.session_recording.sqlite = Some(lunaroute_session::SqliteConfig::default());
+            }
+            if let Some(sqlite) = &mut self.session_recording.sqlite {
+                sqlite.enabled = enabled;
+            }
         }
 
         // Logging settings
@@ -208,12 +230,6 @@ fn default_host() -> String {
 
 fn default_port() -> u16 {
     3000
-}
-
-fn default_sessions_dir() -> String {
-    std::env::var("HOME")
-        .map(|home| format!("{}/.lunaroute/sessions", home))
-        .unwrap_or_else(|_| "./sessions".to_string())
 }
 
 fn default_log_level() -> String {

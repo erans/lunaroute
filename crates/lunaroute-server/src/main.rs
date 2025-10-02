@@ -6,8 +6,7 @@
 //! - Automatic fallback if primary provider fails
 //! - Circuit breakers prevent repeated failures
 //! - Health monitoring tracks provider status
-//! - Optional session recording with GDPR-compliant IP anonymization
-//! - Session query endpoints for debugging and analytics
+//! - Optional async session recording to JSONL and/or SQLite
 //!
 //! Usage:
 //! ```bash
@@ -52,13 +51,6 @@
 mod config;
 mod session_stats;
 
-use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Json},
-    routing::get,
-    Router as AxumRouter,
-};
 use clap::Parser;
 use config::{ApiDialect, ServerConfig};
 use lunaroute_core::provider::Provider;
@@ -69,8 +61,6 @@ use lunaroute_egress::{
 use lunaroute_ingress::{anthropic as anthropic_ingress, openai};
 use lunaroute_observability::{health_router, HealthState, Metrics};
 use lunaroute_routing::{Router, RouteTable, RoutingRule, RuleMatcher};
-use lunaroute_session::{FileSessionRecorder, RecordingProvider, SessionQuery, SessionRecorder};
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -114,73 +104,6 @@ struct Cli {
     /// API dialect to accept (openai or anthropic)
     #[arg(short = 'd', long, value_name = "DIALECT", env = "LUNAROUTE_DIALECT")]
     dialect: Option<String>,
-}
-
-// Query parameters for session list
-#[derive(Deserialize)]
-struct SessionQueryParams {
-    provider: Option<String>,
-    model: Option<String>,
-    success: Option<bool>,
-    streaming: Option<bool>,
-    limit: Option<usize>,
-}
-
-// Handler for listing sessions
-async fn list_sessions(
-    State(recorder): State<Arc<FileSessionRecorder>>,
-    Query(params): Query<SessionQueryParams>,
-) -> impl IntoResponse {
-    let mut query = SessionQuery::new();
-
-    if let Some(provider) = params.provider {
-        query = query.provider(provider);
-    }
-    if let Some(model) = params.model {
-        query = query.model(model);
-    }
-    if let Some(success) = params.success {
-        query = query.success(success);
-    }
-    if let Some(streaming) = params.streaming {
-        query = query.streaming(streaming);
-    }
-    if let Some(limit) = params.limit {
-        query = query.limit(limit);
-    }
-
-    match recorder.query_sessions(&query).await {
-        Ok(sessions) => (StatusCode::OK, Json(sessions)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to query sessions: {}", e),
-        )
-            .into_response(),
-    }
-}
-
-// Handler for getting a specific session
-async fn get_session(
-    State(recorder): State<Arc<FileSessionRecorder>>,
-    Path(session_id): Path<String>,
-) -> impl IntoResponse {
-    match recorder.get_session(&session_id).await {
-        Ok(Some(session)) => (StatusCode::OK, Json(session)).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "Session not found").into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get session: {}", e),
-        )
-            .into_response(),
-    }
-}
-
-// Create session router
-fn session_router(recorder: Arc<FileSessionRecorder>) -> AxumRouter {
-    AxumRouter::new()
-        .route("/sessions", get(list_sessions))
-        .route("/sessions/:session_id", get(get_session))
-        .with_state(recorder)
 }
 
 /// Logging provider that prints all requests and responses to stdout
@@ -339,10 +262,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🚀 Initializing LunaRoute Gateway with Intelligent Routing");
 
-    // Setup session recording if enabled
-    let recorder = if config.session_recording.enabled {
-        info!("📝 Session recording enabled: {}", config.session_recording.directory);
-        Some(Arc::new(FileSessionRecorder::new(&config.session_recording.directory)))
+    // Setup async multi-writer session recording if enabled
+    let async_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>> = if config.session_recording.enabled {
+        match lunaroute_session::build_from_config(&config.session_recording).await? {
+            Some(multi_recorder) => {
+                if config.session_recording.is_jsonl_enabled() {
+                    info!("📝 JSONL session recording enabled: {:?}",
+                        config.session_recording.jsonl.as_ref().map(|c| &c.directory));
+                }
+                if config.session_recording.is_sqlite_enabled() {
+                    info!("📝 SQLite session recording enabled: {:?}",
+                        config.session_recording.sqlite.as_ref().map(|c| &c.path));
+                }
+                Some(Arc::new(multi_recorder))
+            }
+            None => {
+                info!("📝 Session recording enabled but no writers configured");
+                None
+            }
+        }
     } else {
         info!("📝 Session recording disabled");
         None
@@ -374,20 +312,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 3. Wrap with logging if enabled
                 let connector = Arc::new(conn);
                 openai_connector = Some(connector.clone()); // Save for passthrough
-                let provider: Arc<dyn Provider> = if let Some(ref rec) = recorder {
-                    let recording = RecordingProvider::new(
-                        connector.clone(),
-                        rec.clone(),
-                        "openai".to_string(),
-                        "openai".to_string(),
-                    );
-                    if config.logging.log_requests {
-                        info!("  Request/response logging: enabled");
-                        Arc::new(LoggingProvider::new(Arc::new(recording), "OpenAI".to_string()))
-                    } else {
-                        Arc::new(recording)
-                    }
-                } else if config.logging.log_requests {
+                // Session recording is now handled via async multi-writer in passthrough mode
+                let provider: Arc<dyn Provider> = if config.logging.log_requests {
                     info!("  Request/response logging: enabled");
                     Arc::new(LoggingProvider::new(connector.clone(), "OpenAI".to_string()))
                 } else {
@@ -420,25 +346,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let conn = AnthropicConnector::new(provider_config)?;
 
                 // Build the provider stack (order matters!)
-                // 1. Start with connector
-                // 2. Wrap with session recording if enabled
-                // 3. Wrap with logging if enabled
+                // Session recording is now handled via async multi-writer in passthrough mode
                 let connector = Arc::new(conn);
                 anthropic_connector = Some(connector.clone()); // Save for passthrough
-                let provider: Arc<dyn Provider> = if let Some(ref rec) = recorder {
-                    let recording = RecordingProvider::new(
-                        connector.clone(),
-                        rec.clone(),
-                        "anthropic".to_string(),
-                        "openai".to_string(), // Listener is OpenAI (ingress format)
-                    );
-                    if config.logging.log_requests {
-                        info!("  Request/response logging: enabled");
-                        Arc::new(LoggingProvider::new(Arc::new(recording), "Anthropic".to_string()))
-                    } else {
-                        Arc::new(recording)
-                    }
-                } else if config.logging.log_requests {
+                let provider: Arc<dyn Provider> = if config.logging.log_requests {
                     info!("  Request/response logging: enabled");
                     Arc::new(LoggingProvider::new(connector.clone(), "Anthropic".to_string()))
                 } else {
@@ -566,7 +477,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         connector,
                         Some(stats_tracker_clone),
                         Some(metrics.clone()),
-                        recorder.clone().map(|r| r as Arc<dyn lunaroute_session::SessionRecorder>),
+                        async_recorder.clone(),
                     )
                 } else {
                     anthropic_ingress::router(router)
@@ -580,16 +491,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create health/metrics router
     let health_router = health_router(health_state);
 
-    // Combine routers - optionally include session query endpoints
-    let app = if let Some(recorder) = recorder {
-        let session_router = session_router(recorder);
-        api_router
-            .merge(health_router)
-            .merge(session_router)
-    } else {
-        api_router
-            .merge(health_router)
-    };
+    // Combine routers
+    let app = api_router.merge(health_router);
 
     // Start server
     let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
@@ -611,11 +514,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("   - Health check:       http://{}/healthz", addr);
     info!("   - Readiness check:    http://{}/readyz", addr);
     info!("   - Prometheus metrics: http://{}/metrics", addr);
-    if config.session_recording.enabled {
-        info!("   Session recording:");
-        info!("   - List sessions: http://{}/sessions?limit=10", addr);
-        info!("   - Get session:   http://{}/sessions/<session-id>", addr);
-    }
     info!("");
 
     // Setup graceful shutdown handler

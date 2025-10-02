@@ -73,7 +73,7 @@ regex = "1.10"
 aho-corasick = "1.1"
 once_cell = "1.19"
 uuid = { version = "1.10", features = ["v4", "fast-rng"] }
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 
 # Config & File Watching
 notify = "6.1"

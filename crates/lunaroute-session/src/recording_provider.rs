@@ -407,7 +407,7 @@ mod tests {
         let mut stream = recording_provider.stream(request).await.unwrap();
 
         let mut event_count = 0;
-        while let Some(_) = stream.next().await {
+        while (stream.next().await).is_some() {
             event_count += 1;
         }
 

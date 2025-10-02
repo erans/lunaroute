@@ -285,10 +285,12 @@ mod tests {
 
     #[test]
     fn test_avg_processing_time() {
-        let mut stats = SessionStats::default();
-        stats.request_count = 2;
-        stats.pre_proxy_time = Duration::from_millis(10);
-        stats.post_proxy_time = Duration::from_millis(20);
+        let stats = SessionStats {
+            request_count: 2,
+            pre_proxy_time: Duration::from_millis(10),
+            post_proxy_time: Duration::from_millis(20),
+            ..Default::default()
+        };
 
         let avg = stats.avg_processing_time();
         assert_eq!(avg, Duration::from_millis(15));

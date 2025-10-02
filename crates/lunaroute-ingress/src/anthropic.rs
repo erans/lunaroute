@@ -805,7 +805,7 @@ pub struct PassthroughState {
     pub connector: Arc<lunaroute_egress::anthropic::AnthropicConnector>,
     pub stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
     pub metrics: Option<Arc<lunaroute_observability::Metrics>>,
-    pub session_recorder: Option<Arc<dyn lunaroute_session::SessionRecorder>>,
+    pub session_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>>,
 }
 
 /// Passthrough handler for Anthropic→Anthropic routing (no normalization)
@@ -860,36 +860,40 @@ pub async fn messages_passthrough(
         .unwrap_or("unknown")
         .to_string();
 
-    // Convert to normalized request for session recording (if enabled)
-    let normalized_request = if state.session_recorder.is_some() {
-        serde_json::from_value::<AnthropicMessagesRequest>(req.clone())
-            .ok()
-            .and_then(|anthropic_req| to_normalized(anthropic_req).ok())
+    // Generate session ID and request ID for recording
+    let recording_session_id = if state.session_recorder.is_some() {
+        Some(uuid::Uuid::new_v4().to_string())
     } else {
         None
     };
 
-    // Generate session ID for recording
-    let recording_session_id = if let Some(recorder) = &state.session_recorder {
-        Some(recorder.generate_session_id())
+    let recording_request_id = if state.session_recorder.is_some() {
+        Some(uuid::Uuid::new_v4().to_string())
     } else {
         None
     };
 
-    // Start session recording if enabled
-    if let (Some(recorder), Some(session_id), Some(norm_req)) =
-        (&state.session_recorder, &recording_session_id, &normalized_request)
+    // Start session recording if enabled (using async events)
+    if let (Some(recorder), Some(session_id), Some(request_id)) =
+        (&state.session_recorder, &recording_session_id, &recording_request_id)
     {
-        let metadata = lunaroute_session::SessionMetadata::new(
-            session_id.clone(),
-            model.clone(),
-            "anthropic".to_string(),
-            "anthropic".to_string(),
-        ).with_streaming(false);
+        use lunaroute_session::{SessionEvent, events::SessionMetadata as V2Metadata};
 
-        if let Err(e) = recorder.start_session(session_id.clone(), norm_req, metadata).await {
-            tracing::error!(error = %e, "Failed to start session recording");
-        }
+        recorder.record_event(SessionEvent::Started {
+            session_id: session_id.clone(),
+            request_id: request_id.clone(),
+            timestamp: chrono::Utc::now(),
+            model_requested: model.clone(),
+            provider: "anthropic".to_string(),
+            listener: "anthropic".to_string(),
+            metadata: V2Metadata {
+                client_ip: None,
+                user_agent: None,
+                api_version: None,
+                request_headers: Default::default(),
+                session_tags: vec![],
+            },
+        });
     }
 
     // Send directly to Anthropic API
@@ -901,19 +905,28 @@ pub async fn messages_passthrough(
         Ok(resp) => resp,
         Err(e) => {
             // Record error in session if recording is enabled
-            if let (Some(recorder), Some(session_id)) = (&state.session_recorder, &recording_session_id) {
-                let error_metadata = lunaroute_session::SessionMetadata::new(
-                    session_id.clone(),
-                    model.clone(),
-                    "anthropic".to_string(),
-                    "anthropic".to_string(),
-                )
-                .with_streaming(false)
-                .with_error(e.to_string(), start_time.elapsed().as_secs_f64());
+            if let (Some(recorder), Some(session_id), Some(request_id)) =
+                (&state.session_recorder, &recording_session_id, &recording_request_id)
+            {
+                use lunaroute_session::{SessionEvent, events::FinalSessionStats};
 
-                if let Err(err) = recorder.complete_session(session_id, error_metadata).await {
-                    tracing::error!(error = %err, "Failed to complete session recording with error");
-                }
+                recorder.record_event(SessionEvent::Completed {
+                    session_id: session_id.clone(),
+                    request_id: request_id.clone(),
+                    timestamp: chrono::Utc::now(),
+                    success: false,
+                    error: Some(e.to_string()),
+                    finish_reason: None,
+                    final_stats: Box::new(FinalSessionStats {
+                        total_duration_ms: start_time.elapsed().as_millis() as u64,
+                        provider_time_ms: 0,
+                        proxy_overhead_ms: 0.0,
+                        total_tokens: Default::default(),
+                        tool_summary: Default::default(),
+                        performance: Default::default(),
+                        estimated_cost: None,
+                    }),
+                });
             }
             return Err(IngressError::ProviderError(e.to_string()));
         }
@@ -979,73 +992,92 @@ pub async fn messages_passthrough(
         tracing::debug!("Tool calls: {} total across {} tools", total_tools, tool_calls.len());
     }
 
-    // Record session response if enabled
-    if let (Some(recorder), Some(session_id)) = (&state.session_recorder, &recording_session_id) {
-        // Convert response to normalized format for recording
-        if let Ok(anthropic_resp) = serde_json::from_value::<AnthropicResponse>(response.clone()) {
-            let normalized_resp = lunaroute_core::normalized::NormalizedResponse {
-                id: anthropic_resp.id,
-                model: anthropic_resp.model.clone(),
-                choices: vec![lunaroute_core::normalized::Choice {
-                    index: 0,
-                    message: lunaroute_core::normalized::Message {
-                        role: lunaroute_core::normalized::Role::Assistant,
-                        content: lunaroute_core::normalized::MessageContent::Text(
-                            anthropic_resp.content.iter().filter_map(|c| {
-                                if let AnthropicContent::Text { text } = c {
-                                    Some(text.clone())
-                                } else {
-                                    None
-                                }
-                            }).collect::<Vec<_>>().join("\n")
-                        ),
-                        name: None,
-                        tool_calls: vec![],
-                        tool_call_id: None,
+    // Record session response if enabled (using async events)
+    if let (Some(recorder), Some(session_id), Some(request_id)) =
+        (&state.session_recorder, &recording_session_id, &recording_request_id)
+        && let Ok(anthropic_resp) = serde_json::from_value::<AnthropicResponse>(response.clone()) {
+            use lunaroute_session::{SessionEvent, events::{ResponseStats, TokenStats, FinalSessionStats, TokenTotals, ToolUsageSummary, PerformanceMetrics}};
+
+            // Extract response text
+            let response_text = anthropic_resp.content.iter().filter_map(|c| {
+                if let AnthropicContent::Text { text } = c {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            }).collect::<Vec<_>>().join("\n");
+
+            // Record response event
+            recorder.record_event(SessionEvent::ResponseRecorded {
+                session_id: session_id.clone(),
+                request_id: request_id.clone(),
+                timestamp: chrono::Utc::now(),
+                response_text: response_text.clone(),
+                response_json: response.clone(),
+                model_used: anthropic_resp.model.clone(),
+                stats: ResponseStats {
+                    provider_latency_ms: provider_time.as_millis() as u64,
+                    post_processing_ms: 0.0,
+                    total_proxy_overhead_ms: 0.0,
+                    tokens: TokenStats {
+                        input_tokens: input_tokens as u32,
+                        output_tokens: output_tokens as u32,
+                        thinking_tokens: if thinking_tokens > 0 { Some(thinking_tokens as u32) } else { None },
+                        cache_read_tokens: None,
+                        cache_write_tokens: None,
+                        total_tokens: (input_tokens + output_tokens) as u32,
+                        thinking_percentage: None,
+                        tokens_per_second: None,
                     },
-                    finish_reason: Some(match anthropic_resp.stop_reason.as_deref() {
-                        Some("end_turn") => lunaroute_core::normalized::FinishReason::Stop,
-                        Some("max_tokens") => lunaroute_core::normalized::FinishReason::Length,
-                        Some("tool_use") => lunaroute_core::normalized::FinishReason::ToolCalls,
-                        Some("stop_sequence") => lunaroute_core::normalized::FinishReason::Stop,
-                        _ => lunaroute_core::normalized::FinishReason::Stop,
-                    }),
-                }],
-                usage: lunaroute_core::normalized::Usage {
-                    prompt_tokens: input_tokens as u32,
-                    completion_tokens: output_tokens as u32,
-                    total_tokens: (input_tokens + output_tokens) as u32,
+                    tool_calls: vec![],
+                    response_size_bytes: response_text.len(),
+                    content_blocks: anthropic_resp.content.len(),
+                    has_refusal: false,
                 },
-                created: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64,
-                metadata: std::collections::HashMap::new(),
-            };
+            });
 
-            if let Err(e) = recorder.record_response(session_id, &normalized_resp).await {
-                tracing::error!(error = %e, "Failed to record response");
-            }
-
-            // Complete session with success metadata
-            let latency = start_time.elapsed().as_secs_f64();
-            let finish_reason = anthropic_resp.stop_reason.clone();
-
-            let metadata = lunaroute_session::SessionMetadata::new(
-                session_id.clone(),
-                model.clone(),
-                "anthropic".to_string(),
-                "anthropic".to_string(),
-            )
-            .with_streaming(false)
-            .with_usage(input_tokens as u32, output_tokens as u32)
-            .with_success(latency, finish_reason);
-
-            if let Err(e) = recorder.complete_session(session_id, metadata).await {
-                tracing::error!(error = %e, "Failed to complete session recording");
-            }
+            // Record completion event
+            recorder.record_event(SessionEvent::Completed {
+                session_id: session_id.clone(),
+                request_id: request_id.clone(),
+                timestamp: chrono::Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: anthropic_resp.stop_reason.clone(),
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: start_time.elapsed().as_millis() as u64,
+                    provider_time_ms: provider_time.as_millis() as u64,
+                    proxy_overhead_ms: 0.0,
+                    total_tokens: TokenTotals {
+                        total_input: input_tokens,
+                        total_output: output_tokens,
+                        total_thinking: thinking_tokens,
+                        total_cached: 0,
+                        grand_total: input_tokens + output_tokens,
+                        by_model: Default::default(),
+                    },
+                    tool_summary: ToolUsageSummary {
+                        total_tool_calls: 0,
+                        unique_tool_count: 0,
+                        by_tool: Default::default(),
+                        total_tool_time_ms: 0,
+                        tool_error_count: 0,
+                    },
+                    performance: PerformanceMetrics {
+                        avg_provider_latency_ms: provider_time.as_secs_f64() * 1000.0,
+                        p50_latency_ms: Some(provider_time.as_millis() as u64),
+                        p95_latency_ms: Some(provider_time.as_millis() as u64),
+                        p99_latency_ms: Some(provider_time.as_millis() as u64),
+                        max_latency_ms: provider_time.as_millis() as u64,
+                        min_latency_ms: provider_time.as_millis() as u64,
+                        avg_pre_processing_ms: 0.0,
+                        avg_post_processing_ms: 0.0,
+                        proxy_overhead_percentage: 0.0,
+                    },
+                    estimated_cost: None,
+                }),
+            });
         }
-    }
 
     let response_result = Ok(Json(response).into_response());
 
@@ -1123,7 +1155,7 @@ pub fn passthrough_router(
     connector: Arc<lunaroute_egress::anthropic::AnthropicConnector>,
     stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
     metrics: Option<Arc<lunaroute_observability::Metrics>>,
-    session_recorder: Option<Arc<dyn lunaroute_session::SessionRecorder>>,
+    session_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>>,
 ) -> Router {
     let state = Arc::new(PassthroughState {
         connector,

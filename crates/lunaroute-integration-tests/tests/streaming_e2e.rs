@@ -400,7 +400,7 @@ async fn test_e2e_streaming_concurrent_clients() {
             let mut stream = router_clone.stream(request).await.unwrap();
             let mut event_count = 0;
 
-            while let Some(_) = stream.next().await {
+            while (stream.next().await).is_some() {
                 event_count += 1;
             }
 

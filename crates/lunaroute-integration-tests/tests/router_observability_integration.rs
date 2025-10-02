@@ -407,7 +407,7 @@ async fn test_provider_latency_tracking() {
 
     // Average should be around 0.1 seconds
     let avg = histogram.get_sample_sum() / histogram.get_sample_count() as f64;
-    assert!(avg >= 0.09 && avg <= 0.15);
+    assert!((0.09..=0.15).contains(&avg));
 }
 
 #[tokio::test]

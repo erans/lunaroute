@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn test_metrics_creation() {
         let metrics = Metrics::new().unwrap();
-        assert!(metrics.registry().gather().len() > 0);
+        assert!(!metrics.registry().gather().is_empty());
     }
 
     #[test]
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn test_metrics_default() {
         let metrics = Metrics::default();
-        assert!(metrics.registry().gather().len() > 0);
+        assert!(!metrics.registry().gather().is_empty());
     }
 
     #[test]
