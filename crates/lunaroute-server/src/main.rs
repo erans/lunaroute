@@ -78,15 +78,15 @@ const MOON: &str = r#"
       .--         --.
     ./   ()      .-. \.
    /   o    .   (   )  \
-  / .            '-'    \
- | ()    .  O         .  |
-|                         |
-|    o           ()       |
-|       .--.          O   |
+  / .            '-'    \    _                      ____             _
+ | ()    .  O         .  |  | |   _   _ _ __   __ _|  _ \ ___  _   _| |_ ___
+|                         | | |  | | | | '_ \ / _` | |_) / _ \| | | | __/ _ \
+|    o           ()       | | |__| |_| | | | | (_| |  _ < (_) | |_| | ||  __/
+|       .--.          O   | |_____\__,_|_| |_|\__,_|_| \_\___/ \__,_|\__\___|
  | .   |    |            |
-  \    `.__.'    o   .  /
-   \                   /
-    `\  o    ()      /
+  \    `.__.'    o   .  /   https://lunaroute.org
+   \                   /    version : {VERSION}
+    `\  o    ()      /      commit  : {SHA}
       `--___   ___--'
             ---
 "#;
@@ -362,8 +362,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Allow starting without providers in certain scenarios (e.g., passthrough with client-provided keys)
     if providers.is_empty() {
-        return Err("No API keys provided. Set OPENAI_API_KEY and/or ANTHROPIC_API_KEY".into());
+        warn!("⚠️  No providers configured - requests will fail unless using passthrough mode");
+        warn!("    To configure providers, either:");
+        warn!("    - Set OPENAI_API_KEY or ANTHROPIC_API_KEY environment variables, or");
+        warn!("    - Add api_key field to provider configuration in config file");
     }
 
     // Create routing rules
