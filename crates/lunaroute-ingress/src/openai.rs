@@ -28,6 +28,12 @@ use uuid::Uuid;
 /// Maximum size for tool arguments (1MB)
 const MAX_TOOL_ARGS_SIZE: usize = 1_000_000;
 
+/// Maximum number of chunk latencies to track in streaming requests (prevent OOM)
+const MAX_CHUNK_LATENCIES: usize = 10_000;
+
+/// Maximum accumulated text size in streaming requests (1MB, prevent OOM)
+const MAX_ACCUMULATED_TEXT_BYTES: usize = 1_000_000;
+
 /// Validate tool parameter schema (must be valid JSON Schema)
 fn validate_tool_schema(schema: &serde_json::Value, tool_name: &str) -> IngressResult<()> {
     // Ensure it's a valid JSON Schema object
@@ -901,9 +907,15 @@ pub async fn chat_completions_passthrough(
                             latencies_clone.lock()
                         ) {
                             let latency = now.duration_since(*last).as_millis() as u64;
-                            // Cap latency array at 10,000 entries to prevent OOM
-                            if latencies.len() < 10_000 {
+                            // Cap latency array to prevent OOM
+                            if latencies.len() < MAX_CHUNK_LATENCIES {
                                 latencies.push(latency);
+                            } else if latencies.len() == MAX_CHUNK_LATENCIES {
+                                // Log once when limit is first reached
+                                tracing::warn!(
+                                    "Chunk latency array reached maximum size ({} entries), dropping further measurements",
+                                    MAX_CHUNK_LATENCIES
+                                );
                             }
                             *last = now;
                         } else {
@@ -920,44 +932,55 @@ pub async fn chat_completions_passthrough(
                         }
                     }
 
-                    // Parse event data to extract text and metadata (OpenAI format)
-                    if let Ok(openai_chunk) = serde_json::from_str::<serde_json::Value>(&event.data) {
-                        // Extract text deltas from choices (with size limit to prevent OOM)
-                        if let Some(choices) = openai_chunk.get("choices").and_then(|c| c.as_array())
-                            && let Some(first_choice) = choices.first()
-                            && let Some(delta) = first_choice.get("delta")
-                            && let Some(content) = delta.get("content").and_then(|c| c.as_str())
-                            && let Ok(mut accumulated) = text_clone.lock()
-                        {
-                            // Cap accumulated text at 1MB to prevent OOM
-                            if accumulated.len() + content.len() <= 1_000_000 {
-                                accumulated.push_str(content);
-                            }
+                    // Parse event data once to avoid double parsing
+                    let parsed_data = match serde_json::from_str::<serde_json::Value>(&event.data) {
+                        Ok(json) => json,
+                        Err(e) => {
+                            // Log but don't fail the stream for individual parse errors
+                            tracing::warn!("Failed to parse SSE event data: {}", e);
+                            // Forward raw data if JSON parsing fails
+                            return Ok(Event::default().data(event.data));
                         }
+                    };
 
-                        // Extract model from chunk
-                        if let Some(model_str) = openai_chunk.get("model").and_then(|m| m.as_str())
-                            && let Ok(mut model) = model_clone.lock()
-                        {
-                            *model = Some(model_str.to_string());
-                        }
-
-                        // Extract finish reason from choices
-                        if let Some(choices) = openai_chunk.get("choices").and_then(|c| c.as_array())
-                            && let Some(first_choice) = choices.first()
-                            && let Some(reason) = first_choice.get("finish_reason").and_then(|r| r.as_str())
-                            && let Ok(mut finish) = finish_reason_clone.lock()
-                        {
-                            *finish = Some(reason.to_string());
+                    // Extract text deltas from choices (with size limit to prevent OOM)
+                    if let Some(choices) = parsed_data.get("choices").and_then(|c| c.as_array())
+                        && let Some(first_choice) = choices.first()
+                        && let Some(delta) = first_choice.get("delta")
+                        && let Some(content) = delta.get("content").and_then(|c| c.as_str())
+                        && let Ok(mut accumulated) = text_clone.lock()
+                    {
+                        // Cap accumulated text to prevent OOM
+                        if accumulated.len() + content.len() <= MAX_ACCUMULATED_TEXT_BYTES {
+                            accumulated.push_str(content);
+                        } else if accumulated.len() < MAX_ACCUMULATED_TEXT_BYTES {
+                            // Log once when limit is first reached
+                            tracing::warn!(
+                                "Accumulated text reached maximum size ({} bytes), dropping further content",
+                                MAX_ACCUMULATED_TEXT_BYTES
+                            );
                         }
                     }
 
-                    // Forward the event
-                    match serde_json::from_str::<serde_json::Value>(&event.data) {
-                        Ok(json) => Event::default().json_data(json)
-                            .map_err(|e| IngressError::Internal(format!("Failed to create SSE event: {}", e))),
-                        Err(e) => Err(IngressError::Internal(format!("Failed to parse SSE event data: {}", e)))
+                    // Extract model from chunk
+                    if let Some(model_str) = parsed_data.get("model").and_then(|m| m.as_str())
+                        && let Ok(mut model) = model_clone.lock()
+                    {
+                        *model = Some(model_str.to_string());
                     }
+
+                    // Extract finish reason from choices
+                    if let Some(choices) = parsed_data.get("choices").and_then(|c| c.as_array())
+                        && let Some(first_choice) = choices.first()
+                        && let Some(reason) = first_choice.get("finish_reason").and_then(|r| r.as_str())
+                        && let Ok(mut finish) = finish_reason_clone.lock()
+                    {
+                        *finish = Some(reason.to_string());
+                    }
+
+                    // Forward the parsed event
+                    Event::default().json_data(parsed_data)
+                        .map_err(|e| IngressError::Internal(format!("Failed to create SSE event: {}", e)))
                 }
                 Err(e) => {
                     Err(IngressError::Internal(format!("SSE stream error: {}", e)))
@@ -1026,10 +1049,6 @@ pub async fn chat_completions_passthrough(
                 }
 
                 // Record Completed event with streaming_stats
-                let _model_used = stream_model.lock()
-                    .ok()
-                    .and_then(|m| m.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
                 let finish_reason = stream_finish_reason.lock()
                     .ok()
                     .and_then(|f| f.clone());
