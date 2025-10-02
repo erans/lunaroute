@@ -20,7 +20,9 @@ tracing = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
 once_cell = { workspace = true }
+dashmap = { workspace = true }
 
 [dev-dependencies]
 mockall = { workspace = true }
 serde_yaml = { workspace = true }
+serial_test = { workspace = true }

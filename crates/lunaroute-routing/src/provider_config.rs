@@ -161,8 +161,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_resolve_env_var_with_dollar() {
-        // Set test env var
+        // Set test env var (serialized test prevents race conditions)
         unsafe {
             std::env::set_var("TEST_VAR_123", "test-value");
         }
@@ -184,6 +185,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_provider_config_resolve_api_key() {
         unsafe {
             std::env::set_var("TEST_API_KEY_456", "secret-key");
@@ -206,6 +208,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_provider_config_resolve_headers() {
         unsafe {
             std::env::set_var("TEST_HEADER_VAL", "header-value");

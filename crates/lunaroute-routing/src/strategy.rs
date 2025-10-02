@@ -62,7 +62,12 @@ impl RoutingStrategy {
                     return Err(StrategyError::EmptyProviderList);
                 }
 
-                let total_weight: u32 = providers.iter().map(|p| p.weight).sum();
+                // Use checked arithmetic to prevent overflow
+                let total_weight = providers
+                    .iter()
+                    .try_fold(0u32, |acc, p| acc.checked_add(p.weight))
+                    .ok_or(StrategyError::WeightOverflow)?;
+
                 if total_weight == 0 {
                     return Err(StrategyError::ZeroTotalWeight);
                 }
@@ -98,7 +103,13 @@ impl StrategyState {
                     return Err(StrategyError::EmptyProviderList);
                 }
 
-                let index = self.round_robin_counter.fetch_add(1, Ordering::Relaxed);
+                // Use wrapping_add with AcqRel ordering for thread safety
+                let index = self
+                    .round_robin_counter
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |x| {
+                        Some(x.wrapping_add(1))
+                    })
+                    .unwrap();
                 let provider_index = index % providers.len();
                 Ok(providers[provider_index].clone())
             }
@@ -136,21 +147,31 @@ impl WeightedRoundRobinState {
             return Err(StrategyError::EmptyProviderList);
         }
 
-        // Calculate total weight
-        let total_weight: u32 = providers.iter().map(|p| p.weight).sum();
+        // Calculate total weight with overflow protection
+        let total_weight = providers
+            .iter()
+            .try_fold(0u32, |acc, p| acc.checked_add(p.weight))
+            .ok_or(StrategyError::WeightOverflow)?;
+
         if total_weight == 0 {
             return Err(StrategyError::ZeroTotalWeight);
         }
 
-        // Get current position and increment
-        let position = self.current_position.fetch_add(1, Ordering::Relaxed);
+        // Get current position and increment with wrapping and proper ordering
+        let position = self
+            .current_position
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |x| {
+                Some(x.wrapping_add(1))
+            })
+            .unwrap();
 
         // Map position to provider based on cumulative weights
         let normalized_position = (position % total_weight as usize) as u32;
         let mut cumulative_weight = 0u32;
 
         for provider in providers {
-            cumulative_weight += provider.weight;
+            // Use saturating_add to prevent overflow in cumulative weight
+            cumulative_weight = cumulative_weight.saturating_add(provider.weight);
             if normalized_position < cumulative_weight {
                 return Ok(provider.id.clone());
             }
@@ -169,6 +190,9 @@ pub enum StrategyError {
 
     #[error("Total weight cannot be zero")]
     ZeroTotalWeight,
+
+    #[error("Weight overflow: total weight exceeds maximum allowed value")]
+    WeightOverflow,
 }
 
 #[cfg(test)]
@@ -353,4 +377,167 @@ mod tests {
         assert!(yaml.contains("weighted-round-robin"));
         assert!(yaml.contains("weight: 70"));
     }
+
+    #[test]
+    fn test_weight_overflow_protection() {
+        // Test that weight overflow is detected during validation
+        let strategy = RoutingStrategy::WeightedRoundRobin {
+            providers: vec![
+                WeightedProvider {
+                    id: "p1".to_string(),
+                    weight: u32::MAX,
+                },
+                WeightedProvider {
+                    id: "p2".to_string(),
+                    weight: 1,
+                },
+            ],
+        };
+
+        // Validation should fail due to overflow
+        let result = strategy.validate();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StrategyError::WeightOverflow));
+    }
+
+    #[test]
+    fn test_weight_overflow_during_selection() {
+        // Test that overflow is handled during provider selection
+        let state = StrategyState::new();
+        let providers = vec![
+            WeightedProvider {
+                id: "p1".to_string(),
+                weight: u32::MAX / 2,
+            },
+            WeightedProvider {
+                id: "p2".to_string(),
+                weight: u32::MAX / 2 + 2, // This will cause overflow
+            },
+        ];
+
+        let strategy = RoutingStrategy::WeightedRoundRobin { providers };
+
+        // Selection should fail due to overflow
+        let result = state.select_provider(&strategy);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StrategyError::WeightOverflow));
+    }
+
+    #[test]
+    fn test_round_robin_counter_wrapping() {
+        // Test that counter wraps correctly at overflow
+        let strategy = RoutingStrategy::RoundRobin {
+            providers: vec!["p1".to_string(), "p2".to_string()],
+        };
+
+        let state = StrategyState {
+            round_robin_counter: std::sync::atomic::AtomicUsize::new(usize::MAX - 1),
+            weighted_state: Arc::new(WeightedRoundRobinState::new()),
+        };
+
+        // Should not panic even when wrapping
+        let result1 = state.select_provider(&strategy);
+        assert!(result1.is_ok());
+
+        let result2 = state.select_provider(&strategy);
+        assert!(result2.is_ok());
+
+        // After wrapping, should still distribute correctly
+        let result3 = state.select_provider(&strategy);
+        assert!(result3.is_ok());
+    }
+
+    #[test]
+    fn test_single_provider_with_max_weight() {
+        // Edge case: single provider with maximum weight
+        let strategy = RoutingStrategy::WeightedRoundRobin {
+            providers: vec![WeightedProvider {
+                id: "only".to_string(),
+                weight: u32::MAX,
+            }],
+        };
+
+        // Should validate successfully
+        assert!(strategy.validate().is_ok());
+
+        let state = StrategyState::new();
+
+        // Should always select the only provider
+        for _ in 0..10 {
+            let result = state.select_provider(&strategy).unwrap();
+            assert_eq!(result, "only");
+        }
+    }
+
+    #[test]
+    fn test_many_providers_edge_case() {
+        // Test with many providers to ensure no performance issues
+        let providers: Vec<String> = (0..100).map(|i| format!("p{}", i)).collect();
+
+        let strategy = RoutingStrategy::RoundRobin {
+            providers: providers.clone(),
+        };
+
+        assert!(strategy.validate().is_ok());
+
+        let state = StrategyState::new();
+
+        // Should cycle through all providers
+        for i in 0..200 {
+            let result = state.select_provider(&strategy).unwrap();
+            assert_eq!(result, providers[i % 100]);
+        }
+    }
+
+    #[test]
+    fn test_weighted_zero_weight_handled() {
+        // Although zero weights should be caught by validation,
+        // test that the algorithm doesn't panic
+        let providers = vec![
+            WeightedProvider {
+                id: "p1".to_string(),
+                weight: 0,
+            },
+        ];
+
+        let strategy = RoutingStrategy::WeightedRoundRobin { providers };
+
+        // Should fail validation
+        assert!(strategy.validate().is_err());
+    }
+
+    #[test]
+    fn test_concurrent_strategy_state_access() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let strategy = Arc::new(RoutingStrategy::RoundRobin {
+            providers: vec!["p1".to_string(), "p2".to_string(), "p3".to_string()],
+        });
+        let state = Arc::new(StrategyState::new());
+
+        let mut handles = vec![];
+
+        // Spawn 10 threads, each selecting 100 providers
+        for _ in 0..10 {
+            let strategy_clone = strategy.clone();
+            let state_clone = state.clone();
+
+            let handle = thread::spawn(move || {
+                for _ in 0..100 {
+                    let _ = state_clone.select_provider(&strategy_clone);
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Total selections should be 1000, counter should reflect that
+        // (though with wrapping, just verify no panics occurred)
+    }
 }
+

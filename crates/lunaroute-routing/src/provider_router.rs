@@ -13,6 +13,7 @@ use crate::{
     strategy::StrategyState,
 };
 use async_trait::async_trait;
+use dashmap::DashMap;
 use lunaroute_core::{
     error::{Error, Result},
     normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
@@ -20,7 +21,6 @@ use lunaroute_core::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio_stream::Stream;
 
 /// Router that delegates to multiple providers based on routing rules
@@ -34,14 +34,14 @@ pub struct Router {
     /// Health monitor for all providers
     health_monitor: Arc<HealthMonitor>,
 
-    /// Circuit breakers per provider
-    circuit_breakers: RwLock<HashMap<String, Arc<CircuitBreaker>>>,
+    /// Circuit breakers per provider (uses DashMap for lock-free concurrent access)
+    circuit_breakers: DashMap<String, Arc<CircuitBreaker>>,
 
     /// Default circuit breaker config for new providers
     circuit_breaker_config: CircuitBreakerConfig,
 
-    /// Strategy state for routing strategies (round-robin counters, etc.)
-    strategy_states: RwLock<HashMap<String, Arc<StrategyState>>>,
+    /// Strategy state for routing strategies (uses DashMap for lock-free concurrent access)
+    strategy_states: DashMap<String, Arc<StrategyState>>,
 }
 
 impl Router {
@@ -63,9 +63,9 @@ impl Router {
             route_table,
             providers,
             health_monitor,
-            circuit_breakers: RwLock::new(HashMap::new()),
+            circuit_breakers: DashMap::new(),
             circuit_breaker_config,
-            strategy_states: RwLock::new(HashMap::new()),
+            strategy_states: DashMap::new(),
         }
     }
 
@@ -92,51 +92,29 @@ impl Router {
         self.health_monitor.get_status(provider_id)
     }
 
-    /// Get or create circuit breaker for a provider
-    async fn get_circuit_breaker(&self, provider_id: &str) -> Arc<CircuitBreaker> {
-        let breakers = self.circuit_breakers.read().await;
-
-        if let Some(cb) = breakers.get(provider_id) {
-            return Arc::clone(cb);
-        }
-
-        drop(breakers);
-
-        // Create new circuit breaker
-        let cb = Arc::new(CircuitBreaker::new(self.circuit_breaker_config.clone()));
-
-        let mut breakers = self.circuit_breakers.write().await;
-        breakers.insert(provider_id.to_string(), Arc::clone(&cb));
-
-        cb
+    /// Get or create circuit breaker for a provider (lock-free with DashMap)
+    fn get_circuit_breaker(&self, provider_id: &str) -> Arc<CircuitBreaker> {
+        self.circuit_breakers
+            .entry(provider_id.to_string())
+            .or_insert_with(|| Arc::new(CircuitBreaker::new(self.circuit_breaker_config.clone())))
+            .clone()
     }
 
-    /// Get or create strategy state for a rule
-    async fn get_strategy_state(&self, rule_name: &str) -> Arc<StrategyState> {
-        let states = self.strategy_states.read().await;
-
-        if let Some(state) = states.get(rule_name) {
-            return Arc::clone(state);
-        }
-
-        drop(states);
-
-        // Create new strategy state
-        let state = Arc::new(StrategyState::new());
-
-        let mut states = self.strategy_states.write().await;
-        states.insert(rule_name.to_string(), Arc::clone(&state));
-
-        state
+    /// Get or create strategy state for a rule (lock-free with DashMap)
+    fn get_strategy_state(&self, rule_name: &str) -> Arc<StrategyState> {
+        self.strategy_states
+            .entry(rule_name.to_string())
+            .or_insert_with(|| Arc::new(StrategyState::new()))
+            .clone()
     }
 
     /// Select provider using strategy
-    async fn select_provider_from_strategy(
+    fn select_provider_from_strategy(
         &self,
         strategy: &crate::strategy::RoutingStrategy,
         rule_name: &str,
     ) -> Result<String> {
-        let state = self.get_strategy_state(rule_name).await;
+        let state = self.get_strategy_state(rule_name);
         state
             .select_provider(strategy)
             .map_err(|e| Error::Provider(format!("Strategy selection failed: {}", e)))
@@ -148,7 +126,7 @@ impl Router {
         provider_id: &str,
         request: &NormalizedRequest,
     ) -> Result<NormalizedResponse> {
-        let circuit_breaker = self.get_circuit_breaker(provider_id).await;
+        let circuit_breaker = self.get_circuit_breaker(provider_id);
 
         // Check circuit breaker
         if !circuit_breaker.allow_request() {
@@ -221,8 +199,7 @@ impl Provider for Router {
         let primary_provider = if let Some(strategy) = &decision.strategy {
             let rule_name = decision.matched_rule.as_deref().unwrap_or("unknown");
             let selected = self
-                .select_provider_from_strategy(strategy, rule_name)
-                .await?;
+                .select_provider_from_strategy(strategy, rule_name)?;
 
             tracing::info!(
                 model = %request.model,
@@ -304,8 +281,7 @@ impl Provider for Router {
         let primary_provider = if let Some(strategy) = &decision.strategy {
             let rule_name = decision.matched_rule.as_deref().unwrap_or("unknown");
             let selected = self
-                .select_provider_from_strategy(strategy, rule_name)
-                .await?;
+                .select_provider_from_strategy(strategy, rule_name)?;
 
             tracing::info!(
                 model = %request.model,
@@ -334,7 +310,7 @@ impl Provider for Router {
 
         // For streaming, we'll try primary/selected first, then fallbacks
         // Note: Circuit breaker check for streaming
-        let circuit_breaker = self.get_circuit_breaker(&primary_provider).await;
+        let circuit_breaker = self.get_circuit_breaker(&primary_provider);
 
         if !circuit_breaker.allow_request() {
             tracing::warn!(
@@ -345,7 +321,7 @@ impl Provider for Router {
 
             // Try fallbacks for streaming
             for fallback in &decision.fallbacks {
-                let fallback_cb = self.get_circuit_breaker(fallback).await;
+                let fallback_cb = self.get_circuit_breaker(fallback);
                 if fallback_cb.allow_request() {
                     let provider = self.providers.get(fallback).ok_or_else(|| {
                         Error::Provider(format!("Fallback provider '{}' not found", fallback))
