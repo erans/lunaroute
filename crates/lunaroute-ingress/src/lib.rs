@@ -7,6 +7,7 @@
 pub mod anthropic;
 pub mod middleware;
 pub mod openai;
+pub mod streaming_metrics;
 pub mod types;
 
 pub use middleware::CorsConfig;

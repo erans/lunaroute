@@ -28,12 +28,6 @@ use uuid::Uuid;
 /// Maximum size for tool arguments (1MB)
 const MAX_TOOL_ARGS_SIZE: usize = 1_000_000;
 
-/// Maximum number of chunk latencies to track in streaming requests (prevent OOM)
-const MAX_CHUNK_LATENCIES: usize = 10_000;
-
-/// Maximum accumulated text size in streaming requests (1MB, prevent OOM)
-const MAX_ACCUMULATED_TEXT_BYTES: usize = 1_000_000;
-
 /// Validate tool parameter schema (must be valid JSON Schema)
 fn validate_tool_schema(schema: &serde_json::Value, tool_name: &str) -> IngressResult<()> {
     // Ensure it's a valid JSON Schema object
@@ -860,31 +854,18 @@ pub async fn chat_completions_passthrough(
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
-        // Track streaming metrics
+        // Track streaming metrics using shared module
         use futures::StreamExt;
-        use std::sync::{Arc as StdArc, Mutex as StdMutex};
+        use crate::streaming_metrics::StreamingMetricsTracker;
 
-        // State for tracking streaming metrics
-        let ttft_time: StdArc<StdMutex<Option<std::time::Instant>>> = StdArc::new(StdMutex::new(None));
-        let chunk_count = StdArc::new(StdMutex::new(0u32));
-        let chunk_latencies: StdArc<StdMutex<Vec<u64>>> = StdArc::new(StdMutex::new(Vec::new()));
-        let last_chunk_time: StdArc<StdMutex<std::time::Instant>> = StdArc::new(StdMutex::new(before_provider));
-        let accumulated_text = StdArc::new(StdMutex::new(String::new()));
-        let stream_model = StdArc::new(StdMutex::new(None::<String>));
-        let stream_finish_reason = StdArc::new(StdMutex::new(None::<String>));
+        let tracker = StreamingMetricsTracker::new(before_provider);
+        let tracker_clone = std::sync::Arc::new(tracker);
+        let tracker_ref = tracker_clone.clone();
+        let metrics_clone = state.metrics.clone();
+        let model_name_clone = model.clone();
 
         let byte_stream = stream_response.bytes_stream();
         let sse_stream = eventsource_stream::EventStream::new(byte_stream);
-
-        let ttft_clone = ttft_time.clone();
-        let chunk_count_clone = chunk_count.clone();
-        let latencies_clone = chunk_latencies.clone();
-        let last_chunk_clone = last_chunk_time.clone();
-        let text_clone = accumulated_text.clone();
-        let model_clone = stream_model.clone();
-        let finish_reason_clone = stream_finish_reason.clone();
-        let metrics_clone = state.metrics.clone();
-        let model_name_clone = model.clone(); // Clone for use in tracked_stream
 
         let tracked_stream = sse_stream.map(move |event_result| {
             match event_result {
@@ -892,51 +873,13 @@ pub async fn chat_completions_passthrough(
                     let now = std::time::Instant::now();
 
                     // Track TTFT on first chunk
-                    {
-                        if let Ok(mut ttft) = ttft_clone.lock() {
-                            if ttft.is_none() {
-                                *ttft = Some(now);
-                            }
-                        } else {
-                            tracing::error!("Streaming metrics: TTFT mutex poisoned");
-                        }
-                    }
+                    tracker_ref.record_ttft(now);
 
-                    // Track chunk latency (with bounds to prevent unbounded growth)
-                    {
-                        if let (Ok(mut last), Ok(mut latencies)) = (
-                            last_chunk_clone.lock(),
-                            latencies_clone.lock()
-                        ) {
-                            let latency = now.duration_since(*last).as_millis() as u64;
-                            // Cap latency array to prevent OOM
-                            if latencies.len() < MAX_CHUNK_LATENCIES {
-                                latencies.push(latency);
-                            } else if latencies.len() == MAX_CHUNK_LATENCIES {
-                                // Log once when limit is first reached
-                                tracing::warn!(
-                                    "Chunk latency array reached maximum size ({} entries), dropping further measurements",
-                                    MAX_CHUNK_LATENCIES
-                                );
-                                // Record metrics for memory bound hit
-                                if let Some(metrics) = &metrics_clone {
-                                    metrics.record_memory_bound_hit("openai", &model_name_clone, "latency_array");
-                                }
-                            }
-                            *last = now;
-                        } else {
-                            tracing::error!("Streaming metrics: latency tracking mutex poisoned");
-                        }
-                    }
+                    // Track chunk latency
+                    let _ = tracker_ref.record_chunk_latency(now, "openai", &model_name_clone, &metrics_clone);
 
                     // Increment chunk count
-                    {
-                        if let Ok(mut count) = chunk_count_clone.lock() {
-                            *count += 1;
-                        } else {
-                            tracing::error!("Streaming metrics: chunk count mutex poisoned");
-                        }
-                    }
+                    tracker_ref.increment_chunk_count();
 
                     // Parse event data once to avoid double parsing
                     let parsed_data = match serde_json::from_str::<serde_json::Value>(&event.data) {
@@ -949,43 +892,26 @@ pub async fn chat_completions_passthrough(
                         }
                     };
 
-                    // Extract text deltas from choices (with size limit to prevent OOM)
+                    // Extract text deltas from choices
                     if let Some(choices) = parsed_data.get("choices").and_then(|c| c.as_array())
                         && let Some(first_choice) = choices.first()
                         && let Some(delta) = first_choice.get("delta")
                         && let Some(content) = delta.get("content").and_then(|c| c.as_str())
-                        && let Ok(mut accumulated) = text_clone.lock()
                     {
-                        // Cap accumulated text to prevent OOM
-                        if accumulated.len() + content.len() <= MAX_ACCUMULATED_TEXT_BYTES {
-                            accumulated.push_str(content);
-                        } else if accumulated.len() < MAX_ACCUMULATED_TEXT_BYTES {
-                            // Log once when limit is first reached
-                            tracing::warn!(
-                                "Accumulated text reached maximum size ({} bytes), dropping further content",
-                                MAX_ACCUMULATED_TEXT_BYTES
-                            );
-                            // Record metrics for memory bound hit
-                            if let Some(metrics) = &metrics_clone {
-                                metrics.record_memory_bound_hit("openai", &model_name_clone, "text_buffer");
-                            }
-                        }
+                        tracker_ref.accumulate_text(content, "openai", &model_name_clone, &metrics_clone);
                     }
 
                     // Extract model from chunk
-                    if let Some(model_str) = parsed_data.get("model").and_then(|m| m.as_str())
-                        && let Ok(mut model) = model_clone.lock()
-                    {
-                        *model = Some(model_str.to_string());
+                    if let Some(model_str) = parsed_data.get("model").and_then(|m| m.as_str()) {
+                        tracker_ref.set_model(model_str.to_string());
                     }
 
                     // Extract finish reason from choices
                     if let Some(choices) = parsed_data.get("choices").and_then(|c| c.as_array())
                         && let Some(first_choice) = choices.first()
                         && let Some(reason) = first_choice.get("finish_reason").and_then(|r| r.as_str())
-                        && let Ok(mut finish) = finish_reason_clone.lock()
                     {
-                        *finish = Some(reason.to_string());
+                        tracker_ref.set_finish_reason(reason.to_string());
                     }
 
                     // Forward the parsed event
@@ -1004,114 +930,48 @@ pub async fn chat_completions_passthrough(
         let request_id_clone = recording_request_id.clone();
         let start_clone = start_time;
         let before_provider_clone = before_provider;
+        let metrics_for_finalize = state.metrics.clone();
+        let model_for_finalize = model.clone();
 
         let completion_stream = tracked_stream.chain(futures::stream::once(async move {
+            // Finalize metrics using shared module
+            let finalized = tracker_clone.finalize(start_clone, before_provider_clone);
+
+            // Record to Prometheus
+            finalized.record_to_prometheus(&metrics_for_finalize, "openai", &model_for_finalize);
+
             // Record StreamStarted and Completed events after stream ends
             if let (Some(recorder), Some(session_id), Some(request_id)) =
                 (recorder_clone.as_ref(), session_id_clone.as_ref(), request_id_clone.as_ref())
             {
-                use lunaroute_session::{SessionEvent, events::{StreamingStats, FinalSessionStats, TokenTotals, ToolUsageSummary, PerformanceMetrics}};
-
-                // Calculate streaming metrics (handle poisoned mutexes gracefully)
-                let ttft_ms = ttft_time.lock()
-                    .ok()
-                    .and_then(|guard| *guard)
-                    .map(|ttft| ttft.duration_since(before_provider_clone).as_millis() as u64)
-                    .unwrap_or(0);
-
-                let total_chunks = chunk_count.lock().ok().map(|c| *c).unwrap_or(0);
-                let latencies = chunk_latencies.lock().ok().map(|l| l.clone()).unwrap_or_default();
-
-                // Calculate percentiles (safe index calculation to avoid out-of-bounds)
-                let (p50, p95, p99, max, min, avg) = if !latencies.is_empty() {
-                    let mut sorted = latencies.clone();
-                    sorted.sort_unstable();
-                    let len = sorted.len();
-
-                    // Safe percentile index calculation: clamp to valid range
-                    let p50_idx = ((len - 1) * 50 / 100).min(len - 1);
-                    let p95_idx = ((len - 1) * 95 / 100).min(len - 1);
-                    let p99_idx = ((len - 1) * 99 / 100).min(len - 1);
-
-                    let p50 = sorted[p50_idx];
-                    let p95 = sorted[p95_idx];
-                    let p99 = sorted[p99_idx];
-                    let max = sorted[len - 1];  // Safe: len > 0
-                    let min = sorted[0];        // Safe: len > 0
-                    let avg = (sorted.iter().sum::<u64>() as f64) / (len as f64);
-
-                    (Some(p50), Some(p95), Some(p99), max, min, avg)
-                } else {
-                    (None, None, None, 0, 0, 0.0)
-                };
-
-                let total_duration_ms = start_clone.elapsed().as_millis() as u64;
-                let streaming_duration_ms = total_duration_ms.saturating_sub(ttft_ms);
-
-                // Record Prometheus metrics for streaming
-                if let Some(metrics) = &state.metrics {
-                    metrics.record_streaming_request(
-                        "openai",
-                        &model,
-                        ttft_ms as f64 / 1000.0, // Convert to seconds
-                        total_chunks,
-                        streaming_duration_ms as f64 / 1000.0, // Convert to seconds
-                    );
-
-                    // Record individual chunk latencies (sample to avoid overwhelming Prometheus)
-                    // Sample every 10th latency for very long streams
-                    let sample_rate = if latencies.len() > 100 { 10 } else { 1 };
-                    for (i, &latency_ms) in latencies.iter().enumerate() {
-                        if i % sample_rate == 0 {
-                            metrics.record_chunk_latency(
-                                "openai",
-                                &model,
-                                latency_ms as f64 / 1000.0, // Convert to seconds
-                            );
-                        }
-                    }
-                }
+                use lunaroute_session::{SessionEvent, events::{FinalSessionStats, TokenTotals, ToolUsageSummary, PerformanceMetrics}};
 
                 // Record StreamStarted event
-                if ttft_ms > 0 {
+                if finalized.ttft_ms > 0 {
                     recorder.record_event(SessionEvent::StreamStarted {
                         session_id: session_id.clone(),
                         request_id: request_id.clone(),
                         timestamp: chrono::Utc::now(),
-                        time_to_first_token_ms: ttft_ms,
+                        time_to_first_token_ms: finalized.ttft_ms,
                     });
                 }
 
                 // Record Completed event with streaming_stats
-                let finish_reason = stream_finish_reason.lock()
-                    .ok()
-                    .and_then(|f| f.clone());
-
                 recorder.record_event(SessionEvent::Completed {
                     session_id: session_id.clone(),
                     request_id: request_id.clone(),
                     timestamp: chrono::Utc::now(),
                     success: true,
                     error: None,
-                    finish_reason,
+                    finish_reason: finalized.finish_reason.clone(),
                     final_stats: Box::new(FinalSessionStats {
-                        total_duration_ms,
-                        provider_time_ms: total_duration_ms, // Entire duration is provider time in streaming
+                        total_duration_ms: finalized.total_duration_ms,
+                        provider_time_ms: finalized.total_duration_ms, // Entire duration is provider time in streaming
                         proxy_overhead_ms: 0.0, // Minimal overhead in passthrough mode
                         total_tokens: TokenTotals::default(), // Tokens not available in passthrough streaming
                         tool_summary: ToolUsageSummary::default(),
                         performance: PerformanceMetrics::default(),
-                        streaming_stats: Some(StreamingStats {
-                            time_to_first_token_ms: ttft_ms,
-                            total_chunks,
-                            streaming_duration_ms,
-                            avg_chunk_latency_ms: avg,
-                            p50_chunk_latency_ms: p50,
-                            p95_chunk_latency_ms: p95,
-                            p99_chunk_latency_ms: p99,
-                            max_chunk_latency_ms: max,
-                            min_chunk_latency_ms: min,
-                        }),
+                        streaming_stats: Some(finalized.to_streaming_stats()),
                         estimated_cost: None,
                     }),
                 });
