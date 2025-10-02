@@ -224,9 +224,86 @@ pub struct SessionAggregates {
 }
 
 impl SessionFilter {
+    /// Maximum length for text search queries to prevent memory exhaustion
+    const MAX_TEXT_SEARCH_LEN: usize = 1000;
+
+    /// Maximum number of items in filter arrays to prevent DOS
+    const MAX_FILTER_ARRAY_LEN: usize = 100;
+
+    /// Maximum length for individual string elements (IPs, IDs, etc)
+    const MAX_STRING_LEN: usize = 256;
+
+    /// Base maximum page size for simple queries
+    const MAX_PAGE_SIZE_BASE: usize = 1000;
+
+    /// Reduced page size for moderate complexity queries
+    const MAX_PAGE_SIZE_MODERATE: usize = 500;
+
+    /// Minimum page size for high complexity queries
+    const MAX_PAGE_SIZE_COMPLEX: usize = 100;
+
     /// Create a new filter builder
     pub fn builder() -> SessionFilterBuilder {
         SessionFilterBuilder::default()
+    }
+
+    /// Calculate query complexity score based on active filters
+    ///
+    /// Higher scores indicate more complex queries that should have smaller page sizes
+    fn query_complexity(&self) -> u32 {
+        let mut score = 0;
+
+        // Text search is expensive (LIKE queries)
+        if self.text_search.is_some() {
+            score += 3;
+        }
+
+        // Time range queries are relatively cheap
+        if self.time_range.is_some() {
+            score += 1;
+        }
+
+        // Array filters (IN clauses) add complexity based on size
+        score += (self.providers.len() / 10) as u32; // +1 per 10 items
+        score += (self.models.len() / 10) as u32;
+        score += (self.request_ids.len() / 10) as u32;
+        score += (self.session_ids.len() / 10) as u32;
+        score += (self.client_ips.len() / 10) as u32;
+        score += (self.finish_reasons.len() / 10) as u32;
+
+        // Boolean filters are cheap
+        if self.success.is_some() {
+            score += 1;
+        }
+        if self.is_streaming.is_some() {
+            score += 1;
+        }
+
+        // Range filters are cheap
+        if self.min_tokens.is_some() || self.max_tokens.is_some() {
+            score += 1;
+        }
+        if self.min_duration_ms.is_some() || self.max_duration_ms.is_some() {
+            score += 1;
+        }
+
+        score
+    }
+
+    /// Get the maximum allowed page size for this query based on complexity
+    fn max_page_size_for_query(&self) -> usize {
+        let complexity = self.query_complexity();
+
+        if complexity <= 1 {
+            // Simple query: single filter or no filters
+            Self::MAX_PAGE_SIZE_BASE
+        } else if complexity <= 5 {
+            // Moderate complexity: text search or multiple filters
+            Self::MAX_PAGE_SIZE_MODERATE
+        } else {
+            // High complexity: text search + multiple large arrays
+            Self::MAX_PAGE_SIZE_COMPLEX
+        }
     }
 
     /// Validate the filter parameters
@@ -235,6 +312,22 @@ impl SessionFilter {
             if time_range.start > time_range.end {
                 return Err("start time must be before end time".to_string());
             }
+
+            // Validate timestamps are reasonable (within 10 years past/future)
+            let now = Utc::now();
+            let ten_years_ago = now - chrono::Duration::days(3650);
+            let ten_years_future = now + chrono::Duration::days(3650);
+
+            if time_range.start < ten_years_ago {
+                return Err("start time is too far in the past (> 10 years)".to_string());
+            }
+
+            if time_range.end > ten_years_future {
+                return Err("end time is too far in the future (> 10 years)".to_string());
+            }
+
+            // Note: DateTime<Utc> enforces UTC timezone at the type level,
+            // so no additional runtime validation is needed for timezone correctness
         }
 
         if let (Some(min), Some(max)) = (self.min_tokens, self.max_tokens) {
@@ -253,8 +346,121 @@ impl SessionFilter {
             return Err("page_size must be greater than 0".to_string());
         }
 
-        if self.page_size > 1000 {
-            return Err("page_size cannot exceed 1000".to_string());
+        // Apply progressive page size limits based on query complexity
+        let max_page_size = self.max_page_size_for_query();
+        if self.page_size > max_page_size {
+            return Err(format!(
+                "page_size {} exceeds maximum {} for this query complexity (reduce filters or page size)",
+                self.page_size, max_page_size
+            ));
+        }
+
+        // Validate text search length to prevent memory exhaustion
+        if let Some(ref text_search) = self.text_search {
+            if text_search.len() > Self::MAX_TEXT_SEARCH_LEN {
+                return Err(format!(
+                    "text_search exceeds maximum length of {}",
+                    Self::MAX_TEXT_SEARCH_LEN
+                ));
+            }
+        }
+
+        // Validate array lengths to prevent DOS via large IN clauses
+        if self.providers.len() > Self::MAX_FILTER_ARRAY_LEN {
+            return Err(format!(
+                "providers array exceeds maximum length of {}",
+                Self::MAX_FILTER_ARRAY_LEN
+            ));
+        }
+
+        if self.models.len() > Self::MAX_FILTER_ARRAY_LEN {
+            return Err(format!(
+                "models array exceeds maximum length of {}",
+                Self::MAX_FILTER_ARRAY_LEN
+            ));
+        }
+
+        if self.request_ids.len() > Self::MAX_FILTER_ARRAY_LEN {
+            return Err(format!(
+                "request_ids array exceeds maximum length of {}",
+                Self::MAX_FILTER_ARRAY_LEN
+            ));
+        }
+
+        if self.session_ids.len() > Self::MAX_FILTER_ARRAY_LEN {
+            return Err(format!(
+                "session_ids array exceeds maximum length of {}",
+                Self::MAX_FILTER_ARRAY_LEN
+            ));
+        }
+
+        if self.client_ips.len() > Self::MAX_FILTER_ARRAY_LEN {
+            return Err(format!(
+                "client_ips array exceeds maximum length of {}",
+                Self::MAX_FILTER_ARRAY_LEN
+            ));
+        }
+
+        if self.finish_reasons.len() > Self::MAX_FILTER_ARRAY_LEN {
+            return Err(format!(
+                "finish_reasons array exceeds maximum length of {}",
+                Self::MAX_FILTER_ARRAY_LEN
+            ));
+        }
+
+        // Validate individual string lengths in arrays
+        for provider in &self.providers {
+            if provider.len() > Self::MAX_STRING_LEN {
+                return Err(format!(
+                    "provider name exceeds maximum length of {}",
+                    Self::MAX_STRING_LEN
+                ));
+            }
+        }
+
+        for model in &self.models {
+            if model.len() > Self::MAX_STRING_LEN {
+                return Err(format!(
+                    "model name exceeds maximum length of {}",
+                    Self::MAX_STRING_LEN
+                ));
+            }
+        }
+
+        for id in &self.request_ids {
+            if id.len() > Self::MAX_STRING_LEN {
+                return Err(format!(
+                    "request_id exceeds maximum length of {}",
+                    Self::MAX_STRING_LEN
+                ));
+            }
+        }
+
+        for id in &self.session_ids {
+            if id.len() > Self::MAX_STRING_LEN {
+                return Err(format!(
+                    "session_id exceeds maximum length of {}",
+                    Self::MAX_STRING_LEN
+                ));
+            }
+        }
+
+        for ip in &self.client_ips {
+            if ip.len() > Self::MAX_STRING_LEN {
+                return Err(format!(
+                    "client_ip exceeds maximum length of {}",
+                    Self::MAX_STRING_LEN
+                ));
+            }
+        }
+
+        for reason in &self.finish_reasons {
+            if reason.len() > Self::MAX_STRING_LEN {
+                return Err(format!(
+                    "finish_reason exceeds maximum length of {}",
+                    Self::MAX_STRING_LEN
+                ));
+            }
         }
 
         Ok(())
@@ -396,6 +602,60 @@ mod tests {
     }
 
     #[test]
+    fn test_session_filter_validation_time_range_boundaries() {
+        let now = Utc::now();
+
+        // Valid: recent time range
+        let hour_ago = now - chrono::Duration::hours(1);
+        let result = SessionFilter::builder()
+            .time_range(hour_ago, now)
+            .build();
+        assert!(result.is_ok());
+
+        // Invalid: start time too far in past (> 10 years)
+        let eleven_years_ago = now - chrono::Duration::days(11 * 365);
+        let result = SessionFilter::builder()
+            .time_range(eleven_years_ago, now)
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too far in the past"));
+
+        // Invalid: end time too far in future (> 10 years)
+        let eleven_years_future = now + chrono::Duration::days(11 * 365);
+        let result = SessionFilter::builder()
+            .time_range(now, eleven_years_future)
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too far in the future"));
+
+        // Valid: exactly at boundaries (9.5 years)
+        let nine_years_ago = now - chrono::Duration::days(9 * 365 + 180);
+        let nine_years_future = now + chrono::Duration::days(9 * 365 + 180);
+        let result = SessionFilter::builder()
+            .time_range(nine_years_ago, nine_years_future)
+            .build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_session_filter_timezone_validation() {
+        // DateTime<Utc> enforces UTC timezone at type level
+        // This test verifies that UTC times work correctly
+        let now = Utc::now();
+        let hour_ago = now - chrono::Duration::hours(1);
+
+        let result = SessionFilter::builder()
+            .time_range(hour_ago, now)
+            .build();
+
+        assert!(result.is_ok());
+
+        // DateTime<Utc> type guarantees UTC timezone by construction
+        let filter = result.unwrap();
+        assert!(filter.time_range.is_some());
+    }
+
+    #[test]
     fn test_session_filter_validation_tokens() {
         let result = SessionFilter::builder()
             .min_tokens(100)
@@ -412,12 +672,118 @@ mod tests {
             .build();
 
         assert!(result.is_err());
+        assert!(result.unwrap_err().contains("page_size must be greater than 0"));
+    }
+
+    #[test]
+    fn test_progressive_page_size_limits_simple_query() {
+        // Simple query: no filters - allows max 1000
+        let result = SessionFilter::builder()
+            .page_size(1000)
+            .build();
+        assert!(result.is_ok());
 
         let result = SessionFilter::builder()
-            .page_size(2000)
+            .page_size(1001)
             .build();
-
         assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum"));
+
+        // Simple query: time range only - allows max 1000
+        let now = Utc::now();
+        let hour_ago = now - chrono::Duration::hours(1);
+        let result = SessionFilter::builder()
+            .time_range(hour_ago, now)
+            .page_size(1000)
+            .build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_progressive_page_size_limits_moderate_query() {
+        // Moderate query: text search reduces limit to 500
+        let result = SessionFilter::builder()
+            .text_search("test".to_string())
+            .page_size(500)
+            .build();
+        assert!(result.is_ok());
+
+        let result = SessionFilter::builder()
+            .text_search("test".to_string())
+            .page_size(501)
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum 500"));
+
+        // Moderate query: multiple filters
+        let result = SessionFilter::builder()
+            .providers(vec!["openai".to_string()])
+            .models(vec!["gpt-4".to_string()])
+            .success(true)
+            .min_tokens(100)
+            .page_size(500)
+            .build();
+        assert!(result.is_ok());
+
+        let result = SessionFilter::builder()
+            .providers(vec!["openai".to_string()])
+            .models(vec!["gpt-4".to_string()])
+            .success(true)
+            .min_tokens(100)
+            .page_size(501)
+            .build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_progressive_page_size_limits_complex_query() {
+        // Complex query: text search + large arrays reduces limit to 100
+        let result = SessionFilter::builder()
+            .text_search("test".to_string())
+            .providers(vec!["provider".to_string(); 50]) // Large array
+            .models(vec!["model".to_string(); 50]) // Large array
+            .page_size(100)
+            .build();
+        assert!(result.is_ok());
+
+        let result = SessionFilter::builder()
+            .text_search("test".to_string())
+            .providers(vec!["provider".to_string(); 50])
+            .models(vec!["model".to_string(); 50])
+            .page_size(101)
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum 100"));
+    }
+
+    #[test]
+    fn test_query_complexity_calculation() {
+        // Test that we can access complexity indirectly through validation
+        let filter = SessionFilter::default();
+        assert_eq!(filter.query_complexity(), 0); // No filters
+
+        let now = Utc::now();
+        let hour_ago = now - chrono::Duration::hours(1);
+        let filter = SessionFilter::builder()
+            .time_range(hour_ago, now)
+            .build()
+            .unwrap();
+        assert_eq!(filter.query_complexity(), 1); // Time range only
+
+        let filter = SessionFilter::builder()
+            .text_search("test".to_string())
+            .build()
+            .unwrap();
+        assert_eq!(filter.query_complexity(), 3); // Text search is expensive
+
+        let filter = SessionFilter::builder()
+            .text_search("test".to_string())
+            .providers(vec!["p".to_string(); 50])
+            .models(vec!["m".to_string(); 50])
+            .build()
+            .unwrap();
+        // 3 (text) + 5 (providers/10) + 5 (models/10) = 13
+        assert!(filter.query_complexity() >= 10); // High complexity
     }
 
     #[test]
@@ -453,5 +819,123 @@ mod tests {
 
         assert!(!results.has_next_page());
         assert!(results.has_prev_page());
+    }
+
+    #[test]
+    fn test_session_filter_validation_text_search_length() {
+        // Valid text search
+        let result = SessionFilter::builder()
+            .text_search("a".repeat(1000))
+            .build();
+        assert!(result.is_ok());
+
+        // Text search exceeds max length
+        let result = SessionFilter::builder()
+            .text_search("a".repeat(1001))
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("text_search exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_session_filter_validation_array_lengths() {
+        // Valid array length
+        let result = SessionFilter::builder()
+            .providers(vec!["provider".to_string(); 100])
+            .build();
+        assert!(result.is_ok());
+
+        // Providers array exceeds max length
+        let result = SessionFilter::builder()
+            .providers(vec!["provider".to_string(); 101])
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("providers array exceeds maximum length"));
+
+        // Models array exceeds max length
+        let result = SessionFilter::builder()
+            .models(vec!["model".to_string(); 101])
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("models array exceeds maximum length"));
+
+        // Request IDs array exceeds max length
+        let result = SessionFilter::builder()
+            .request_ids(vec!["id".to_string(); 101])
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("request_ids array exceeds maximum length"));
+
+        // Session IDs array exceeds max length
+        let result = SessionFilter::builder()
+            .session_ids(vec!["id".to_string(); 101])
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("session_ids array exceeds maximum length"));
+
+        // Client IPs array exceeds max length
+        let result = SessionFilter::builder()
+            .client_ips(vec!["127.0.0.1".to_string(); 101])
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("client_ips array exceeds maximum length"));
+
+        // Finish reasons array exceeds max length
+        let result = SessionFilter::builder()
+            .finish_reasons(vec!["stop".to_string(); 101])
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("finish_reasons array exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_session_filter_validation_string_element_lengths() {
+        // Valid string lengths
+        let result = SessionFilter::builder()
+            .providers(vec!["a".repeat(256)])
+            .build();
+        assert!(result.is_ok());
+
+        // Provider name exceeds max length
+        let result = SessionFilter::builder()
+            .providers(vec!["a".repeat(257)])
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("provider name exceeds maximum length"));
+
+        // Model name exceeds max length
+        let result = SessionFilter::builder()
+            .models(vec!["a".repeat(257)])
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("model name exceeds maximum length"));
+
+        // Request ID exceeds max length
+        let result = SessionFilter::builder()
+            .request_ids(vec!["a".repeat(257)])
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("request_id exceeds maximum length"));
+
+        // Session ID exceeds max length
+        let result = SessionFilter::builder()
+            .session_ids(vec!["a".repeat(257)])
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("session_id exceeds maximum length"));
+
+        // Client IP exceeds max length
+        let result = SessionFilter::builder()
+            .client_ips(vec!["a".repeat(257)])
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("client_ip exceeds maximum length"));
+
+        // Finish reason exceeds max length
+        let result = SessionFilter::builder()
+            .finish_reasons(vec!["a".repeat(257)])
+            .build();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("finish_reason exceeds maximum length"));
     }
 }

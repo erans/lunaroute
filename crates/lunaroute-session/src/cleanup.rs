@@ -52,6 +52,59 @@ pub struct DiskUsage {
     pub compressed_count: u64,
 }
 
+/// Validate that a directory name matches the expected YYYY-MM-DD format
+///
+/// This prevents path traversal attacks by ensuring date directories follow
+/// the expected pattern and don't contain special path components like ".." or "."
+fn is_valid_date_directory(name: &str) -> bool {
+    // Must be exactly 10 characters
+    if name.len() != 10 {
+        return false;
+    }
+
+    let bytes = name.as_bytes();
+
+    // Check format: YYYY-MM-DD
+    // Year: 4 digits
+    if !bytes[0].is_ascii_digit()
+        || !bytes[1].is_ascii_digit()
+        || !bytes[2].is_ascii_digit()
+        || !bytes[3].is_ascii_digit()
+    {
+        return false;
+    }
+
+    // First separator
+    if bytes[4] != b'-' {
+        return false;
+    }
+
+    // Month: 2 digits (01-12)
+    if !bytes[5].is_ascii_digit() || !bytes[6].is_ascii_digit() {
+        return false;
+    }
+    let month = (bytes[5] - b'0') * 10 + (bytes[6] - b'0');
+    if !(1..=12).contains(&month) {
+        return false;
+    }
+
+    // Second separator
+    if bytes[7] != b'-' {
+        return false;
+    }
+
+    // Day: 2 digits (01-31)
+    if !bytes[8].is_ascii_digit() || !bytes[9].is_ascii_digit() {
+        return false;
+    }
+    let day = (bytes[8] - b'0') * 10 + (bytes[9] - b'0');
+    if !(1..=31).contains(&day) {
+        return false;
+    }
+
+    true
+}
+
 /// Calculate disk usage for a session directory
 pub fn calculate_disk_usage(directory: &Path) -> CleanupResult<DiskUsage> {
     let mut usage = DiskUsage {
@@ -70,6 +123,17 @@ pub fn calculate_disk_usage(directory: &Path) -> CleanupResult<DiskUsage> {
         let path = entry.path();
 
         if path.is_dir() {
+            // Validate directory name to prevent path traversal
+            let dir_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| CleanupError::InvalidPath("Invalid directory name".to_string()))?;
+
+            if !is_valid_date_directory(dir_name) {
+                tracing::warn!("Skipping invalid date directory: {}", dir_name);
+                continue;
+            }
+
             // Process all session files in this date directory
             for session_entry in fs::read_dir(&path)? {
                 let session_entry = session_entry?;
@@ -105,7 +169,8 @@ pub fn file_age_days(path: &Path) -> CleanupResult<u32> {
         .duration_since(modified)
         .map_err(|e| CleanupError::InvalidPath(format!("Invalid timestamp: {}", e)))?;
 
-    Ok((duration.as_secs() / 86400) as u32)
+    // Clamp to u32::MAX to prevent overflow with extreme timestamps
+    Ok((duration.as_secs() / 86400).min(u32::MAX as u64) as u32)
 }
 
 /// Compress a session file using zstd
@@ -199,6 +264,17 @@ pub fn execute_cleanup(
         let path = entry.path();
 
         if path.is_dir() {
+            // Validate directory name to prevent path traversal
+            let dir_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| CleanupError::InvalidPath("Invalid directory name".to_string()))?;
+
+            if !is_valid_date_directory(dir_name) {
+                tracing::warn!("Skipping invalid date directory during cleanup: {}", dir_name);
+                continue;
+            }
+
             for session_entry in fs::read_dir(&path)? {
                 let session_entry = session_entry?;
                 let session_path = session_entry.path();
@@ -751,5 +827,106 @@ mod tests {
         // Should not crash on non-session files
         let stats = execute_cleanup(temp_dir.path(), &policy).unwrap();
         assert_eq!(stats.sessions_deleted, 0);
+    }
+
+    #[test]
+    fn test_is_valid_date_directory() {
+        // Valid dates
+        assert!(is_valid_date_directory("2024-01-01"));
+        assert!(is_valid_date_directory("2024-12-31"));
+        assert!(is_valid_date_directory("2023-06-15"));
+        assert!(is_valid_date_directory("1999-01-01"));
+
+        // Invalid: wrong length
+        assert!(!is_valid_date_directory("2024-1-1"));
+        assert!(!is_valid_date_directory("2024-01-1"));
+        assert!(!is_valid_date_directory("24-01-01"));
+        assert!(!is_valid_date_directory("2024-01-01-extra"));
+
+        // Invalid: wrong separators
+        assert!(!is_valid_date_directory("2024/01/01"));
+        assert!(!is_valid_date_directory("2024.01.01"));
+        assert!(!is_valid_date_directory("20240101"));
+
+        // Invalid: month out of range
+        assert!(!is_valid_date_directory("2024-00-01"));
+        assert!(!is_valid_date_directory("2024-13-01"));
+        assert!(!is_valid_date_directory("2024-99-01"));
+
+        // Invalid: day out of range
+        assert!(!is_valid_date_directory("2024-01-00"));
+        assert!(!is_valid_date_directory("2024-01-32"));
+        assert!(!is_valid_date_directory("2024-01-99"));
+
+        // Invalid: path traversal attempts
+        assert!(!is_valid_date_directory(".."));
+        assert!(!is_valid_date_directory("."));
+        assert!(!is_valid_date_directory("../etc"));
+        assert!(!is_valid_date_directory("../../etc"));
+
+        // Invalid: other malicious patterns
+        assert!(!is_valid_date_directory(""));
+        assert!(!is_valid_date_directory("/etc/passwd"));
+        assert!(!is_valid_date_directory("C:\\Windows"));
+        assert!(!is_valid_date_directory("random-name"));
+    }
+
+    #[test]
+    fn test_cleanup_skips_invalid_directories() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create valid date directory with session
+        create_test_session(temp_dir.path(), "2024-01-01", "session1", 1000);
+
+        // Create invalid directories that should be skipped
+        fs::create_dir_all(temp_dir.path().join("invalid-dir")).unwrap();
+        fs::create_dir_all(temp_dir.path().join("..")).unwrap();
+        fs::create_dir_all(temp_dir.path().join("2024-99-99")).unwrap();
+
+        // Add files in invalid directories
+        let mut file = File::create(temp_dir.path().join("invalid-dir").join("session.jsonl")).unwrap();
+        file.write_all(b"should not be processed").unwrap();
+
+        let usage = calculate_disk_usage(temp_dir.path()).unwrap();
+
+        // Should only count the valid session
+        assert_eq!(usage.session_count, 1);
+        assert_eq!(usage.total_bytes, 1000);
+
+        let policy = RetentionPolicy {
+            max_age_days: None,
+            max_total_size_gb: None,
+            compress_after_days: None,
+            cleanup_interval_minutes: 60,
+        };
+
+        // Should not crash on invalid directories
+        let stats = execute_cleanup(temp_dir.path(), &policy).unwrap();
+        assert_eq!(stats.sessions_deleted, 0);
+    }
+
+    #[test]
+    fn test_path_traversal_prevention() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a valid session
+        create_test_session(temp_dir.path(), "2024-01-01", "session", 1000);
+
+        // Try to create a directory with path traversal pattern
+        // Note: The filesystem itself may prevent ".." from being created as a directory name,
+        // but our validation should catch it anyway
+        let traversal_attempts = vec!["../../../etc", "..", ".", "../../passwd"];
+
+        for attempt in traversal_attempts {
+            // Try to create directory (may fail on filesystem level)
+            let _ = fs::create_dir_all(temp_dir.path().join(attempt));
+        }
+
+        // Calculate disk usage - should not process any traversal directories
+        let usage = calculate_disk_usage(temp_dir.path()).unwrap();
+
+        // Should only see the valid session
+        assert_eq!(usage.session_count, 1);
+        assert_eq!(usage.total_bytes, 1000);
     }
 }

@@ -153,6 +153,12 @@ impl SqliteWriter {
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
+        // Index for time range queries (critical for performance)
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at DESC)")
+            .execute(pool)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
         // Session stats table
         sqlx::query(
             r#"
@@ -607,8 +613,13 @@ impl SqliteWriter {
         }
 
         if let Some(ref text_search) = filter.text_search {
-            conditions.push("(request_text LIKE ? OR response_text LIKE ?)".to_string());
-            let pattern = format!("%{}%", text_search);
+            conditions.push("(request_text LIKE ? ESCAPE '\\' OR response_text LIKE ? ESCAPE '\\')".to_string());
+            // Escape SQL LIKE metacharacters to prevent injection
+            let escaped = text_search
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            let pattern = format!("%{}%", escaped);
             bind_values.push(pattern.clone());
             bind_values.push(pattern);
         }
