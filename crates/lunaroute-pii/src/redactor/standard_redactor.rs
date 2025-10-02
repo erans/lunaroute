@@ -109,16 +109,14 @@ impl StandardRedactor {
                 } else {
                     // No HMAC key, fall back to mask
                     pattern
-                        .and_then(|p| p.placeholder.as_ref())
-                        .map(|s| s.clone())
+                        .and_then(|p| p.placeholder.as_ref()).cloned()
                         .unwrap_or_else(|| format!("[CUS:{}]", pattern_name))
                 }
             }
             Some(CustomRedactionMode::Mask) | None => {
                 // Use placeholder if provided, otherwise default to [CUS:name]
                 pattern
-                    .and_then(|p| p.placeholder.as_ref())
-                    .map(|s| s.clone())
+                    .and_then(|p| p.placeholder.as_ref()).cloned()
                     .unwrap_or_else(|| format!("[CUS:{}]", pattern_name))
             }
         }
@@ -510,8 +508,8 @@ mod tests {
         let text1 = "test@example.com";
         let text2 = "test@example.com";
 
-        let redacted1 = redactor.redact(text1, &[detection.clone()]);
-        let redacted2 = redactor.redact(text2, &[detection]);
+        let redacted1 = redactor.redact(text1, std::slice::from_ref(&detection));
+        let redacted2 = redactor.redact(text2, std::slice::from_ref(&detection));
 
         // Same email with same key should produce same token
         assert_eq!(redacted1, redacted2);
@@ -539,8 +537,8 @@ mod tests {
         let redactor1 = StandardRedactor::new(config1);
         let redactor2 = StandardRedactor::new(config2);
 
-        let redacted1 = redactor1.redact(text, &[detection.clone()]);
-        let redacted2 = redactor2.redact(text, &[detection]);
+        let redacted1 = redactor1.redact(text, std::slice::from_ref(&detection));
+        let redacted2 = redactor2.redact(text, std::slice::from_ref(&detection));
 
         // Different keys should produce different tokens
         assert_ne!(redacted1, redacted2);

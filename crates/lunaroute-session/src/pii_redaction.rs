@@ -150,11 +150,11 @@ impl SessionPIIRedactor {
             }
             NormalizedStreamEvent::ToolCallDelta { function, .. } => {
                 // Redact function arguments delta
-                if let Some(func) = function {
-                    if let Some(arguments) = &mut func.arguments {
-                        let detections = self.detector.detect(arguments);
-                        *arguments = self.redactor.redact(arguments, &detections);
-                    }
+                if let Some(func) = function
+                    && let Some(arguments) = &mut func.arguments
+                {
+                    let detections = self.detector.detect(arguments);
+                    *arguments = self.redactor.redact(arguments, &detections);
                 }
             }
             _ => {
