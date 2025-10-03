@@ -970,12 +970,21 @@ pub async fn messages_passthrough(
                         }
                     }
 
-                    // Forward the event
-                    match serde_json::from_str::<serde_json::Value>(&event.data) {
-                        Ok(json) => Event::default().json_data(json)
-                            .map_err(|e| IngressError::Internal(format!("Failed to create SSE event: {}", e))),
-                        Err(e) => Err(IngressError::Internal(format!("Failed to parse SSE event data: {}", e)))
+                    // Forward the event exactly as received (preserve event type, id, data)
+                    let mut sse_event = Event::default();
+
+                    // Preserve event type (e.g., "message_start", "content_block_delta")
+                    if !event.event.is_empty() {
+                        sse_event = sse_event.event(event.event.clone());
                     }
+
+                    // Preserve event ID if present
+                    if !event.id.is_empty() {
+                        sse_event = sse_event.id(event.id.clone());
+                    }
+
+                    // Forward data as-is (don't re-parse/re-serialize)
+                    Ok(sse_event.data(event.data.clone()))
                 }
                 Err(e) => {
                     Err(IngressError::Internal(format!("SSE stream error: {}", e)))
