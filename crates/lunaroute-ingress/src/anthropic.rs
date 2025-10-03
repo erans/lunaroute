@@ -26,6 +26,9 @@ use std::sync::Arc;
 /// Maximum size for tool arguments (1MB)
 const MAX_TOOL_ARGS_SIZE: usize = 1_000_000;
 
+/// Maximum number of SSE events to collect for async parsing (prevents OOM on very long streams)
+const MAX_COLLECTED_EVENTS: usize = 10_000;
+
 /// Validate tool input schema (must be valid JSON Schema)
 fn validate_tool_schema(schema: &serde_json::Value, tool_name: &str) -> IngressResult<()> {
     // Ensure it's a valid JSON Schema object
@@ -996,6 +999,11 @@ pub async fn messages_passthrough(
         let byte_stream = stream_response.bytes_stream();
         let sse_stream = eventsource_stream::EventStream::new(byte_stream);
 
+        // Collect events for async parsing (zero-copy - just storing references)
+        let collected_events: Arc<std::sync::Mutex<Vec<eventsource_stream::Event>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_for_parsing = collected_events.clone();
+
         let tracked_stream = sse_stream.map(move |event_result| {
             match event_result {
                 Ok(event) => {
@@ -1032,6 +1040,22 @@ pub async fn messages_passthrough(
                             && let Some(reason) = anthropic_event.get("delta").and_then(|d| d.get("stop_reason")).and_then(|r| r.as_str())
                         {
                             tracker_ref.set_finish_reason(reason.to_string());
+                        }
+                    }
+
+                    // Collect event for async parsing (clone for background processing)
+                    match collected_events.lock() {
+                        Ok(mut events) => {
+                            if events.len() < MAX_COLLECTED_EVENTS {
+                                events.push(event.clone());
+                            } else if events.len() == MAX_COLLECTED_EVENTS {
+                                tracing::warn!("Event collection limit reached ({}), stopping collection to prevent OOM", MAX_COLLECTED_EVENTS);
+                                events.push(event.clone()); // Push one more so we can detect we hit the limit
+                            }
+                            // Silently drop events after limit+1
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to acquire event collection lock (poisoned): {}", e);
                         }
                     }
 
@@ -1099,13 +1123,37 @@ pub async fn messages_passthrough(
                         total_duration_ms: finalized.total_duration_ms,
                         provider_time_ms: finalized.total_duration_ms, // Entire duration is provider time in streaming
                         proxy_overhead_ms: 0.0, // Minimal overhead in passthrough mode
-                        total_tokens: TokenTotals::default(), // Tokens not available in passthrough streaming
-                        tool_summary: ToolUsageSummary::default(),
+                        total_tokens: TokenTotals::default(), // Tokens will be updated by async parser
+                        tool_summary: ToolUsageSummary::default(), // Tool calls will be updated by async parser
                         performance: PerformanceMetrics::default(),
                         streaming_stats: Some(finalized.to_streaming_stats()),
                         estimated_cost: None,
                     }),
                 });
+
+                // Spawn async parser to extract tokens and tool calls (zero latency for client)
+                match events_for_parsing.lock() {
+                    Ok(mut events) if !events.is_empty() => {
+                        // Take ownership of events vec instead of cloning (reduces memory usage)
+                        let events_vec = std::mem::take(&mut *events);
+                        // Use Infallible error type since we already have successfully parsed events
+                        let event_stream = futures::stream::iter(
+                            events_vec.into_iter().map(Ok::<_, eventsource_stream::EventStreamError<std::convert::Infallible>>)
+                        );
+                        crate::async_stream_parser::spawn_anthropic_parser(
+                            event_stream,
+                            session_id.clone(),
+                            request_id.clone(),
+                            recorder.clone(),
+                        );
+                    }
+                    Ok(_) => {
+                        // Empty events, nothing to parse
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to acquire event collection lock for async parsing (poisoned): {}", e);
+                    }
+                }
             }
 
             // Return empty event to complete the stream
@@ -1175,176 +1223,11 @@ pub async fn messages_passthrough(
         provider_time.as_secs_f64() * 1000.0
     );
 
-    // Parse response for metrics extraction (don't modify the raw bytes we'll send to client)
-    // If response is gzipped, decompress it first for parsing
-    let bytes_for_parsing = if response_headers.get("content-encoding")
-        .map(|v| v.to_lowercase().contains("gzip"))
-        .unwrap_or(false)
-    {
-        use flate2::read::GzDecoder;
-        use std::io::Read;
-
-        let mut decoder = GzDecoder::new(&raw_response_bytes[..]);
-        let mut decompressed = Vec::new();
-        decoder.read_to_end(&mut decompressed)
-            .map_err(|e| IngressError::Internal(format!("Failed to decompress gzip response: {}", e)))?;
-        decompressed
-    } else {
-        raw_response_bytes.to_vec()
-    };
-
-    let response_json: serde_json::Value = serde_json::from_slice(&bytes_for_parsing)
-        .map_err(|e| IngressError::Internal(format!("Failed to parse response for metrics: {}", e)))?;
-
-    // Extract metrics for observability (optional: log tokens, model, etc.)
-    let (input_tokens, output_tokens, thinking_tokens) = if let Some(usage) = response_json.get("usage") {
-        let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-
-        // Extract thinking tokens - check multiple possible field names
-        // The actual field name depends on API version and features used
-        let thinking = usage.get("thinking_tokens")
-            .and_then(|v| v.as_u64())
-            .or_else(|| usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()))
-            .or_else(|| usage.get("extended_thinking_tokens").and_then(|v| v.as_u64()))
-            .unwrap_or(0);
-
-        if input > 0 || output > 0 {
-            if thinking > 0 {
-                tracing::debug!(
-                    "Passthrough metrics: input_tokens={}, output_tokens={}, thinking_tokens={}, total={}",
-                    input,
-                    output,
-                    thinking,
-                    input + output + thinking
-                );
-            } else {
-                tracing::debug!(
-                    "Passthrough metrics: input_tokens={}, output_tokens={}, total={}",
-                    input,
-                    output,
-                    input + output
-                );
-            }
-        }
-        (input, output, thinking)
-    } else {
-        (0, 0, 0)
-    };
-
-    // Extract tool calls from response content
-    let mut tool_calls = std::collections::HashMap::new();
-    if let Some(content) = response_json.get("content").and_then(|c| c.as_array()) {
-        for block in content {
-            if let Some("tool_use") = block.get("type").and_then(|t| t.as_str())
-                && let Some(tool_name) = block.get("name").and_then(|n| n.as_str())
-            {
-                *tool_calls.entry(tool_name.to_string()).or_insert(0) += 1;
-            }
-        }
-    }
-
-    if !tool_calls.is_empty() {
-        let total_tools: u64 = tool_calls.values().sum();
-        tracing::debug!("Tool calls: {} total across {} tools", total_tools, tool_calls.len());
-    }
-
-    // Record session response if enabled (using async events)
-    if let (Some(recorder), Some(session_id), Some(request_id)) =
-        (&state.session_recorder, &recording_session_id, &recording_request_id)
-        && let Ok(anthropic_resp) = serde_json::from_value::<AnthropicResponse>(response_json.clone()) {
-            use lunaroute_session::{SessionEvent, events::{ResponseStats, TokenStats, FinalSessionStats, TokenTotals, ToolUsageSummary, PerformanceMetrics}};
-
-            // Extract response text
-            let response_text = anthropic_resp.content.iter().filter_map(|c| {
-                if let AnthropicContent::Text { text } = c {
-                    Some(text.clone())
-                } else {
-                    None
-                }
-            }).collect::<Vec<_>>().join("\n");
-
-            // Record response event
-            recorder.record_event(SessionEvent::ResponseRecorded {
-                session_id: session_id.clone(),
-                request_id: request_id.clone(),
-                timestamp: chrono::Utc::now(),
-                response_text: response_text.clone(),
-                response_json: response_json.clone(),
-                model_used: anthropic_resp.model.clone(),
-                stats: ResponseStats {
-                    provider_latency_ms: provider_time.as_millis() as u64,
-                    post_processing_ms: 0.0,
-                    total_proxy_overhead_ms: 0.0,
-                    tokens: TokenStats {
-                        input_tokens: input_tokens as u32,
-                        output_tokens: output_tokens as u32,
-                        thinking_tokens: if thinking_tokens > 0 { Some(thinking_tokens as u32) } else { None },
-                        cache_read_tokens: None,
-                        cache_write_tokens: None,
-                        total_tokens: (input_tokens + output_tokens) as u32,
-                        thinking_percentage: None,
-                        tokens_per_second: None,
-                    },
-                    tool_calls: vec![],
-                    response_size_bytes: response_text.len(),
-                    content_blocks: anthropic_resp.content.len(),
-                    has_refusal: false,
-                    is_streaming: false,
-                    chunk_count: None,
-                    streaming_duration_ms: None,
-                },
-            });
-
-            // Record completion event
-            recorder.record_event(SessionEvent::Completed {
-                session_id: session_id.clone(),
-                request_id: request_id.clone(),
-                timestamp: chrono::Utc::now(),
-                success: true,
-                error: None,
-                finish_reason: anthropic_resp.stop_reason.clone(),
-                final_stats: Box::new(FinalSessionStats {
-                    total_duration_ms: start_time.elapsed().as_millis() as u64,
-                    provider_time_ms: provider_time.as_millis() as u64,
-                    proxy_overhead_ms: 0.0,
-                    total_tokens: TokenTotals {
-                        total_input: input_tokens,
-                        total_output: output_tokens,
-                        total_thinking: thinking_tokens,
-                        total_cached: 0,
-                        grand_total: input_tokens + output_tokens,
-                        by_model: Default::default(),
-                    },
-                    tool_summary: ToolUsageSummary {
-                        total_tool_calls: 0,
-                        unique_tool_count: 0,
-                        by_tool: Default::default(),
-                        total_tool_time_ms: 0,
-                        tool_error_count: 0,
-                    },
-                    performance: PerformanceMetrics {
-                        avg_provider_latency_ms: provider_time.as_secs_f64() * 1000.0,
-                        p50_latency_ms: Some(provider_time.as_millis() as u64),
-                        p95_latency_ms: Some(provider_time.as_millis() as u64),
-                        p99_latency_ms: Some(provider_time.as_millis() as u64),
-                        max_latency_ms: provider_time.as_millis() as u64,
-                        min_latency_ms: provider_time.as_millis() as u64,
-                        avg_pre_processing_ms: 0.0,
-                        avg_post_processing_ms: 0.0,
-                        proxy_overhead_percentage: 0.0,
-                    },
-                    streaming_stats: None,
-                    estimated_cost: None,
-                }),
-            });
-        }
-
-    // Build response with raw bytes and ALL headers from Anthropic
+    // Build response with raw bytes and ALL headers from Anthropic FIRST (zero latency)
     // This ensures true transparent proxying - client gets exact response from Anthropic
     let mut axum_response = axum::http::Response::builder()
         .status(200)
-        .body(axum::body::Body::from(raw_response_bytes))
+        .body(axum::body::Body::from(raw_response_bytes.clone()))
         .map_err(|e| IngressError::Internal(format!("Failed to build response: {}", e)))?;
 
     let axum_headers = axum_response.headers_mut();
@@ -1358,68 +1241,154 @@ pub async fn messages_passthrough(
         }
     }
 
-    let response_result = Ok(axum_response);
+    // Spawn async parsing task (zero latency for client)
+    if let (Some(recorder), Some(session_id), Some(request_id)) =
+        (state.session_recorder.clone(), recording_session_id.clone(), recording_request_id.clone())
+    {
+        let raw_bytes = raw_response_bytes.clone();
+        let response_headers_clone = response_headers.clone();
 
-    let total_time = std::time::Instant::now().duration_since(start_time);
-    let post_provider_overhead = total_time - provider_time - pre_provider_overhead;
-    tracing::debug!(
-        "Proxy overhead after provider response: {:.2}ms",
-        post_provider_overhead.as_secs_f64() * 1000.0
-    );
-    tracing::debug!(
-        "Total proxy overhead: {:.2}ms (pre: {:.2}ms + post: {:.2}ms), provider: {:.2}ms, total: {:.2}ms",
-        (pre_provider_overhead + post_provider_overhead).as_secs_f64() * 1000.0,
-        pre_provider_overhead.as_secs_f64() * 1000.0,
-        post_provider_overhead.as_secs_f64() * 1000.0,
-        provider_time.as_secs_f64() * 1000.0,
-        total_time.as_secs_f64() * 1000.0
-    );
+        tokio::spawn(async move {
+            // Catch and log any panics/errors in background parsing
+            let session_id_for_error = session_id.clone();
+            let parse_result = std::panic::AssertUnwindSafe(async move {
+            // Parse response asynchronously (doesn't block client)
+            // Use spawn_blocking for gzip decompression to avoid blocking tokio threads
+            let is_gzipped = response_headers_clone.get("content-encoding")
+                .map(|v| v.to_lowercase().contains("gzip"))
+                .unwrap_or(false);
 
-    // Record metrics if available
-    if let Some(metrics) = state.metrics.as_ref() {
-        let total_time = start_time.elapsed().as_secs_f64();
+            let bytes_for_parsing = if is_gzipped {
+                let raw_bytes_clone = raw_bytes.clone();
+                match tokio::task::spawn_blocking(move || {
+                    use flate2::read::GzDecoder;
+                    use std::io::Read;
 
-        if response_result.is_ok() {
-            metrics.record_request_success("anthropic", &model, "anthropic", total_time);
-            metrics.record_tokens("anthropic", &model, input_tokens as u32, output_tokens as u32);
-        } else {
-            metrics.record_request_failure(
-                "anthropic",
-                &model,
-                "anthropic",
-                "provider_error",
-                total_time,
-            );
-        }
+                    let mut decoder = GzDecoder::new(&raw_bytes_clone[..]);
+                    let mut decompressed = Vec::new();
+                    decoder.read_to_end(&mut decompressed).map(|_| decompressed)
+                }).await {
+                    Ok(Ok(decompressed)) => decompressed,
+                    Ok(Err(e)) => {
+                        tracing::warn!("Failed to decompress gzip response in async parser: {}", e);
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!("Gzip decompression task failed: {}", e);
+                        return;
+                    }
+                }
+            } else {
+                raw_bytes.to_vec()
+            };
 
-        // Record tool calls
-        for (tool_name, count) in &tool_calls {
-            for _ in 0..*count {
-                metrics.record_tool_call("anthropic", &model, tool_name);
+            let response_json: serde_json::Value = match serde_json::from_slice(&bytes_for_parsing) {
+                Ok(json) => json,
+                Err(e) => {
+                    tracing::warn!("Failed to parse response JSON in async parser: {}", e);
+                    return;
+                }
+            };
+
+            // Extract tokens
+            let (input_tokens, output_tokens, thinking_tokens) = if let Some(usage) = response_json.get("usage") {
+                let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let thinking = usage.get("thinking_tokens")
+                    .and_then(|v| v.as_u64())
+                    .or_else(|| usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()))
+                    .or_else(|| usage.get("extended_thinking_tokens").and_then(|v| v.as_u64()))
+                    .unwrap_or(0);
+                (input, output, thinking)
+            } else {
+                (0, 0, 0)
+            };
+
+            // Extract tool calls
+            let mut tool_calls_map = std::collections::HashMap::new();
+            if let Some(content) = response_json.get("content").and_then(|c| c.as_array()) {
+                for block in content {
+                    if let Some("tool_use") = block.get("type").and_then(|t| t.as_str())
+                        && let Some(tool_name) = block.get("name").and_then(|n| n.as_str())
+                    {
+                        *tool_calls_map.entry(tool_name.to_string()).or_insert(0u32) += 1;
+                    }
+                }
             }
-        }
 
-        // Record processing times
-        metrics.record_post_processing(post_provider_overhead.as_secs_f64());
-        metrics.record_proxy_overhead((pre_provider_overhead + post_provider_overhead).as_secs_f64());
+            // Extract model
+            let model_used = response_json.get("model").and_then(|m| m.as_str()).map(|s| s.to_string());
+
+            // Build updates if we have meaningful data
+            let has_tokens = input_tokens > 0 || output_tokens > 0;
+            let has_tools = !tool_calls_map.is_empty();
+
+            if has_tokens || has_tools || model_used.is_some() {
+                use lunaroute_session::events::{TokenTotals, ToolUsageSummary, ToolStats};
+
+                let token_updates = if has_tokens {
+                    Some(TokenTotals {
+                        total_input: input_tokens,
+                        total_output: output_tokens,
+                        total_thinking: thinking_tokens,
+                        total_cached: 0,
+                        grand_total: input_tokens + output_tokens,
+                        by_model: Default::default(),
+                    })
+                } else {
+                    None
+                };
+
+                let tool_summary = if has_tools {
+                    let total_calls: u32 = tool_calls_map.values().sum();
+                    let mut by_tool = std::collections::HashMap::new();
+                    for (name, count) in tool_calls_map {
+                        by_tool.insert(name, ToolStats {
+                            call_count: count,
+                            total_execution_time_ms: 0,
+                            avg_execution_time_ms: 0,
+                            error_count: 0,
+                        });
+                    }
+                    Some(ToolUsageSummary {
+                        total_tool_calls: total_calls,
+                        unique_tool_count: by_tool.len() as u32,
+                        by_tool,
+                        total_tool_time_ms: 0,
+                        tool_error_count: 0,
+                    })
+                } else {
+                    None
+                };
+
+                recorder.record_event(lunaroute_session::SessionEvent::StatsUpdated {
+                    session_id,
+                    request_id,
+                    timestamp: chrono::Utc::now(),
+                    token_updates,
+                    tool_call_updates: tool_summary,
+                    model_used,
+                });
+
+                tracing::debug!(
+                    "Async parsed Anthropic non-streaming response: tokens={}, tools={}",
+                    if has_tokens { "yes" } else { "no" },
+                    if has_tools { "yes" } else { "no" }
+                );
+            }
+            });
+
+            if let Err(e) = futures::FutureExt::catch_unwind(parse_result).await {
+                tracing::error!(
+                    "Panic in async Anthropic non-streaming parser for session {}: {:?}",
+                    session_id_for_error,
+                    e
+                );
+            }
+        });
     }
 
-    // Record stats if tracker is available and we have a session ID
-    if let (Some(tracker), Some(sid)) = (state.stats_tracker.as_ref(), session_id) {
-        tracker.record_request(
-            sid,
-            crate::types::SessionRequestStats {
-                input_tokens,
-                output_tokens,
-                thinking_tokens,
-                tool_calls,
-                pre_proxy_time: pre_provider_overhead,
-                post_proxy_time: post_provider_overhead,
-            },
-        );
-    }
-
-    response_result
+    Ok(axum_response)
 }
 
 /// Create Anthropic router with provider state

@@ -80,6 +80,21 @@ pub enum SessionEvent {
         #[serde(flatten)]
         final_stats: Box<FinalSessionStats>,
     },
+
+    /// Update session stats after async parsing completes (passthrough mode)
+    /// This event is emitted when we parse streaming/response data asynchronously
+    /// and discover token counts or tool calls that weren't available initially
+    StatsUpdated {
+        session_id: String,
+        request_id: String,
+        timestamp: DateTime<Utc>,
+        /// Updated token counts (if parsed from response)
+        token_updates: Option<TokenTotals>,
+        /// Updated tool usage (if parsed from response)
+        tool_call_updates: Option<ToolUsageSummary>,
+        /// Model name extracted from response
+        model_used: Option<String>,
+    },
 }
 
 impl SessionEvent {
@@ -92,6 +107,7 @@ impl SessionEvent {
             Self::ToolCallRecorded { session_id, .. } => session_id,
             Self::StatsSnapshot { session_id, .. } => session_id,
             Self::Completed { session_id, .. } => session_id,
+            Self::StatsUpdated { session_id, .. } => session_id,
         }
     }
 
@@ -104,6 +120,7 @@ impl SessionEvent {
             Self::ToolCallRecorded { request_id, .. } => request_id,
             Self::StatsSnapshot { request_id, .. } => request_id,
             Self::Completed { request_id, .. } => request_id,
+            Self::StatsUpdated { request_id, .. } => request_id,
         }
     }
 }

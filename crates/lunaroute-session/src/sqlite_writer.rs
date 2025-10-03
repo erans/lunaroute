@@ -1,7 +1,7 @@
 //! SQLite session writer implementation
 
 #[cfg(feature = "sqlite-writer")]
-use crate::events::{FinalSessionStats, SessionEvent, StreamingStats};
+use crate::events::{FinalSessionStats, SessionEvent, StreamingStats, TokenTotals, ToolUsageSummary};
 #[cfg(feature = "sqlite-writer")]
 use crate::search::{SearchResults, SessionAggregates, SessionFilter, SessionRecord, SortOrder};
 #[cfg(feature = "sqlite-writer")]
@@ -717,7 +717,8 @@ impl SessionWriter for SqliteWriter {
                 | SessionEvent::ResponseRecorded { session_id, .. }
                 | SessionEvent::ToolCallRecorded { session_id, .. }
                 | SessionEvent::StatsSnapshot { session_id, .. }
-                | SessionEvent::Completed { session_id, .. } => session_id,
+                | SessionEvent::Completed { session_id, .. }
+                | SessionEvent::StatsUpdated { session_id, .. } => session_id,
             };
             Self::validate_session_id(session_id)?;
         }
@@ -948,6 +949,25 @@ impl SessionWriter for SqliteWriter {
                     .await?;
                 }
 
+                SessionEvent::StatsUpdated {
+                    session_id,
+                    request_id,
+                    token_updates,
+                    tool_call_updates,
+                    model_used,
+                    ..
+                } => {
+                    Self::handle_stats_updated(
+                        &mut tx,
+                        session_id,
+                        request_id,
+                        token_updates.as_ref(),
+                        tool_call_updates.as_ref(),
+                        model_used.as_deref(),
+                    )
+                    .await?;
+                }
+
                 _ => {
                     // Other event types not stored in SQL
                 }
@@ -1024,6 +1044,108 @@ impl SqliteWriter {
         // Insert streaming metrics if present
         if let Some(streaming_stats) = &final_stats.streaming_stats {
             Self::insert_streaming_metrics(tx, session_id, request_id, streaming_stats).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Handle stats update event - updates session with late-arriving data from async parsing
+    /// This is used in passthrough mode where we parse response data asynchronously
+    async fn handle_stats_updated(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        session_id: &str,
+        request_id: &str,
+        token_updates: Option<&TokenTotals>,
+        tool_call_updates: Option<&ToolUsageSummary>,
+        model_used: Option<&str>,
+    ) -> WriterResult<()> {
+        // Update session tokens if provided (use MAX to preserve any existing higher values)
+        if let Some(tokens) = token_updates {
+            let input_tokens = Self::safe_u64_to_i64(tokens.total_input, "input_tokens")?;
+            let output_tokens = Self::safe_u64_to_i64(tokens.total_output, "output_tokens")?;
+            let thinking_tokens = Self::safe_u64_to_i64(tokens.total_thinking, "thinking_tokens")?;
+
+            sqlx::query(
+                r#"
+                UPDATE sessions
+                SET input_tokens = MAX(COALESCE(input_tokens, 0), ?),
+                    output_tokens = MAX(COALESCE(output_tokens, 0), ?),
+                    thinking_tokens = MAX(COALESCE(thinking_tokens, 0), ?)
+                WHERE session_id = ? AND request_id = ?
+                "#,
+            )
+            .bind(input_tokens)
+            .bind(output_tokens)
+            .bind(thinking_tokens)
+            .bind(session_id)
+            .bind(request_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| {
+                WriterError::Database(format!(
+                    "Failed to update session tokens for {}: {}",
+                    session_id, e
+                ))
+            })?;
+        }
+
+        // Update model if provided
+        if let Some(model) = model_used {
+            sqlx::query(
+                r#"
+                UPDATE sessions
+                SET model_used = COALESCE(model_used, ?)
+                WHERE session_id = ? AND request_id = ?
+                "#,
+            )
+            .bind(model)
+            .bind(session_id)
+            .bind(request_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| {
+                WriterError::Database(format!(
+                    "Failed to update session model for {}: {}",
+                    session_id, e
+                ))
+            })?;
+        }
+
+        // Insert/update tool calls if provided
+        if let Some(tool_summary) = tool_call_updates {
+            if tool_summary.total_tool_calls > 0 {
+                for (tool_name, tool_stats) in &tool_summary.by_tool {
+                    let call_count = Self::safe_u32_to_i64(tool_stats.call_count);
+                    let avg_time = Self::safe_u64_to_i64(tool_stats.avg_execution_time_ms, "tool avg_execution_time_ms")?;
+                    let error_count = Self::safe_u32_to_i64(tool_stats.error_count);
+
+                    sqlx::query(
+                        r#"
+                        INSERT INTO tool_calls (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(session_id, request_id, tool_name)
+                        DO UPDATE SET
+                            call_count = MAX(call_count, excluded.call_count),
+                            avg_execution_time_ms = excluded.avg_execution_time_ms,
+                            error_count = MAX(error_count, excluded.error_count)
+                        "#,
+                    )
+                    .bind(session_id)
+                    .bind(request_id)
+                    .bind(tool_name)
+                    .bind(call_count)
+                    .bind(avg_time)
+                    .bind(error_count)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Failed to upsert tool call {} for session {}: {}",
+                            tool_name, session_id, e
+                        ))
+                    })?;
+                }
+            }
         }
 
         Ok(())
@@ -3085,5 +3207,354 @@ mod tests {
         assert_eq!(input, 100);
         assert_eq!(output, 300);
         assert_eq!(thinking, Some(50));
+    }
+
+    /// Test StatsUpdated event updates existing session with tokens
+    #[tokio::test]
+    async fn test_stats_updated_tokens() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "stats-updated-tokens-test";
+        let request_id = "req-1";
+
+        // Create session with empty tokens (passthrough streaming mode)
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                model_requested: "claude-3-opus".to_string(),
+                provider: "anthropic".to_string(),
+                listener: "anthropic".to_string(),
+                is_streaming: true,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            },
+            SessionEvent::Completed {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: Some("end_turn".to_string()),
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: 5000,
+                    provider_time_ms: 4800,
+                    proxy_overhead_ms: 0.0,
+                    total_tokens: TokenTotals::default(), // Empty initially
+                    tool_summary: ToolUsageSummary::default(),
+                    performance: PerformanceMetrics::default(),
+                    streaming_stats: None,
+                    estimated_cost: None,
+                }),
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        // Verify tokens are 0
+        let (input, output): (Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT input_tokens, output_tokens FROM sessions WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(input, Some(0));
+        assert_eq!(output, Some(0));
+
+        // Now emit StatsUpdated event (from async parser)
+        let update_event = SessionEvent::StatsUpdated {
+            session_id: session_id.to_string(),
+            request_id: request_id.to_string(),
+            timestamp: Utc::now(),
+            token_updates: Some(TokenTotals {
+                total_input: 1500,
+                total_output: 800,
+                total_thinking: 200,
+                total_cached: 0,
+                grand_total: 2500,
+                by_model: HashMap::new(),
+            }),
+            tool_call_updates: None,
+            model_used: Some("claude-3-opus-20240229".to_string()),
+        };
+
+        writer.write_event(&update_event).await.unwrap();
+
+        // Verify tokens are updated
+        let (input, output, thinking, model): (Option<i64>, Option<i64>, Option<i64>, Option<String>) = sqlx::query_as(
+            "SELECT input_tokens, output_tokens, thinking_tokens, model_used FROM sessions WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(input, Some(1500));
+        assert_eq!(output, Some(800));
+        assert_eq!(thinking, Some(200));
+        assert_eq!(model, Some("claude-3-opus-20240229".to_string()));
+    }
+
+    /// Test StatsUpdated event updates existing session with tool calls
+    #[tokio::test]
+    async fn test_stats_updated_tool_calls() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "stats-updated-tools-test";
+        let request_id = "req-1";
+
+        // Create session without tool calls (passthrough mode)
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                model_requested: "gpt-4".to_string(),
+                provider: "openai".to_string(),
+                listener: "openai".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            },
+            SessionEvent::Completed {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: Some("stop".to_string()),
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: 2000,
+                    provider_time_ms: 1900,
+                    proxy_overhead_ms: 0.0,
+                    total_tokens: TokenTotals::default(),
+                    tool_summary: ToolUsageSummary::default(), // Empty initially
+                    performance: PerformanceMetrics::default(),
+                    streaming_stats: None,
+                    estimated_cost: None,
+                }),
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        // Verify no tool calls
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tool_calls WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(count, 0);
+
+        // Now emit StatsUpdated event with tool calls (from async parser)
+        let mut by_tool = HashMap::new();
+        by_tool.insert(
+            "get_weather".to_string(),
+            crate::events::ToolStats {
+                call_count: 2,
+                total_execution_time_ms: 0,
+                avg_execution_time_ms: 0,
+                error_count: 0,
+            },
+        );
+        by_tool.insert(
+            "search".to_string(),
+            crate::events::ToolStats {
+                call_count: 1,
+                total_execution_time_ms: 0,
+                avg_execution_time_ms: 0,
+                error_count: 0,
+            },
+        );
+
+        let update_event = SessionEvent::StatsUpdated {
+            session_id: session_id.to_string(),
+            request_id: request_id.to_string(),
+            timestamp: Utc::now(),
+            token_updates: None,
+            tool_call_updates: Some(ToolUsageSummary {
+                total_tool_calls: 3,
+                unique_tool_count: 2,
+                by_tool,
+                total_tool_time_ms: 0,
+                tool_error_count: 0,
+            }),
+            model_used: None,
+        };
+
+        writer.write_event(&update_event).await.unwrap();
+
+        // Verify tool calls are inserted
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tool_calls WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(count, 2);
+
+        // Verify specific tool counts
+        let weather_count: i64 = sqlx::query_scalar(
+            "SELECT call_count FROM tool_calls WHERE session_id = ? AND tool_name = 'get_weather'",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(weather_count, 2);
+
+        let search_count: i64 = sqlx::query_scalar(
+            "SELECT call_count FROM tool_calls WHERE session_id = ? AND tool_name = 'search'",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(search_count, 1);
+    }
+
+    /// Test StatsUpdated event with MAX() logic - should keep higher values
+    #[tokio::test]
+    async fn test_stats_updated_max_logic() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "stats-updated-max-test";
+        let request_id = "req-1";
+
+        // Create session with initial tokens
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                model_requested: "gpt-4".to_string(),
+                provider: "openai".to_string(),
+                listener: "openai".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            },
+            SessionEvent::Completed {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: Some("stop".to_string()),
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: 2000,
+                    provider_time_ms: 1900,
+                    proxy_overhead_ms: 0.0,
+                    total_tokens: TokenTotals {
+                        total_input: 100,
+                        total_output: 200,
+                        total_thinking: 0,
+                        total_cached: 0,
+                        grand_total: 300,
+                        by_model: HashMap::new(),
+                    },
+                    tool_summary: ToolUsageSummary::default(),
+                    performance: PerformanceMetrics::default(),
+                    streaming_stats: None,
+                    estimated_cost: None,
+                }),
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        // Try to update with LOWER values - should keep existing higher values
+        let update_event = SessionEvent::StatsUpdated {
+            session_id: session_id.to_string(),
+            request_id: request_id.to_string(),
+            timestamp: Utc::now(),
+            token_updates: Some(TokenTotals {
+                total_input: 50,  // Lower than 100
+                total_output: 150, // Lower than 200
+                total_thinking: 0,
+                total_cached: 0,
+                grand_total: 200,
+                by_model: HashMap::new(),
+            }),
+            tool_call_updates: None,
+            model_used: None,
+        };
+
+        writer.write_event(&update_event).await.unwrap();
+
+        // Verify original higher values are kept (MAX logic)
+        let (input, output): (Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT input_tokens, output_tokens FROM sessions WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(input, Some(100)); // Kept higher value
+        assert_eq!(output, Some(200)); // Kept higher value
+
+        // Now update with HIGHER values - should update
+        let update_event2 = SessionEvent::StatsUpdated {
+            session_id: session_id.to_string(),
+            request_id: request_id.to_string(),
+            timestamp: Utc::now(),
+            token_updates: Some(TokenTotals {
+                total_input: 150,  // Higher than 100
+                total_output: 250, // Higher than 200
+                total_thinking: 50, // Higher than 0
+                total_cached: 0,
+                grand_total: 450,
+                by_model: HashMap::new(),
+            }),
+            tool_call_updates: None,
+            model_used: None,
+        };
+
+        writer.write_event(&update_event2).await.unwrap();
+
+        // Verify new higher values are stored
+        let (input, output, thinking): (Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT input_tokens, output_tokens, thinking_tokens FROM sessions WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(input, Some(150)); // Updated to higher value
+        assert_eq!(output, Some(250)); // Updated to higher value
+        assert_eq!(thinking, Some(50)); // Updated to higher value
     }
 }

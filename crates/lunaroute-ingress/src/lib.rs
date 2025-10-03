@@ -5,6 +5,7 @@
 //! - Anthropic-compatible endpoints
 
 pub mod anthropic;
+pub mod async_stream_parser;
 pub mod middleware;
 pub mod openai;
 pub mod streaming_metrics;

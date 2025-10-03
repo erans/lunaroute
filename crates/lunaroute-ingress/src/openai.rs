@@ -28,6 +28,9 @@ use uuid::Uuid;
 /// Maximum size for tool arguments (1MB)
 const MAX_TOOL_ARGS_SIZE: usize = 1_000_000;
 
+/// Maximum number of SSE events to collect for async parsing (prevents OOM on very long streams)
+const MAX_COLLECTED_EVENTS: usize = 10_000;
+
 /// Validate tool parameter schema (must be valid JSON Schema)
 fn validate_tool_schema(schema: &serde_json::Value, tool_name: &str) -> IngressResult<()> {
     // Ensure it's a valid JSON Schema object
@@ -870,6 +873,61 @@ pub async fn chat_completions_passthrough(
                 session_tags: vec![],
             },
         });
+
+        // Record the request
+        use lunaroute_session::events::RequestStats;
+
+        // Extract request text from messages (best effort for passthrough mode)
+        let request_text = req.get("messages")
+            .and_then(|m| m.as_array())
+            .and_then(|msgs| msgs.last())
+            .and_then(|msg| msg.get("content"))
+            .and_then(|c| {
+                // Handle both string and array content formats
+                if let Some(s) = c.as_str() {
+                    Some(s.to_string())
+                } else if let Some(arr) = c.as_array() {
+                    // For array content, try to extract text from first text block
+                    arr.iter()
+                        .find_map(|item| {
+                            if let Some("text") = item.get("type").and_then(|t| t.as_str()) {
+                                item.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        let message_count = req.get("messages").and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
+        let has_system_prompt = req.get("messages")
+            .and_then(|m| m.as_array())
+            .and_then(|msgs| msgs.first())
+            .and_then(|msg| msg.get("role").and_then(|r| r.as_str()))
+            .map(|role| role == "system")
+            .unwrap_or(false);
+        let has_tools = req.get("tools").is_some();
+        let tool_count = req.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
+
+        recorder.record_event(SessionEvent::RequestRecorded {
+            session_id: session_id.clone(),
+            request_id: request_id.clone(),
+            timestamp: chrono::Utc::now(),
+            request_text,
+            request_json: req.clone(),
+            estimated_tokens: 0, // Not available in passthrough mode
+            stats: RequestStats {
+                pre_processing_ms: pre_provider_overhead.as_secs_f64() * 1000.0,
+                request_size_bytes: serde_json::to_string(&req).map(|s| s.len()).unwrap_or(0),
+                message_count,
+                has_system_prompt,
+                has_tools,
+                tool_count,
+            },
+        });
     }
 
     if is_streaming {
@@ -891,6 +949,11 @@ pub async fn chat_completions_passthrough(
 
         let byte_stream = stream_response.bytes_stream();
         let sse_stream = eventsource_stream::EventStream::new(byte_stream);
+
+        // Collect events for async parsing (zero-copy - just storing references)
+        let collected_events: Arc<std::sync::Mutex<Vec<eventsource_stream::Event>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_for_parsing = collected_events.clone();
 
         let tracked_stream = sse_stream.map(move |event_result| {
             match event_result {
@@ -937,6 +1000,22 @@ pub async fn chat_completions_passthrough(
                         && let Some(reason) = first_choice.get("finish_reason").and_then(|r| r.as_str())
                     {
                         tracker_ref.set_finish_reason(reason.to_string());
+                    }
+
+                    // Collect event for async parsing (clone for background processing)
+                    match collected_events.lock() {
+                        Ok(mut events) => {
+                            if events.len() < MAX_COLLECTED_EVENTS {
+                                events.push(event.clone());
+                            } else if events.len() == MAX_COLLECTED_EVENTS {
+                                tracing::warn!("Event collection limit reached ({}), stopping collection to prevent OOM", MAX_COLLECTED_EVENTS);
+                                events.push(event.clone()); // Push one more so we can detect we hit the limit
+                            }
+                            // Silently drop events after limit+1
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to acquire event collection lock (poisoned): {}", e);
+                        }
                     }
 
                     // Forward the parsed event
@@ -993,13 +1072,37 @@ pub async fn chat_completions_passthrough(
                         total_duration_ms: finalized.total_duration_ms,
                         provider_time_ms: finalized.total_duration_ms, // Entire duration is provider time in streaming
                         proxy_overhead_ms: 0.0, // Minimal overhead in passthrough mode
-                        total_tokens: TokenTotals::default(), // Tokens not available in passthrough streaming
-                        tool_summary: ToolUsageSummary::default(),
+                        total_tokens: TokenTotals::default(), // Tokens will be updated by async parser
+                        tool_summary: ToolUsageSummary::default(), // Tool calls will be updated by async parser
                         performance: PerformanceMetrics::default(),
                         streaming_stats: Some(finalized.to_streaming_stats()),
                         estimated_cost: None,
                     }),
                 });
+
+                // Spawn async parser to extract tokens and tool calls (zero latency for client)
+                match events_for_parsing.lock() {
+                    Ok(mut events) if !events.is_empty() => {
+                        // Take ownership of events vec instead of cloning (reduces memory usage)
+                        let events_vec = std::mem::take(&mut *events);
+                        // Use Infallible error type since we already have successfully parsed events
+                        let event_stream = futures::stream::iter(
+                            events_vec.into_iter().map(Ok::<_, eventsource_stream::EventStreamError<std::convert::Infallible>>)
+                        );
+                        crate::async_stream_parser::spawn_openai_parser(
+                            event_stream,
+                            session_id.clone(),
+                            request_id.clone(),
+                            recorder.clone(),
+                        );
+                    }
+                    Ok(_) => {
+                        // Empty events, nothing to parse
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to acquire event collection lock for async parsing (poisoned): {}", e);
+                    }
+                }
             }
 
             // Return empty event to complete the stream
@@ -1065,111 +1168,8 @@ pub async fn chat_completions_passthrough(
         provider_time.as_secs_f64() * 1000.0
     );
 
-    // Extract metrics for observability (optional: log tokens, model, etc.)
-    let (input_tokens, output_tokens) = if let Some(usage) = response.get("usage") {
-        let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-
-        if input > 0 || output > 0 {
-            tracing::debug!(
-                "Passthrough metrics: prompt_tokens={}, completion_tokens={}, total={}",
-                input,
-                output,
-                input + output
-            );
-        }
-        (input, output)
-    } else {
-        (0, 0)
-    };
-
-    // Record session response if enabled (using async events)
-    if let (Some(recorder), Some(session_id), Some(request_id)) =
-        (&state.session_recorder, &recording_session_id, &recording_request_id)
-        && let Ok(openai_resp) = serde_json::from_value::<OpenAIChatResponse>(response.clone()) {
-            use lunaroute_session::{SessionEvent, events::{ResponseStats, TokenStats, FinalSessionStats, TokenTotals, ToolUsageSummary, PerformanceMetrics}};
-
-            // Extract response text
-            let response_text = openai_resp.choices.iter()
-                .filter_map(|c| c.message.content.clone())
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            // Record response event
-            recorder.record_event(SessionEvent::ResponseRecorded {
-                session_id: session_id.clone(),
-                request_id: request_id.clone(),
-                timestamp: chrono::Utc::now(),
-                response_text: response_text.clone(),
-                response_json: response.clone(),
-                model_used: openai_resp.model.clone(),
-                stats: ResponseStats {
-                    provider_latency_ms: provider_time.as_millis() as u64,
-                    post_processing_ms: 0.0,
-                    total_proxy_overhead_ms: 0.0,
-                    tokens: TokenStats {
-                        input_tokens: input_tokens as u32,
-                        output_tokens: output_tokens as u32,
-                        thinking_tokens: None,
-                        cache_read_tokens: None,
-                        cache_write_tokens: None,
-                        total_tokens: (input_tokens + output_tokens) as u32,
-                        thinking_percentage: None,
-                        tokens_per_second: None,
-                    },
-                    tool_calls: vec![],
-                    response_size_bytes: response_text.len(),
-                    content_blocks: openai_resp.choices.len(),
-                    has_refusal: false,
-                    is_streaming: false,
-                    chunk_count: None,
-                    streaming_duration_ms: None,
-                },
-            });
-
-            // Record completion event
-            let finish_reason = openai_resp.choices.first()
-                .and_then(|c| c.finish_reason.clone());
-
-            recorder.record_event(SessionEvent::Completed {
-                session_id: session_id.clone(),
-                request_id: request_id.clone(),
-                timestamp: chrono::Utc::now(),
-                success: true,
-                error: None,
-                finish_reason,
-                final_stats: Box::new(FinalSessionStats {
-                    total_duration_ms: start_time.elapsed().as_millis() as u64,
-                    provider_time_ms: provider_time.as_millis() as u64,
-                    proxy_overhead_ms: 0.0,
-                    total_tokens: TokenTotals {
-                        total_input: input_tokens,
-                        total_output: output_tokens,
-                        total_thinking: 0,
-                        total_cached: 0,
-                        grand_total: input_tokens + output_tokens,
-                        by_model: Default::default(),
-                    },
-                    tool_summary: ToolUsageSummary::default(),
-                    performance: PerformanceMetrics {
-                        avg_provider_latency_ms: provider_time.as_secs_f64() * 1000.0,
-                        p50_latency_ms: Some(provider_time.as_millis() as u64),
-                        p95_latency_ms: Some(provider_time.as_millis() as u64),
-                        p99_latency_ms: Some(provider_time.as_millis() as u64),
-                        max_latency_ms: provider_time.as_millis() as u64,
-                        min_latency_ms: provider_time.as_millis() as u64,
-                        avg_pre_processing_ms: 0.0,
-                        avg_post_processing_ms: 0.0,
-                        proxy_overhead_percentage: 0.0,
-                    },
-                    streaming_stats: None,
-                    estimated_cost: None,
-                }),
-            });
-        }
-
-    // Build response with headers from OpenAI's API
-    let mut axum_response = Json(response).into_response();
+    // Build response with headers from OpenAI's API FIRST (zero latency)
+    let mut axum_response = Json(response.clone()).into_response();
     let axum_headers = axum_response.headers_mut();
 
     // Forward OpenAI's response headers (rate limits, request-id, etc.)
@@ -1181,24 +1181,115 @@ pub async fn chat_completions_passthrough(
         }
     }
 
-    let response_result = Ok(axum_response);
+    // Spawn async parsing task to extract tool calls (zero latency for client)
+    if let (Some(recorder), Some(session_id), Some(request_id)) =
+        (state.session_recorder.clone(), recording_session_id.clone(), recording_request_id.clone())
+    {
+        let response_clone = response.clone();
 
-    let total_time = std::time::Instant::now().duration_since(start_time);
-    let post_provider_overhead = total_time - provider_time - pre_provider_overhead;
-    tracing::debug!(
-        "Proxy overhead after provider response: {:.2}ms",
-        post_provider_overhead.as_secs_f64() * 1000.0
-    );
-    tracing::debug!(
-        "Total proxy overhead: {:.2}ms (pre: {:.2}ms + post: {:.2}ms), provider: {:.2}ms, total: {:.2}ms",
-        (pre_provider_overhead + post_provider_overhead).as_secs_f64() * 1000.0,
-        pre_provider_overhead.as_secs_f64() * 1000.0,
-        post_provider_overhead.as_secs_f64() * 1000.0,
-        provider_time.as_secs_f64() * 1000.0,
-        total_time.as_secs_f64() * 1000.0
-    );
+        tokio::spawn(async move {
+            // Catch and log any panics/errors in background parsing
+            let session_id_for_error = session_id.clone();
+            let parse_result = std::panic::AssertUnwindSafe(async move {
+            // Extract tool calls from response
+            let mut tool_calls_map = std::collections::HashMap::new();
 
-    response_result
+            if let Some(choices) = response_clone.get("choices").and_then(|c| c.as_array()) {
+                for choice in choices {
+                    if let Some(message) = choice.get("message")
+                        && let Some(tool_calls) = message.get("tool_calls").and_then(|t| t.as_array()) {
+                            for tool_call in tool_calls {
+                                if let Some(function) = tool_call.get("function")
+                                    && let Some(name) = function.get("name").and_then(|n| n.as_str()) {
+                                        *tool_calls_map.entry(name.to_string()).or_insert(0u32) += 1;
+                                    }
+                            }
+                        }
+                }
+            }
+
+            // Extract model
+            let model_used = response_clone.get("model").and_then(|m| m.as_str()).map(|s| s.to_string());
+
+            // Extract tokens
+            let (input_tokens, output_tokens) = if let Some(usage) = response_clone.get("usage") {
+                let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                (input, output)
+            } else {
+                (0, 0)
+            };
+
+            // Build updates if we have meaningful data
+            let has_tokens = input_tokens > 0 || output_tokens > 0;
+            let has_tools = !tool_calls_map.is_empty();
+
+            if has_tokens || has_tools || model_used.is_some() {
+                use lunaroute_session::events::{TokenTotals, ToolUsageSummary, ToolStats};
+
+                let token_updates = if has_tokens {
+                    Some(TokenTotals {
+                        total_input: input_tokens,
+                        total_output: output_tokens,
+                        total_thinking: 0,
+                        total_cached: 0,
+                        grand_total: input_tokens + output_tokens,
+                        by_model: Default::default(),
+                    })
+                } else {
+                    None
+                };
+
+                let tool_summary = if has_tools {
+                    let total_calls: u32 = tool_calls_map.values().sum();
+                    let mut by_tool = std::collections::HashMap::new();
+                    for (name, count) in tool_calls_map {
+                        by_tool.insert(name, ToolStats {
+                            call_count: count,
+                            total_execution_time_ms: 0,
+                            avg_execution_time_ms: 0,
+                            error_count: 0,
+                        });
+                    }
+                    Some(ToolUsageSummary {
+                        total_tool_calls: total_calls,
+                        unique_tool_count: by_tool.len() as u32,
+                        by_tool,
+                        total_tool_time_ms: 0,
+                        tool_error_count: 0,
+                    })
+                } else {
+                    None
+                };
+
+                recorder.record_event(lunaroute_session::SessionEvent::StatsUpdated {
+                    session_id,
+                    request_id,
+                    timestamp: chrono::Utc::now(),
+                    token_updates,
+                    tool_call_updates: tool_summary,
+                    model_used,
+                });
+
+                tracing::debug!(
+                    "Async parsed OpenAI non-streaming response: tokens={}, tools={}",
+                    if has_tokens { "yes" } else { "no" },
+                    if has_tools { "yes" } else { "no" }
+                );
+            }
+            });
+
+            if let Err(e) = futures::FutureExt::catch_unwind(parse_result).await {
+                tracing::error!(
+                    "Panic in async OpenAI non-streaming parser for session {}: {:?}",
+                    session_id_for_error,
+                    e
+                );
+            }
+        });
+    }
+
+    Ok(axum_response)
 }
 
 #[cfg(test)]
