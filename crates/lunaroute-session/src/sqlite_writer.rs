@@ -891,10 +891,6 @@ impl SessionWriter for SqliteWriter {
                                 r#"
                                 INSERT INTO tool_calls (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count)
                                 VALUES (?, ?, ?, ?, ?, ?)
-                                ON CONFLICT(session_id, tool_name) DO UPDATE
-                                SET call_count = call_count + excluded.call_count,
-                                    avg_execution_time_ms = (COALESCE(avg_execution_time_ms, 0) + excluded.avg_execution_time_ms) / 2,
-                                    error_count = error_count + excluded.error_count
                                 "#,
                             )
                             .bind(session_id)
@@ -2358,5 +2354,288 @@ mod tests {
             assert!(item.total_tokens >= 300);
             assert!(item.is_streaming);
         }
+    }
+
+    /// Comprehensive test: Verify streaming session tokens are written to SQLite
+    #[tokio::test]
+    async fn test_streaming_session_tokens_in_sqlite() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "streaming-tokens-test";
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: "req-1".to_string(),
+                timestamp: Utc::now(),
+                model_requested: "claude-sonnet-4".to_string(),
+                provider: "anthropic".to_string(),
+                listener: "anthropic".to_string(),
+                is_streaming: true,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            },
+            SessionEvent::Completed {
+                session_id: session_id.to_string(),
+                request_id: "req-1".to_string(),
+                timestamp: Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: Some("end_turn".to_string()),
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: 1000,
+                    provider_time_ms: 900,
+                    proxy_overhead_ms: 100.0,
+                    total_tokens: TokenTotals {
+                        total_input: 150,
+                        total_output: 350,
+                        total_thinking: 50,
+                        total_cached: 0,
+                        grand_total: 550,
+                        by_model: HashMap::new(),
+                    },
+                    tool_summary: ToolUsageSummary::default(),
+                    performance: PerformanceMetrics::default(),
+                    streaming_stats: None,
+                    estimated_cost: None,
+                }),
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        // Verify tokens are written to sessions table
+        let (input, output, thinking): (i64, i64, Option<i64>) = sqlx::query_as(
+            "SELECT input_tokens, output_tokens, thinking_tokens FROM sessions WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(input, 150, "Streaming session input_tokens should be 150");
+        assert_eq!(output, 350, "Streaming session output_tokens should be 350");
+        assert_eq!(thinking, Some(50), "Streaming session thinking_tokens should be 50");
+    }
+
+    /// Comprehensive test: Verify non-streaming session tokens are written to SQLite
+    #[tokio::test]
+    async fn test_nonstreaming_session_tokens_in_sqlite() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "nonstreaming-tokens-test";
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: "req-1".to_string(),
+                timestamp: Utc::now(),
+                model_requested: "gpt-4".to_string(),
+                provider: "openai".to_string(),
+                listener: "openai".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            },
+            SessionEvent::ResponseRecorded {
+                session_id: session_id.to_string(),
+                request_id: "req-1".to_string(),
+                timestamp: Utc::now(),
+                response_text: "Test response".to_string(),
+                response_json: serde_json::json!({}),
+                model_used: "gpt-4".to_string(),
+                stats: ResponseStats {
+                    provider_latency_ms: 200,
+                    post_processing_ms: 10.0,
+                    total_proxy_overhead_ms: 15.0,
+                    tokens: TokenStats {
+                        input_tokens: 75,
+                        output_tokens: 225,
+                        thinking_tokens: Some(25),
+                        cache_read_tokens: None,
+                        cache_write_tokens: None,
+                        total_tokens: 325,
+                        thinking_percentage: None,
+                        tokens_per_second: Some(150.0),
+                    },
+                    tool_calls: vec![],
+                    response_size_bytes: 100,
+                    content_blocks: 1,
+                    has_refusal: false,
+                    is_streaming: false,
+                    chunk_count: None,
+                    streaming_duration_ms: None,
+                },
+            },
+            SessionEvent::Completed {
+                session_id: session_id.to_string(),
+                request_id: "req-1".to_string(),
+                timestamp: Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: Some("stop".to_string()),
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: 1200,
+                    provider_time_ms: 1100,
+                    proxy_overhead_ms: 100.0,
+                    total_tokens: TokenTotals {
+                        total_input: 75,
+                        total_output: 225,
+                        total_thinking: 25,
+                        total_cached: 0,
+                        grand_total: 325,
+                        by_model: HashMap::new(),
+                    },
+                    tool_summary: ToolUsageSummary::default(),
+                    performance: PerformanceMetrics::default(),
+                    streaming_stats: None,
+                    estimated_cost: None,
+                }),
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        // Verify tokens are written to sessions table (from ResponseRecorded, not duplicated by Completed)
+        let (input, output, thinking): (i64, i64, Option<i64>) = sqlx::query_as(
+            "SELECT input_tokens, output_tokens, thinking_tokens FROM sessions WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(input, 75, "Non-streaming session input_tokens should be 75");
+        assert_eq!(output, 225, "Non-streaming session output_tokens should be 225");
+        assert_eq!(thinking, Some(25), "Non-streaming session thinking_tokens should be 25");
+    }
+
+    /// Comprehensive test: Verify tool calls are written to SQLite for streaming sessions
+    #[tokio::test]
+    async fn test_streaming_session_tool_calls_in_sqlite() {
+        use std::collections::HashMap;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "streaming-tools-test";
+
+        let mut by_tool = HashMap::new();
+        by_tool.insert("Read".to_string(), ToolStats {
+            call_count: 3,
+            total_execution_time_ms: 150,
+            avg_execution_time_ms: 50,
+            error_count: 0,
+        });
+        by_tool.insert("Bash".to_string(), ToolStats {
+            call_count: 2,
+            total_execution_time_ms: 400,
+            avg_execution_time_ms: 200,
+            error_count: 1,
+        });
+
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: "req-1".to_string(),
+                timestamp: Utc::now(),
+                model_requested: "claude-sonnet-4".to_string(),
+                provider: "anthropic".to_string(),
+                listener: "anthropic".to_string(),
+                is_streaming: true,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            },
+            SessionEvent::Completed {
+                session_id: session_id.to_string(),
+                request_id: "req-1".to_string(),
+                timestamp: Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: Some("end_turn".to_string()),
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: 5000,
+                    provider_time_ms: 4500,
+                    proxy_overhead_ms: 500.0,
+                    total_tokens: TokenTotals {
+                        total_input: 100,
+                        total_output: 200,
+                        total_thinking: 0,
+                        total_cached: 0,
+                        grand_total: 300,
+                        by_model: HashMap::new(),
+                    },
+                    tool_summary: ToolUsageSummary {
+                        total_tool_calls: 5,
+                        unique_tool_count: 2,
+                        by_tool,
+                        total_tool_time_ms: 550,
+                        tool_error_count: 1,
+                    },
+                    performance: PerformanceMetrics::default(),
+                    streaming_stats: None,
+                    estimated_cost: None,
+                }),
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        // Verify tool calls are written to tool_calls table
+        let tool_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tool_calls WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(tool_count, 2, "Should have 2 tool call records");
+
+        // Verify Read tool call
+        let (tool_name, call_count, avg_time, errors): (String, i64, i64, i64) = sqlx::query_as(
+            "SELECT tool_name, call_count, avg_execution_time_ms, error_count FROM tool_calls WHERE session_id = ? AND tool_name = 'Read'",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(tool_name, "Read");
+        assert_eq!(call_count, 3);
+        assert_eq!(avg_time, 50);
+        assert_eq!(errors, 0);
+
+        // Verify Bash tool call
+        let (tool_name, call_count, avg_time, errors): (String, i64, i64, i64) = sqlx::query_as(
+            "SELECT tool_name, call_count, avg_execution_time_ms, error_count FROM tool_calls WHERE session_id = ? AND tool_name = 'Bash'",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(tool_name, "Bash");
+        assert_eq!(call_count, 2);
+        assert_eq!(avg_time, 200);
+        assert_eq!(errors, 1);
     }
 }
