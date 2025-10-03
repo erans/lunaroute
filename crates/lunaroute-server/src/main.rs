@@ -301,65 +301,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(openai_config) = &config.providers.openai
         && openai_config.enabled
     {
-        if let Some(ref api_key) = openai_config.api_key {
-                info!("✓ OpenAI provider enabled");
-                let provider_config = OpenAIConfig::new(api_key.clone());
-                let conn = OpenAIConnector::new(provider_config)?;
+        // Get API key (empty string if not configured - will use client's header)
+        let api_key = openai_config.api_key.clone().unwrap_or_default();
 
-                // Build the provider stack (order matters!)
-                // 1. Start with connector
-                // 2. Wrap with session recording if enabled
-                // 3. Wrap with logging if enabled
-                let connector = Arc::new(conn);
-                openai_connector = Some(connector.clone()); // Save for passthrough
-                // Session recording is now handled via async multi-writer in passthrough mode
-                let provider: Arc<dyn Provider> = if config.logging.log_requests {
-                    info!("  Request/response logging: enabled");
-                    Arc::new(LoggingProvider::new(connector.clone(), "OpenAI".to_string()))
-                } else {
-                    connector
-                };
-
-            providers.insert("openai".to_string(), provider);
+        if api_key.is_empty() {
+            info!("✓ OpenAI provider enabled (no API key - will use client auth)");
         } else {
-            warn!("✗ OpenAI provider enabled but no API key provided");
+            info!("✓ OpenAI provider enabled");
         }
+
+        let provider_config = OpenAIConfig::new(api_key.clone());
+        let conn = OpenAIConnector::new(provider_config)?;
+
+        // Build the provider stack (order matters!)
+        // 1. Start with connector
+        // 2. Wrap with session recording if enabled
+        // 3. Wrap with logging if enabled
+        let connector = Arc::new(conn);
+        openai_connector = Some(connector.clone()); // Save for passthrough
+        // Session recording is now handled via async multi-writer in passthrough mode
+        let provider: Arc<dyn Provider> = if config.logging.log_requests {
+            info!("  Request/response logging: enabled");
+            Arc::new(LoggingProvider::new(connector.clone(), "OpenAI".to_string()))
+        } else {
+            connector
+        };
+
+        providers.insert("openai".to_string(), provider);
     }
 
     // Anthropic provider
     if let Some(anthropic_config) = &config.providers.anthropic
         && anthropic_config.enabled
     {
-        if let Some(ref api_key) = anthropic_config.api_key {
-                info!("✓ Anthropic provider enabled");
-                let base_url = anthropic_config
-                    .base_url
-                    .clone()
-                    .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+        // Get API key (empty string if not configured - will use client's header)
+        let api_key = anthropic_config.api_key.clone().unwrap_or_default();
 
-                let provider_config = AnthropicConfig {
-                    api_key: api_key.clone(),
-                    base_url,
-                    api_version: "2023-06-01".to_string(),
-                    client_config: Default::default(),
-                };
-                let conn = AnthropicConnector::new(provider_config)?;
-
-                // Build the provider stack (order matters!)
-                // Session recording is now handled via async multi-writer in passthrough mode
-                let connector = Arc::new(conn);
-                anthropic_connector = Some(connector.clone()); // Save for passthrough
-                let provider: Arc<dyn Provider> = if config.logging.log_requests {
-                    info!("  Request/response logging: enabled");
-                    Arc::new(LoggingProvider::new(connector.clone(), "Anthropic".to_string()))
-                } else {
-                    connector
-                };
-
-            providers.insert("anthropic".to_string(), provider);
+        if api_key.is_empty() {
+            info!("✓ Anthropic provider enabled (no API key - will use client auth)");
         } else {
-            warn!("✗ Anthropic provider enabled but no API key provided");
+            info!("✓ Anthropic provider enabled");
         }
+
+        let base_url = anthropic_config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+
+        let provider_config = AnthropicConfig {
+            api_key: api_key.clone(),
+            base_url,
+            api_version: "2023-06-01".to_string(),
+            client_config: Default::default(),
+        };
+        let conn = AnthropicConnector::new(provider_config)?;
+
+        // Build the provider stack (order matters!)
+        // Session recording is now handled via async multi-writer in passthrough mode
+        let connector = Arc::new(conn);
+        anthropic_connector = Some(connector.clone()); // Save for passthrough
+        let provider: Arc<dyn Provider> = if config.logging.log_requests {
+            info!("  Request/response logging: enabled");
+            Arc::new(LoggingProvider::new(connector.clone(), "Anthropic".to_string()))
+        } else {
+            connector
+        };
+
+        providers.insert("anthropic".to_string(), provider);
     }
 
     // Allow starting without providers in certain scenarios (e.g., passthrough with client-provided keys)

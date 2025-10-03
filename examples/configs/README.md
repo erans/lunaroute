@@ -27,8 +27,14 @@ lunaroute-server --config examples/configs/routing-strategies.yaml
 Optimized for Claude Code CLI with zero-copy passthrough mode.
 
 ```bash
+# Option 1: Use environment variable
 ANTHROPIC_API_KEY=sk-ant-... lunaroute-server --config examples/configs/claude-code-proxy.yaml
 export ANTHROPIC_BASE_URL=http://localhost:3000
+
+# Option 2: Let Claude Code provide auth (recommended - no env var needed)
+lunaroute-server --config examples/configs/claude-code-proxy.yaml
+export ANTHROPIC_BASE_URL=http://localhost:3000
+# Claude Code will send its API key in the x-api-key header
 ```
 
 **Features:**
@@ -36,18 +42,24 @@ export ANTHROPIC_BASE_URL=http://localhost:3000
 - Sub-millisecond overhead (~0.1-0.2ms)
 - 100% API fidelity
 - Session recording disabled for performance
+- Works with client-provided authentication
 
 ### `anthropic-proxy.yaml`
 Simple Anthropic proxy with debug logging.
 
 ```bash
+# Option 1: Use environment variable
 ANTHROPIC_API_KEY=sk-ant-... lunaroute-server --config examples/configs/anthropic-proxy.yaml
+
+# Option 2: Client provides x-api-key header (no env var needed)
+lunaroute-server --config examples/configs/anthropic-proxy.yaml
 ```
 
 **Features:**
 - Debug logging with request details
 - No session recording
 - Port 8081 (avoid conflicts)
+- Supports client-provided authentication headers
 
 ### `openai-proxy.yaml`
 OpenAI-compatible proxy server.

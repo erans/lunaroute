@@ -11,7 +11,9 @@ api_dialect: "anthropic"
 providers:
   anthropic:
     enabled: true
-    # Set ANTHROPIC_API_KEY environment variable
+    # No api_key field here - will use:
+    #   1. ANTHROPIC_API_KEY environment variable, OR
+    #   2. Client's x-api-key header (Claude Code provides this)
 
 session_recording:
   enabled: false  # Disable for maximum performance

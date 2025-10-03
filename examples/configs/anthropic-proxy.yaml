@@ -6,10 +6,12 @@ api_dialect: "anthropic"
 providers:
   anthropic:
     enabled: true
-    # API key will be read from ANTHROPIC_API_KEY env var
+    # No api_key field here - will use:
+    #   1. ANTHROPIC_API_KEY environment variable, OR
+    #   2. Client's x-api-key header (passthrough mode)
 
 session_recording:
-  enabled: true  # No disk writes
+  enabled: false  # No disk writes
 
 logging:
   level: "debug"
