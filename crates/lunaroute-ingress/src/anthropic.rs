@@ -1351,10 +1351,10 @@ pub async fn messages_passthrough(
 
     // Forward ALL Anthropic response headers (content-type, content-encoding, etc.)
     for (name, value) in &response_headers {
-        if let Ok(header_name) = axum::http::HeaderName::from_bytes(name.as_bytes()) {
-            if let Ok(header_value) = axum::http::HeaderValue::from_str(value) {
-                axum_headers.insert(header_name, header_value);
-            }
+        if let Ok(header_name) = axum::http::HeaderName::from_bytes(name.as_bytes())
+            && let Ok(header_value) = axum::http::HeaderValue::from_str(value)
+        {
+            axum_headers.insert(header_name, header_value);
         }
     }
 

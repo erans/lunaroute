@@ -1174,10 +1174,10 @@ pub async fn chat_completions_passthrough(
 
     // Forward OpenAI's response headers (rate limits, request-id, etc.)
     for (name, value) in &response_headers {
-        if let Ok(header_name) = axum::http::HeaderName::from_bytes(name.as_bytes()) {
-            if let Ok(header_value) = axum::http::HeaderValue::from_str(value) {
-                axum_headers.insert(header_name, header_value);
-            }
+        if let Ok(header_name) = axum::http::HeaderName::from_bytes(name.as_bytes())
+            && let Ok(header_value) = axum::http::HeaderValue::from_str(value)
+        {
+            axum_headers.insert(header_name, header_value);
         }
     }
 

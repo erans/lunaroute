@@ -18,6 +18,7 @@
 //!
 //! ```no_run
 //! use lunaroute_session::jsonl_writer::{JsonlWriter, JsonlConfig};
+//! use lunaroute_session::SessionWriter;
 //! use std::path::PathBuf;
 //!
 //! # async fn example() {

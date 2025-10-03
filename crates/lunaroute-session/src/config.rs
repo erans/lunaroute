@@ -1,7 +1,7 @@
 //! Session recording configuration
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[derive(Default)]
@@ -324,10 +324,10 @@ impl SessionRecordingConfig {
     /// Expand tilde (~) in paths to the user's home directory
     pub fn expand_paths(&mut self) {
         if let Some(jsonl) = &mut self.jsonl {
-            jsonl.directory = expand_tilde(&jsonl.directory);
+            jsonl.directory = expand_tilde(jsonl.directory.as_path());
         }
         if let Some(sqlite) = &mut self.sqlite {
-            sqlite.path = expand_tilde(&sqlite.path);
+            sqlite.path = expand_tilde(sqlite.path.as_path());
         }
     }
 }
@@ -335,44 +335,44 @@ impl SessionRecordingConfig {
 /// Expand tilde (~) in a path to the user's home directory
 /// Uses the dirs crate for cross-platform compatibility
 /// Also canonicalizes the path to prevent path traversal attacks
-fn expand_tilde(path: &PathBuf) -> PathBuf {
-    if let Some(path_str) = path.to_str() {
-        if path_str.starts_with("~/") || path_str == "~" {
-            // Use dirs::home_dir() for cross-platform compatibility
-            if let Some(home) = dirs::home_dir() {
-                let expanded = if path_str == "~" {
-                    home.clone()
-                } else {
-                    // Join the home dir with the path after "~/"
-                    home.join(&path_str[2..])
-                };
+fn expand_tilde(path: &Path) -> PathBuf {
+    if let Some(path_str) = path.to_str()
+        && (path_str.starts_with("~/") || path_str == "~")
+    {
+        // Use dirs::home_dir() for cross-platform compatibility
+        if let Some(home) = dirs::home_dir() {
+            let expanded = if path_str == "~" {
+                home.clone()
+            } else {
+                // Join the home dir with the path after "~/"
+                home.join(&path_str[2..])
+            };
 
-                // Canonicalize to resolve any .. or . components and prevent path traversal
-                // Note: canonicalize() requires the path to exist, so we fall back to the
-                // expanded path if it doesn't exist yet (e.g., during initial setup)
-                match expanded.canonicalize() {
-                    Ok(canonical) => return canonical,
-                    Err(_) => {
-                        // Path doesn't exist yet, return the expanded path
-                        // but ensure it's within the home directory for security
-                        if let Ok(home_canonical) = home.canonicalize() {
-                            if expanded.starts_with(&home_canonical) {
-                                return expanded;
-                            } else {
-                                tracing::warn!(
-                                    "Path expansion resulted in path outside home directory: {:?}",
-                                    expanded
-                                );
-                                return path.clone();
-                            }
+            // Canonicalize to resolve any .. or . components and prevent path traversal
+            // Note: canonicalize() requires the path to exist, so we fall back to the
+            // expanded path if it doesn't exist yet (e.g., during initial setup)
+            match expanded.canonicalize() {
+                Ok(canonical) => return canonical,
+                Err(_) => {
+                    // Path doesn't exist yet, return the expanded path
+                    // but ensure it's within the home directory for security
+                    if let Ok(home_canonical) = home.canonicalize() {
+                        if expanded.starts_with(&home_canonical) {
+                            return expanded;
+                        } else {
+                            tracing::warn!(
+                                "Path expansion resulted in path outside home directory: {:?}",
+                                expanded
+                            );
+                            return path.to_path_buf();
                         }
-                        return expanded;
                     }
+                    return expanded;
                 }
             }
         }
     }
-    path.clone()
+    path.to_path_buf()
 }
 
 #[cfg(test)]
