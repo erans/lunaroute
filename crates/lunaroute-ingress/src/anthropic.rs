@@ -826,16 +826,27 @@ pub async fn messages_passthrough(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    // Pass through all Anthropic-specific headers from the client
+    // Pass through ALL headers from the client (except hop-by-hop headers)
+    // This allows client to provide auth headers if no API key is configured
     let mut passthrough_headers = std::collections::HashMap::new();
 
+    // Headers that should NOT be forwarded (hop-by-hop headers per RFC 7230)
+    let skip_headers = [
+        "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+        "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length"
+    ];
+
     for (name, value) in headers.iter() {
-        let name_str = name.as_str();
-        // Pass through anthropic-* headers (version, beta, etc.)
-        if name_str.starts_with("anthropic-")
-            && let Ok(value_str) = value.to_str()
-        {
-            passthrough_headers.insert(name_str.to_string(), value_str.to_string());
+        let name_str = name.as_str().to_lowercase();
+
+        // Skip hop-by-hop headers
+        if skip_headers.contains(&name_str.as_str()) {
+            continue;
+        }
+
+        // Forward all other headers including authorization
+        if let Ok(value_str) = value.to_str() {
+            passthrough_headers.insert(name.as_str().to_string(), value_str.to_string());
         }
     }
 

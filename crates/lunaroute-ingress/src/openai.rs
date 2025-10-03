@@ -783,10 +783,35 @@ pub fn passthrough_router(
 /// Preserves 100% API fidelity while still extracting metrics
 pub async fn chat_completions_passthrough(
     State(state): State<Arc<OpenAIPassthroughState>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<serde_json::Value>,
 ) -> Result<Response, IngressError> {
     let start_time = std::time::Instant::now();
     tracing::debug!("OpenAI passthrough mode: skipping normalization");
+
+    // Pass through ALL headers from the client (except hop-by-hop headers)
+    // This allows client to provide auth headers if no API key is configured
+    let mut passthrough_headers = std::collections::HashMap::new();
+
+    // Headers that should NOT be forwarded (hop-by-hop headers per RFC 7230)
+    let skip_headers = [
+        "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+        "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length"
+    ];
+
+    for (name, value) in headers.iter() {
+        let name_str = name.as_str().to_lowercase();
+
+        // Skip hop-by-hop headers
+        if skip_headers.contains(&name_str.as_str()) {
+            continue;
+        }
+
+        // Forward all other headers including authorization
+        if let Ok(value_str) = value.to_str() {
+            passthrough_headers.insert(name.as_str().to_string(), value_str.to_string());
+        }
+    }
 
     // Extract session ID from metadata (reserved for future use)
     let _session_id = req
@@ -850,7 +875,7 @@ pub async fn chat_completions_passthrough(
     if is_streaming {
         // Handle streaming passthrough
         let stream_response = state.connector
-            .stream_passthrough(req)
+            .stream_passthrough(req, passthrough_headers)
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
@@ -998,7 +1023,7 @@ pub async fn chat_completions_passthrough(
 
     // Send directly to OpenAI API (non-streaming)
     let response_result = state.connector
-        .send_passthrough(req)
+        .send_passthrough(req, passthrough_headers)
         .await;
 
     let response = match response_result {

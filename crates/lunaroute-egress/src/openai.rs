@@ -76,18 +76,36 @@ impl OpenAIConnector {
     pub async fn send_passthrough(
         &self,
         request_json: serde_json::Value,
+        headers: std::collections::HashMap<String, String>,
     ) -> Result<serde_json::Value> {
         debug!("Sending passthrough request to OpenAI (no normalization)");
 
         let max_retries = self.config.client_config.max_retries;
         let result = with_retry(max_retries, || {
             let request_json = request_json.clone();
+            let headers = headers.clone();
+            let config_api_key = self.config.api_key.clone();
+            let config = self.config.clone();
             async move {
-                let response = self.client
-                    .post(format!("{}/chat/completions", self.config.base_url))
-                    .header("Authorization", format!("Bearer {}", self.config.api_key))
-                    .header("Content-Type", "application/json")
-                    .apply_organization_header(&self.config)
+                let mut request_builder = self.client
+                    .post(format!("{}/chat/completions", config.base_url))
+                    .header("Content-Type", "application/json");
+
+                // Add all passthrough headers first
+                for (name, value) in &headers {
+                    request_builder = request_builder.header(name, value);
+                }
+
+                // If we have a configured API key, override any client-provided auth
+                // If not, rely on client's Authorization header
+                if !config_api_key.is_empty() {
+                    request_builder = request_builder.header("Authorization", format!("Bearer {}", config_api_key));
+                }
+
+                // Apply organization header if configured
+                request_builder = request_builder.apply_organization_header(&config);
+
+                let response = request_builder
                     .json(&request_json)
                     .send()
                     .await?;
@@ -148,19 +166,34 @@ impl OpenAIConnector {
 
     /// Stream raw OpenAI request (passthrough mode - no normalization)
     /// Returns raw response for direct SSE forwarding
-    #[instrument(skip(self, request_json))]
+    #[instrument(skip(self, request_json, headers))]
     pub async fn stream_passthrough(
         &self,
         request_json: serde_json::Value,
+        headers: std::collections::HashMap<String, String>,
     ) -> Result<reqwest::Response> {
         debug!("Sending passthrough streaming request to OpenAI (no normalization)");
 
-        let response = self
+        let mut request_builder = self
             .client
             .post(format!("{}/chat/completions", self.config.base_url))
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .apply_organization_header(&self.config)
+            .header("Content-Type", "application/json");
+
+        // Add all passthrough headers first
+        for (name, value) in &headers {
+            request_builder = request_builder.header(name, value);
+        }
+
+        // If we have a configured API key, override any client-provided auth
+        // If not, rely on client's Authorization header
+        if !self.config.api_key.is_empty() {
+            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
+        }
+
+        // Apply organization header if configured
+        request_builder = request_builder.apply_organization_header(&self.config);
+
+        let response = request_builder
             .json(&request_json)
             .send()
             .await

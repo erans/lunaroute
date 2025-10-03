@@ -102,15 +102,21 @@ impl AnthropicConnector {
         let result = with_retry(max_retries, || {
             let request_json = request_json.clone();
             let headers = headers.clone();
+            let config_api_key = self.config.api_key.clone();
             async move {
                 let mut request_builder = self.client
                     .post(format!("{}/v1/messages", self.config.base_url))
-                    .header("x-api-key", &self.config.api_key)
                     .header("Content-Type", "application/json");
 
-                // Add all passthrough headers
+                // Add all passthrough headers first
                 for (name, value) in &headers {
                     request_builder = request_builder.header(name, value);
+                }
+
+                // If we have a configured API key, override any client-provided auth
+                // If not, rely on client's x-api-key or authorization header
+                if !config_api_key.is_empty() {
+                    request_builder = request_builder.header("x-api-key", &config_api_key);
                 }
 
                 let response = request_builder
@@ -200,12 +206,17 @@ impl AnthropicConnector {
         let mut request_builder = self
             .client
             .post(format!("{}/v1/messages", self.config.base_url))
-            .header("x-api-key", &self.config.api_key)
             .header("Content-Type", "application/json");
 
-        // Add all passthrough headers
+        // Add all passthrough headers first
         for (name, value) in &headers {
             request_builder = request_builder.header(name, value);
+        }
+
+        // If we have a configured API key, override any client-provided auth
+        // If not, rely on client's x-api-key or authorization header
+        if !self.config.api_key.is_empty() {
+            request_builder = request_builder.header("x-api-key", &self.config.api_key);
         }
 
         let response = request_builder
