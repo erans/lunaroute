@@ -1102,7 +1102,24 @@ pub async fn messages_passthrough(
     );
 
     // Parse response for metrics extraction (don't modify the raw bytes we'll send to client)
-    let response_json: serde_json::Value = serde_json::from_slice(&raw_response_bytes)
+    // If response is gzipped, decompress it first for parsing
+    let bytes_for_parsing = if response_headers.get("content-encoding")
+        .map(|v| v.to_lowercase().contains("gzip"))
+        .unwrap_or(false)
+    {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+
+        let mut decoder = GzDecoder::new(&raw_response_bytes[..]);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed)
+            .map_err(|e| IngressError::Internal(format!("Failed to decompress gzip response: {}", e)))?;
+        decompressed
+    } else {
+        raw_response_bytes.to_vec()
+    };
+
+    let response_json: serde_json::Value = serde_json::from_slice(&bytes_for_parsing)
         .map_err(|e| IngressError::Internal(format!("Failed to parse response for metrics: {}", e)))?;
 
     // Extract metrics for observability (optional: log tokens, model, etc.)

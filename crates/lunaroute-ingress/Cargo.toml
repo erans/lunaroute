@@ -28,3 +28,4 @@ async-trait = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 eventsource-stream = { workspace = true }
+flate2 = { workspace = true }

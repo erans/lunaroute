@@ -186,9 +186,27 @@ impl AnthropicConnector {
                 EgressError::ParseError(format!("Failed to read Anthropic passthrough response bytes: {}", e))
             })?;
 
-        // Optionally parse for debug logging
+        // Optionally parse for debug logging (decompress if gzipped)
         if tracing::enabled!(tracing::Level::DEBUG) {
-            if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&raw_bytes) {
+            let bytes_for_logging = if headers_map.get("content-encoding")
+                .map(|v| v.to_lowercase().contains("gzip"))
+                .unwrap_or(false)
+            {
+                use flate2::read::GzDecoder;
+                use std::io::Read;
+
+                let mut decoder = GzDecoder::new(&raw_bytes[..]);
+                let mut decompressed = Vec::new();
+                if decoder.read_to_end(&mut decompressed).is_ok() {
+                    decompressed
+                } else {
+                    raw_bytes.to_vec()
+                }
+            } else {
+                raw_bytes.to_vec()
+            };
+
+            if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&bytes_for_logging) {
                 debug!("┌─────────────────────────────────────────────────────────");
                 debug!("│ Anthropic Passthrough Response Body (parsed for logging)");
                 debug!("├─────────────────────────────────────────────────────────");
