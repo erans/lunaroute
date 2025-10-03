@@ -73,14 +73,13 @@ impl AnthropicConnector {
     }
 
     /// Send a raw JSON request directly to Anthropic (passthrough mode)
-    /// This skips normalization for Anthropic→Anthropic routing, preserving 100% API fidelity.
-    /// Still parses the response to extract metrics (tokens, model, etc.)
+    /// Returns the raw response bytes and headers for true transparent proxying
     #[instrument(skip(self, request_json, headers))]
     pub async fn send_passthrough(
         &self,
         request_json: serde_json::Value,
         headers: std::collections::HashMap<String, String>,
-    ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
+    ) -> Result<(bytes::Bytes, std::collections::HashMap<String, String>)> {
         debug!("Sending passthrough request to Anthropic (no normalization)");
 
         // Log request headers and body at debug level
@@ -145,11 +144,11 @@ impl AnthropicConnector {
     }
 
     /// Handle passthrough response (for send_passthrough)
-    /// Returns (json_body, headers_map)
+    /// Returns (raw_bytes, headers_map) for transparent proxying
     async fn handle_anthropic_passthrough_response(
         &self,
         response: reqwest::Response,
-    ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
+    ) -> Result<(bytes::Bytes, std::collections::HashMap<String, String>)> {
         let status = response.status();
 
         if !status.is_success() {
@@ -179,14 +178,26 @@ impl AnthropicConnector {
             }
         }
 
-        let json_body = response
-            .json::<serde_json::Value>()
+        // Get raw bytes for transparent passthrough
+        let raw_bytes = response
+            .bytes()
             .await
             .map_err(|e| {
-                EgressError::ParseError(format!("Failed to parse Anthropic passthrough response: {}", e))
+                EgressError::ParseError(format!("Failed to read Anthropic passthrough response bytes: {}", e))
             })?;
 
-        Ok((json_body, headers_map))
+        // Optionally parse for debug logging
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&raw_bytes) {
+                debug!("┌─────────────────────────────────────────────────────────");
+                debug!("│ Anthropic Passthrough Response Body (parsed for logging)");
+                debug!("├─────────────────────────────────────────────────────────");
+                debug!("│ {}", serde_json::to_string_pretty(&json_value).unwrap_or_else(|_| "Failed to serialize".to_string()));
+                debug!("└─────────────────────────────────────────────────────────");
+            }
+        }
+
+        Ok((raw_bytes, headers_map))
     }
 
     /// Stream raw Anthropic request (passthrough mode - no normalization)

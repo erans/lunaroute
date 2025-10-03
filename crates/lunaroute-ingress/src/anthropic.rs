@@ -909,20 +909,12 @@ pub async fn messages_passthrough(
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
-        // Extract response headers before consuming the stream
-        // Headers to skip (reqwest handles these automatically)
-        let skip_headers = ["content-encoding", "content-length", "transfer-encoding"];
+        // Extract and forward ALL response headers from Anthropic
+        // With automatic decompression disabled in reqwest, we get the exact response
         let mut response_headers = axum::http::HeaderMap::new();
 
         for (name, value) in stream_response.headers() {
-            let name_lower = name.as_str().to_lowercase();
-
-            // Skip headers that reqwest auto-handles (compression, chunking)
-            if skip_headers.contains(&name_lower.as_str()) {
-                continue;
-            }
-
-            // Forward all other headers (rate limits, request-id, etc.)
+            // Forward all headers exactly as received (including content-encoding)
             response_headers.insert(name.clone(), value.clone());
         }
 
@@ -1070,8 +1062,8 @@ pub async fn messages_passthrough(
         .send_passthrough(req, passthrough_headers)
         .await;
 
-    let (response, response_headers) = match response_result {
-        Ok((resp, headers)) => (resp, headers),
+    let (raw_response_bytes, response_headers) = match response_result {
+        Ok((bytes, headers)) => (bytes, headers),
         Err(e) => {
             // Record error in session if recording is enabled
             if let (Some(recorder), Some(session_id), Some(request_id)) =
@@ -1109,8 +1101,12 @@ pub async fn messages_passthrough(
         provider_time.as_secs_f64() * 1000.0
     );
 
+    // Parse response for metrics extraction (don't modify the raw bytes we'll send to client)
+    let response_json: serde_json::Value = serde_json::from_slice(&raw_response_bytes)
+        .map_err(|e| IngressError::Internal(format!("Failed to parse response for metrics: {}", e)))?;
+
     // Extract metrics for observability (optional: log tokens, model, etc.)
-    let (input_tokens, output_tokens, thinking_tokens) = if let Some(usage) = response.get("usage") {
+    let (input_tokens, output_tokens, thinking_tokens) = if let Some(usage) = response_json.get("usage") {
         let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
         let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
 
@@ -1147,7 +1143,7 @@ pub async fn messages_passthrough(
 
     // Extract tool calls from response content
     let mut tool_calls = std::collections::HashMap::new();
-    if let Some(content) = response.get("content").and_then(|c| c.as_array()) {
+    if let Some(content) = response_json.get("content").and_then(|c| c.as_array()) {
         for block in content {
             if let Some("tool_use") = block.get("type").and_then(|t| t.as_str())
                 && let Some(tool_name) = block.get("name").and_then(|n| n.as_str())
@@ -1165,7 +1161,7 @@ pub async fn messages_passthrough(
     // Record session response if enabled (using async events)
     if let (Some(recorder), Some(session_id), Some(request_id)) =
         (&state.session_recorder, &recording_session_id, &recording_request_id)
-        && let Ok(anthropic_resp) = serde_json::from_value::<AnthropicResponse>(response.clone()) {
+        && let Ok(anthropic_resp) = serde_json::from_value::<AnthropicResponse>(response_json.clone()) {
             use lunaroute_session::{SessionEvent, events::{ResponseStats, TokenStats, FinalSessionStats, TokenTotals, ToolUsageSummary, PerformanceMetrics}};
 
             // Extract response text
@@ -1183,7 +1179,7 @@ pub async fn messages_passthrough(
                 request_id: request_id.clone(),
                 timestamp: chrono::Utc::now(),
                 response_text: response_text.clone(),
-                response_json: response.clone(),
+                response_json: response_json.clone(),
                 model_used: anthropic_resp.model.clone(),
                 stats: ResponseStats {
                     provider_latency_ms: provider_time.as_millis() as u64,
@@ -1253,22 +1249,17 @@ pub async fn messages_passthrough(
             });
         }
 
-    // Build response with headers from Anthropic's API
-    let mut axum_response = Json(response).into_response();
+    // Build response with raw bytes and ALL headers from Anthropic
+    // This ensures true transparent proxying - client gets exact response from Anthropic
+    let mut axum_response = axum::http::Response::builder()
+        .status(200)
+        .body(axum::body::Body::from(raw_response_bytes))
+        .map_err(|e| IngressError::Internal(format!("Failed to build response: {}", e)))?;
+
     let axum_headers = axum_response.headers_mut();
 
-    // Headers to skip (reqwest handles these automatically)
-    let skip_headers = ["content-encoding", "content-length", "transfer-encoding"];
-
-    // Forward Anthropic's response headers (rate limits, request-id, etc.)
+    // Forward ALL Anthropic response headers (content-type, content-encoding, etc.)
     for (name, value) in &response_headers {
-        let name_lower = name.to_lowercase();
-
-        // Skip headers that reqwest auto-handles (compression, chunking)
-        if skip_headers.contains(&name_lower.as_str()) {
-            continue;
-        }
-
         if let Ok(header_name) = axum::http::HeaderName::from_bytes(name.as_bytes()) {
             if let Ok(header_value) = axum::http::HeaderValue::from_str(value) {
                 axum_headers.insert(header_name, header_value);

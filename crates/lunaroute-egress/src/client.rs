@@ -45,6 +45,11 @@ pub fn create_client(config: &HttpClientConfig) -> Result<Client> {
         .user_agent(&config.user_agent)
         // Use rustls for TLS (no openssl dependency)
         .use_rustls_tls()
+        // Disable automatic decompression for true passthrough mode
+        // In passthrough mode, we forward the exact response from upstream
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
         // Build the client
         .build()
         .map_err(|e| EgressError::ConfigError(format!("Failed to create HTTP client: {}", e)))
