@@ -28,7 +28,8 @@ Records, stores, searches, and replays LLM interactions with automatic PII redac
 - **Argon2id Key Derivation** - Secure password-based key generation
 - **Crypto-Secure Session IDs** - 128-bit entropy from OsRng (not UUID v4)
 - **Persistent Salt Management** - Salt stored in `.encryption_salt` for consistency
-- **Session ID Validation** - Strict validation prevents path traversal attacks
+- **Multi-Layer Session ID Validation** - Defense-in-depth validation at ingress, storage, and database layers
+- **Secure Path Expansion** - Cross-platform tilde expansion with canonicalization and boundary checks
 
 ### Production-Ready Observability
 
