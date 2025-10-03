@@ -17,7 +17,7 @@ lunaroute-storage = { path = "../lunaroute-storage" }
 lunaroute-ingress = { path = "../lunaroute-ingress" }
 lunaroute-egress = { path = "../lunaroute-egress" }
 lunaroute-routing = { path = "../lunaroute-routing" }
-lunaroute-session = { path = "../lunaroute-session" }
+lunaroute-session = { path = "../lunaroute-session", features = ["sqlite-writer"] }
 lunaroute-pii = { path = "../lunaroute-pii" }
 lunaroute-observability = { path = "../lunaroute-observability" }
 

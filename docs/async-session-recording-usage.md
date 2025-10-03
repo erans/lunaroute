@@ -53,6 +53,15 @@ session_recording:
 - ✅ Only SQLite enabled (requires `sqlite-writer` feature)
 - ✅ Both disabled (recording off)
 
+**Important:** To use SQLite recording, you must enable the `sqlite-writer` feature:
+
+```toml
+# In your Cargo.toml
+lunaroute-session = { path = "../lunaroute-session", features = ["sqlite-writer"] }
+```
+
+Without this feature, SQLite configuration will be ignored even if enabled in config.
+
 **Master Switch:**
 - `enabled: false` disables all recording regardless of writer settings
 - `enabled: true` allows individual writers to be enabled/disabled

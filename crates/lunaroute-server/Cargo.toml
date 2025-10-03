@@ -17,7 +17,7 @@ lunaroute-ingress = { path = "../lunaroute-ingress" }
 lunaroute-egress = { path = "../lunaroute-egress" }
 lunaroute-routing = { path = "../lunaroute-routing" }
 lunaroute-observability = { path = "../lunaroute-observability" }
-lunaroute-session = { path = "../lunaroute-session" }
+lunaroute-session = { path = "../lunaroute-session", features = ["sqlite-writer"] }
 
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true }

@@ -819,12 +819,25 @@ pub async fn messages_passthrough(
     let start_time = std::time::Instant::now();
     tracing::debug!("Anthropic passthrough mode: skipping normalization");
 
-    // Extract session ID from metadata
+    // Extract session ID from metadata.user_id
+    // The user_id may contain the session ID embedded like: "user_xxx_session_<uuid>"
+    // We need to parse out the actual session ID (the part after "_session_")
     let session_id = req
         .get("metadata")
         .and_then(|m| m.get("user_id"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .and_then(|user_id| {
+            // Try to extract session ID from user_id field
+            // Format: user_<hash>_account_<uuid>_session_<uuid>
+            if let Some(pos) = user_id.rfind("_session_") {
+                // Extract everything after "_session_"
+                let session_part = &user_id[pos + "_session_".len()..];
+                Some(session_part.to_string())
+            } else {
+                // Fallback: use entire user_id if no "_session_" marker found
+                Some(user_id.to_string())
+            }
+        });
 
     // Pass through ALL headers from the client (except hop-by-hop headers)
     // This allows client to provide auth headers if no API key is configured
@@ -865,9 +878,9 @@ pub async fn messages_passthrough(
         .unwrap_or("unknown")
         .to_string();
 
-    // Generate session ID and request ID for recording
+    // Use extracted session ID from metadata, or generate a new one if not available
     let recording_session_id = if state.session_recorder.is_some() {
-        Some(uuid::Uuid::new_v4().to_string())
+        session_id.clone().or_else(|| Some(uuid::Uuid::new_v4().to_string()))
     } else {
         None
     };

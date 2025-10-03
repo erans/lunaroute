@@ -111,12 +111,15 @@ impl ServerConfig {
         let path = path.as_ref();
         let contents = std::fs::read_to_string(path)?;
 
-        let config = if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+        let mut config: ServerConfig = if path.extension().and_then(|s| s.to_str()) == Some("toml") {
             toml::from_str(&contents)?
         } else {
             // Default to YAML
             serde_yaml::from_str(&contents)?
         };
+
+        // Expand tilde (~) in session recording paths
+        config.session_recording.expand_paths();
 
         Ok(config)
     }
@@ -199,6 +202,9 @@ impl ServerConfig {
                 sqlite.enabled = enabled;
             }
         }
+
+        // Expand tilde (~) in session recording paths after env var processing
+        self.session_recording.expand_paths();
 
         // Logging settings
         if let Ok(val) = std::env::var("LUNAROUTE_LOG_REQUESTS")

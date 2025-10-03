@@ -320,6 +320,32 @@ impl SessionRecordingConfig {
     pub fn is_pii_enabled(&self) -> bool {
         self.enabled && self.pii.as_ref().is_some_and(|c| c.enabled)
     }
+
+    /// Expand tilde (~) in paths to the user's home directory
+    pub fn expand_paths(&mut self) {
+        if let Some(jsonl) = &mut self.jsonl {
+            jsonl.directory = expand_tilde(&jsonl.directory);
+        }
+        if let Some(sqlite) = &mut self.sqlite {
+            sqlite.path = expand_tilde(&sqlite.path);
+        }
+    }
+}
+
+/// Expand tilde (~) in a path to the user's home directory
+fn expand_tilde(path: &PathBuf) -> PathBuf {
+    if let Some(path_str) = path.to_str() {
+        if path_str.starts_with("~/") || path_str == "~" {
+            if let Ok(home) = std::env::var("HOME") {
+                if path_str == "~" {
+                    return PathBuf::from(home);
+                } else {
+                    return PathBuf::from(path_str.replacen("~", &home, 1));
+                }
+            }
+        }
+    }
+    path.clone()
 }
 
 #[cfg(test)]
