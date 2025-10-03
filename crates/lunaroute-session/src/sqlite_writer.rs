@@ -855,6 +855,9 @@ impl SessionWriter for SqliteWriter {
                     final_stats,
                     ..
                 } => {
+                    // Update session with completion data AND token totals from final_stats
+                    // For streaming sessions: tokens are 0 initially, so we set them here
+                    // For non-streaming sessions: tokens already set by ResponseRecorded, use MAX to keep cumulative totals
                     sqlx::query(
                         r#"
                         UPDATE sessions
@@ -862,7 +865,10 @@ impl SessionWriter for SqliteWriter {
                             success = ?,
                             error_message = ?,
                             finish_reason = ?,
-                            total_duration_ms = ?
+                            total_duration_ms = ?,
+                            input_tokens = MAX(COALESCE(input_tokens, 0), ?),
+                            output_tokens = MAX(COALESCE(output_tokens, 0), ?),
+                            thinking_tokens = MAX(COALESCE(thinking_tokens, 0), ?)
                         WHERE session_id = ?
                         "#,
                     )
@@ -870,10 +876,38 @@ impl SessionWriter for SqliteWriter {
                     .bind(error)
                     .bind(finish_reason)
                     .bind(final_stats.total_duration_ms as i64)
+                    .bind(final_stats.total_tokens.total_input as i64)
+                    .bind(final_stats.total_tokens.total_output as i64)
+                    .bind(final_stats.total_tokens.total_thinking as i64)
                     .bind(session_id)
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| WriterError::Database(e.to_string()))?;
+
+                    // Insert tool call summary if there were any tool calls
+                    if final_stats.tool_summary.total_tool_calls > 0 {
+                        for (tool_name, tool_stats) in &final_stats.tool_summary.by_tool {
+                            sqlx::query(
+                                r#"
+                                INSERT INTO tool_calls (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                                ON CONFLICT(session_id, tool_name) DO UPDATE
+                                SET call_count = call_count + excluded.call_count,
+                                    avg_execution_time_ms = (COALESCE(avg_execution_time_ms, 0) + excluded.avg_execution_time_ms) / 2,
+                                    error_count = error_count + excluded.error_count
+                                "#,
+                            )
+                            .bind(session_id)
+                            .bind(request_id)
+                            .bind(tool_name)
+                            .bind(tool_stats.call_count as i64)
+                            .bind(tool_stats.avg_execution_time_ms as i64)
+                            .bind(tool_stats.error_count as i64)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| WriterError::Database(e.to_string()))?;
+                        }
+                    }
 
                     // Insert stream metrics if this was a streaming session
                     if let Some(streaming_stats) = &final_stats.streaming_stats {
