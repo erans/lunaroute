@@ -132,7 +132,7 @@ impl SqliteWriter {
         .await
         .map_err(|e| WriterError::Database(e.to_string()))?;
 
-        sqlx::query("INSERT OR IGNORE INTO schema_version (version) VALUES (1)")
+        sqlx::query("INSERT OR IGNORE INTO schema_version (version) VALUES (2)")
             .execute(pool)
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
@@ -157,8 +157,13 @@ impl SqliteWriter {
                 input_tokens INTEGER DEFAULT 0,
                 output_tokens INTEGER DEFAULT 0,
                 thinking_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0,
+                audio_input_tokens INTEGER DEFAULT 0,
+                audio_output_tokens INTEGER DEFAULT 0,
                 total_tokens INTEGER GENERATED ALWAYS AS (
-                    input_tokens + output_tokens + COALESCE(thinking_tokens, 0)
+                    input_tokens + output_tokens + COALESCE(thinking_tokens, 0) + COALESCE(reasoning_tokens, 0)
                 ) STORED,
                 request_text TEXT,
                 response_text TEXT,
@@ -1036,6 +1041,11 @@ impl SqliteWriter {
         let input_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_input, "input_tokens")?;
         let output_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_output, "output_tokens")?;
         let thinking_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_thinking, "thinking_tokens")?;
+        let reasoning_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_reasoning, "reasoning_tokens")?;
+        let cache_read_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_cache_read, "cache_read_tokens")?;
+        let cache_creation_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_cache_creation, "cache_creation_tokens")?;
+        let audio_input_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_audio_input, "audio_input_tokens")?;
+        let audio_output_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_audio_output, "audio_output_tokens")?;
 
         sqlx::query(
             r#"
@@ -1047,7 +1057,12 @@ impl SqliteWriter {
                 total_duration_ms = ?,
                 input_tokens = MAX(COALESCE(input_tokens, 0), ?),
                 output_tokens = MAX(COALESCE(output_tokens, 0), ?),
-                thinking_tokens = MAX(COALESCE(thinking_tokens, 0), ?)
+                thinking_tokens = MAX(COALESCE(thinking_tokens, 0), ?),
+                reasoning_tokens = MAX(COALESCE(reasoning_tokens, 0), ?),
+                cache_read_tokens = MAX(COALESCE(cache_read_tokens, 0), ?),
+                cache_creation_tokens = MAX(COALESCE(cache_creation_tokens, 0), ?),
+                audio_input_tokens = MAX(COALESCE(audio_input_tokens, 0), ?),
+                audio_output_tokens = MAX(COALESCE(audio_output_tokens, 0), ?)
             WHERE session_id = ?
             "#,
         )
@@ -1058,6 +1073,11 @@ impl SqliteWriter {
         .bind(input_tokens)
         .bind(output_tokens)
         .bind(thinking_tokens)
+        .bind(reasoning_tokens)
+        .bind(cache_read_tokens)
+        .bind(cache_creation_tokens)
+        .bind(audio_input_tokens)
+        .bind(audio_output_tokens)
         .bind(session_id)
         .execute(&mut **tx)
         .await
@@ -1099,19 +1119,34 @@ impl SqliteWriter {
             let input_tokens = Self::safe_u64_to_i64(tokens.total_input, "input_tokens")?;
             let output_tokens = Self::safe_u64_to_i64(tokens.total_output, "output_tokens")?;
             let thinking_tokens = Self::safe_u64_to_i64(tokens.total_thinking, "thinking_tokens")?;
+            let reasoning_tokens = Self::safe_u64_to_i64(tokens.total_reasoning, "reasoning_tokens")?;
+            let cache_read_tokens = Self::safe_u64_to_i64(tokens.total_cache_read, "cache_read_tokens")?;
+            let cache_creation_tokens = Self::safe_u64_to_i64(tokens.total_cache_creation, "cache_creation_tokens")?;
+            let audio_input_tokens = Self::safe_u64_to_i64(tokens.total_audio_input, "audio_input_tokens")?;
+            let audio_output_tokens = Self::safe_u64_to_i64(tokens.total_audio_output, "audio_output_tokens")?;
 
             sqlx::query(
                 r#"
                 UPDATE sessions
                 SET input_tokens = MAX(COALESCE(input_tokens, 0), ?),
                     output_tokens = MAX(COALESCE(output_tokens, 0), ?),
-                    thinking_tokens = MAX(COALESCE(thinking_tokens, 0), ?)
+                    thinking_tokens = MAX(COALESCE(thinking_tokens, 0), ?),
+                    reasoning_tokens = MAX(COALESCE(reasoning_tokens, 0), ?),
+                    cache_read_tokens = MAX(COALESCE(cache_read_tokens, 0), ?),
+                    cache_creation_tokens = MAX(COALESCE(cache_creation_tokens, 0), ?),
+                    audio_input_tokens = MAX(COALESCE(audio_input_tokens, 0), ?),
+                    audio_output_tokens = MAX(COALESCE(audio_output_tokens, 0), ?)
                 WHERE session_id = ?
                 "#,
             )
             .bind(input_tokens)
             .bind(output_tokens)
             .bind(thinking_tokens)
+            .bind(reasoning_tokens)
+            .bind(cache_read_tokens)
+            .bind(cache_creation_tokens)
+            .bind(audio_input_tokens)
+            .bind(audio_output_tokens)
             .bind(session_id)
             .execute(&mut **tx)
             .await
@@ -1491,7 +1526,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[tokio::test]
