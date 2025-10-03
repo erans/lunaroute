@@ -118,6 +118,28 @@ pub struct OpenAIUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<OpenAIPromptTokensDetails>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_tokens_details: Option<OpenAICompletionTokensDetails>,
+}
+
+/// OpenAI prompt tokens details (for caching and audio)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIPromptTokensDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_tokens: Option<u32>,
+}
+
+/// OpenAI completion tokens details (for reasoning and audio)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAICompletionTokensDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_tokens: Option<u32>,
 }
 
 /// OpenAI streaming chunk (SSE format)
@@ -499,6 +521,8 @@ pub fn from_normalized(resp: NormalizedResponse) -> OpenAIChatResponse {
             prompt_tokens: resp.usage.prompt_tokens,
             completion_tokens: resp.usage.completion_tokens,
             total_tokens: resp.usage.total_tokens,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
         },
     }
 }
@@ -583,6 +607,8 @@ fn stream_event_to_openai_chunk(
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
                 total_tokens: usage.total_tokens,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             }),
         }),
         NormalizedStreamEvent::End { finish_reason } => {
@@ -792,6 +818,19 @@ pub async fn chat_completions_passthrough(
     let start_time = std::time::Instant::now();
     tracing::debug!("OpenAI passthrough mode: skipping normalization");
 
+    // Extract user-agent from headers for session tracking
+    // Truncate to 255 chars to prevent database issues with extremely long user agents
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            if s.len() > 255 {
+                s.chars().take(255).collect()
+            } else {
+                s.to_string()
+            }
+        });
+
     // Pass through ALL headers from the client (except hop-by-hop headers)
     // This allows client to provide auth headers if no API key is configured
     let mut passthrough_headers = std::collections::HashMap::new();
@@ -867,7 +906,7 @@ pub async fn chat_completions_passthrough(
             is_streaming,
             metadata: V2Metadata {
                 client_ip: None,
-                user_agent: None,
+                user_agent: user_agent.clone(),
                 api_version: None,
                 request_headers: Default::default(),
                 session_tags: vec![],
@@ -1094,6 +1133,7 @@ pub async fn chat_completions_passthrough(
                             session_id.clone(),
                             request_id.clone(),
                             recorder.clone(),
+                            user_agent.clone(),
                         );
                     }
                     Ok(_) => {
@@ -1186,6 +1226,7 @@ pub async fn chat_completions_passthrough(
         (state.session_recorder.clone(), recording_session_id.clone(), recording_request_id.clone())
     {
         let response_clone = response.clone();
+        let user_agent_clone = user_agent.clone();
 
         tokio::spawn(async move {
             // Catch and log any panics/errors in background parsing
@@ -1211,14 +1252,54 @@ pub async fn chat_completions_passthrough(
             // Extract model
             let model_used = response_clone.get("model").and_then(|m| m.as_str()).map(|s| s.to_string());
 
-            // Extract tokens
-            let (input_tokens, output_tokens) = if let Some(usage) = response_clone.get("usage") {
-                let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                (input, output)
-            } else {
-                (0, 0)
-            };
+            // Extract tokens with detailed breakdown
+            let (input_tokens, output_tokens, reasoning_tokens, cached_tokens, _audio_input, _audio_output) =
+                if let Some(usage) = response_clone.get("usage") {
+                    let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                    // Extract reasoning tokens from completion_tokens_details
+                    let reasoning = usage.get("completion_tokens_details")
+                        .and_then(|d| d.get("reasoning_tokens"))
+                        .and_then(|v| v.as_u64());
+
+                    // Extract cached tokens from prompt_tokens_details
+                    let cached = usage.get("prompt_tokens_details")
+                        .and_then(|d| d.get("cached_tokens"))
+                        .and_then(|v| v.as_u64());
+
+                    // Extract audio tokens
+                    let audio_in = usage.get("prompt_tokens_details")
+                        .and_then(|d| d.get("audio_tokens"))
+                        .and_then(|v| v.as_u64());
+                    let audio_out = usage.get("completion_tokens_details")
+                        .and_then(|d| d.get("audio_tokens"))
+                        .and_then(|v| v.as_u64());
+
+                    (input, output, reasoning, cached, audio_in, audio_out)
+                } else {
+                    (0, 0, None, None, None, None)
+                };
+
+            // Calculate response size
+            let response_size_bytes = serde_json::to_vec(&response_clone).map(|v| v.len()).unwrap_or(0);
+
+            // Count content blocks (messages in choices)
+            let mut content_blocks = 0;
+            let mut has_refusal = false;
+            if let Some(choices) = response_clone.get("choices").and_then(|c| c.as_array()) {
+                content_blocks = choices.len();
+
+                // Check for refusal in finish_reason
+                for choice in choices {
+                    if let Some(finish_reason) = choice.get("finish_reason").and_then(|f| f.as_str())
+                        && (finish_reason == "content_filter" || finish_reason == "content_policy_violation")
+                    {
+                        has_refusal = true;
+                        break;
+                    }
+                }
+            }
 
             // Build updates if we have meaningful data
             let has_tokens = input_tokens > 0 || output_tokens > 0;
@@ -1228,12 +1309,21 @@ pub async fn chat_completions_passthrough(
                 use lunaroute_session::events::{TokenTotals, ToolUsageSummary, ToolStats};
 
                 let token_updates = if has_tokens {
+                    let reasoning = reasoning_tokens.unwrap_or(0);
+                    let cached = cached_tokens.unwrap_or(0);
+                    let audio_in = _audio_input.unwrap_or(0);
+                    let audio_out = _audio_output.unwrap_or(0);
                     Some(TokenTotals {
                         total_input: input_tokens,
                         total_output: output_tokens,
-                        total_thinking: 0,
-                        total_cached: 0,
-                        grand_total: input_tokens + output_tokens,
+                        total_thinking: 0,  // OpenAI doesn't have thinking tokens (that's Anthropic)
+                        total_reasoning: reasoning,  // OpenAI o1/o3/o4 reasoning tokens
+                        total_cached: cached,  // Deprecated field, kept for backward compat
+                        total_cache_read: cached,  // OpenAI cached tokens (50% discount)
+                        total_cache_creation: 0,  // OpenAI doesn't report cache creation separately
+                        total_audio_input: audio_in,
+                        total_audio_output: audio_out,
+                        grand_total: input_tokens + output_tokens + reasoning,
                         by_model: Default::default(),
                     })
                 } else {
@@ -1269,6 +1359,10 @@ pub async fn chat_completions_passthrough(
                     token_updates,
                     tool_call_updates: tool_summary,
                     model_used,
+                    response_size_bytes,
+                    content_blocks,
+                    has_refusal,
+                    user_agent: user_agent_clone,
                 });
 
                 tracing::debug!(

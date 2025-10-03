@@ -14,6 +14,11 @@ SELECT
     input_tokens,
     output_tokens,
     thinking_tokens,
+    reasoning_tokens,
+    cache_read_tokens,
+    cache_creation_tokens,
+    audio_input_tokens,
+    audio_output_tokens,
     success,
     finish_reason
 FROM sessions
@@ -45,18 +50,22 @@ LIMIT 10;
 ### 2. Token Usage Analysis
 
 ```sql
--- Sessions with high thinking tokens
+-- Sessions with high thinking/reasoning tokens
 SELECT
     session_id,
     model_used,
     thinking_tokens,
-    ROUND(thinking_tokens * 100.0 / (input_tokens + output_tokens + thinking_tokens), 2) as thinking_pct,
+    reasoning_tokens,
+    ROUND((COALESCE(thinking_tokens, 0) + COALESCE(reasoning_tokens, 0)) * 100.0 /
+          (input_tokens + output_tokens + COALESCE(thinking_tokens, 0) + COALESCE(reasoning_tokens, 0)), 2) as extended_pct,
+    cache_read_tokens,
+    cache_creation_tokens,
     substr(request_text, 1, 100) as request_preview,
     substr(response_text, 1, 100) as response_preview,
     datetime(started_at) as started
 FROM sessions
-WHERE thinking_tokens > 10000
-ORDER BY thinking_tokens DESC
+WHERE (thinking_tokens > 10000 OR reasoning_tokens > 10000)
+ORDER BY (COALESCE(thinking_tokens, 0) + COALESCE(reasoning_tokens, 0)) DESC
 LIMIT 50;
 
 -- Token usage by model
@@ -66,10 +75,18 @@ SELECT
     AVG(input_tokens) as avg_input,
     AVG(output_tokens) as avg_output,
     AVG(thinking_tokens) as avg_thinking,
+    AVG(reasoning_tokens) as avg_reasoning,
+    AVG(cache_read_tokens) as avg_cache_read,
+    AVG(cache_creation_tokens) as avg_cache_creation,
     SUM(input_tokens) as total_input,
     SUM(output_tokens) as total_output,
     SUM(thinking_tokens) as total_thinking,
-    SUM(input_tokens + output_tokens + COALESCE(thinking_tokens, 0)) as total_tokens
+    SUM(reasoning_tokens) as total_reasoning,
+    SUM(cache_read_tokens) as total_cache_read,
+    SUM(cache_creation_tokens) as total_cache_creation,
+    SUM(audio_input_tokens) as total_audio_input,
+    SUM(audio_output_tokens) as total_audio_output,
+    SUM(input_tokens + output_tokens + COALESCE(thinking_tokens, 0) + COALESCE(reasoning_tokens, 0)) as total_tokens
 FROM sessions
 WHERE started_at > datetime('now', '-7 days')
 GROUP BY model_used
@@ -82,7 +99,12 @@ SELECT
     SUM(input_tokens) as input_tokens,
     SUM(output_tokens) as output_tokens,
     SUM(thinking_tokens) as thinking_tokens,
-    SUM(input_tokens + output_tokens + COALESCE(thinking_tokens, 0)) as total_tokens
+    SUM(reasoning_tokens) as reasoning_tokens,
+    SUM(cache_read_tokens) as cache_read_tokens,
+    SUM(cache_creation_tokens) as cache_creation_tokens,
+    SUM(audio_input_tokens) as audio_input_tokens,
+    SUM(audio_output_tokens) as audio_output_tokens,
+    SUM(input_tokens + output_tokens + COALESCE(thinking_tokens, 0) + COALESCE(reasoning_tokens, 0)) as total_tokens
 FROM sessions
 WHERE started_at > datetime('now', '-30 days')
 GROUP BY DATE(started_at)
@@ -134,7 +156,7 @@ SELECT
     model_used,
     provider_latency_ms,
     total_duration_ms,
-    input_tokens + output_tokens as total_tokens,
+    input_tokens + output_tokens + COALESCE(thinking_tokens, 0) + COALESCE(reasoning_tokens, 0) as total_tokens,
     substr(request_text, 1, 200) as request_preview,
     datetime(started_at) as started
 FROM sessions
@@ -203,7 +225,7 @@ SELECT
     client_ip,
     COUNT(*) as requests,
     COUNT(DISTINCT model_used) as unique_models,
-    SUM(input_tokens + output_tokens + COALESCE(thinking_tokens, 0)) as total_tokens,
+    SUM(input_tokens + output_tokens + COALESCE(thinking_tokens, 0) + COALESCE(reasoning_tokens, 0)) as total_tokens,
     MIN(started_at) as first_seen,
     MAX(started_at) as last_seen
 FROM sessions
@@ -305,7 +327,12 @@ SELECT json_object(
     'tokens', json_object(
         'input', input_tokens,
         'output', output_tokens,
-        'thinking', thinking_tokens
+        'thinking', thinking_tokens,
+        'reasoning', reasoning_tokens,
+        'cache_read', cache_read_tokens,
+        'cache_creation', cache_creation_tokens,
+        'audio_input', audio_input_tokens,
+        'audio_output', audio_output_tokens
     ),
     'request_text', request_text,
     'response_text', response_text
@@ -334,7 +361,7 @@ CREATE INDEX idx_sessions_request_text ON sessions(request_text) WHERE request_t
 CREATE INDEX idx_sessions_client_ip_date ON sessions(client_ip, started_at DESC);
 
 -- For model-specific analysis
-CREATE INDEX idx_sessions_model_tokens ON sessions(model_used, input_tokens + output_tokens + thinking_tokens);
+CREATE INDEX idx_sessions_model_tokens ON sessions(model_used, input_tokens + output_tokens + COALESCE(thinking_tokens, 0) + COALESCE(reasoning_tokens, 0));
 ```
 
 ### 2. Materialized Views for Dashboards
@@ -351,7 +378,12 @@ SELECT
     AVG(provider_latency_ms) as avg_latency,
     SUM(input_tokens) as total_input_tokens,
     SUM(output_tokens) as total_output_tokens,
-    SUM(thinking_tokens) as total_thinking_tokens
+    SUM(thinking_tokens) as total_thinking_tokens,
+    SUM(reasoning_tokens) as total_reasoning_tokens,
+    SUM(cache_read_tokens) as total_cache_read_tokens,
+    SUM(cache_creation_tokens) as total_cache_creation_tokens,
+    SUM(audio_input_tokens) as total_audio_input_tokens,
+    SUM(audio_output_tokens) as total_audio_output_tokens
 FROM sessions
 GROUP BY hour, provider, model_used;
 
@@ -383,6 +415,11 @@ SELECT
     input_tokens,
     output_tokens,
     thinking_tokens,
+    reasoning_tokens,
+    cache_read_tokens,
+    cache_creation_tokens,
+    audio_input_tokens,
+    audio_output_tokens,
     client_ip,
     LENGTH(request_text) as request_length,
     LENGTH(response_text) as response_length

@@ -25,6 +25,14 @@ pub struct SessionRecordingConfig {
     /// PII detection and redaction configuration
     #[serde(default)]
     pub pii: Option<PIIConfig>,
+
+    /// Whether to capture User-Agent header from requests
+    #[serde(default = "default_true")]
+    pub capture_user_agent: bool,
+
+    /// Maximum length for user_agent strings (truncates if longer)
+    #[serde(default = "default_max_user_agent_length")]
+    pub max_user_agent_length: usize,
 }
 
 
@@ -300,6 +308,10 @@ fn default_partial_show_chars() -> usize {
     4
 }
 
+fn default_max_user_agent_length() -> usize {
+    255
+}
+
 impl SessionRecordingConfig {
     /// Check if JSONL writer is enabled
     pub fn is_jsonl_enabled(&self) -> bool {
@@ -394,6 +406,8 @@ mod tests {
             sqlite: None,
             worker: WorkerConfig::default(),
             pii: None,
+            capture_user_agent: true,
+            max_user_agent_length: 255,
         };
 
         assert!(config.is_jsonl_enabled());
@@ -409,6 +423,8 @@ mod tests {
             sqlite: Some(SqliteConfig::default()),
             worker: WorkerConfig::default(),
             pii: None,
+            capture_user_agent: true,
+            max_user_agent_length: 255,
         };
 
         assert!(!config.is_jsonl_enabled());
@@ -467,6 +483,8 @@ mod tests {
             }),
             worker: WorkerConfig::default(),
             pii: None,
+            capture_user_agent: true,
+            max_user_agent_length: 255,
         };
 
         config.expand_paths();
@@ -484,6 +502,8 @@ mod tests {
             sqlite: Some(SqliteConfig::default()),
             worker: WorkerConfig::default(),
             pii: None,
+            capture_user_agent: true,
+            max_user_agent_length: 255,
         };
 
         assert!(config.is_jsonl_enabled());
@@ -499,6 +519,8 @@ mod tests {
             sqlite: Some(SqliteConfig::default()),
             worker: WorkerConfig::default(),
             pii: None,
+            capture_user_agent: true,
+            max_user_agent_length: 255,
         };
 
         assert!(!config.is_jsonl_enabled());
@@ -525,6 +547,8 @@ mod tests {
                 batch_timeout_ms: 50,
             },
             pii: None,
+            capture_user_agent: true,
+            max_user_agent_length: 255,
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -706,6 +730,8 @@ mod tests {
                 enabled: true,
                 ..PIIConfig::default()
             }),
+            capture_user_agent: true,
+            max_user_agent_length: 255,
         };
 
         assert!(config.is_pii_enabled());
@@ -722,6 +748,8 @@ mod tests {
                 enabled: true,
                 ..PIIConfig::default()
             }),
+            capture_user_agent: true,
+            max_user_agent_length: 255,
         };
 
         assert!(!config.is_pii_enabled());
@@ -738,6 +766,8 @@ mod tests {
                 enabled: false,
                 ..PIIConfig::default()
             }),
+            capture_user_agent: true,
+            max_user_agent_length: 255,
         };
 
         assert!(!config.is_pii_enabled());
@@ -751,6 +781,8 @@ mod tests {
             sqlite: None,
             worker: WorkerConfig::default(),
             pii: None,
+            capture_user_agent: true,
+            max_user_agent_length: 255,
         };
 
         assert!(!config.is_pii_enabled());

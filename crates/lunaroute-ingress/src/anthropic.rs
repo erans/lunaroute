@@ -154,6 +154,10 @@ pub enum AnthropicContent {
 pub struct AnthropicUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u32>,
 }
 
 /// Anthropic tool definition
@@ -226,10 +230,12 @@ pub struct AnthropicMessageDelta {
     pub stop_sequence: Option<String>,
 }
 
-/// Anthropic usage delta
+/// Anthropic usage delta (for streaming)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicUsageDelta {
     pub output_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_tokens: Option<u32>,
 }
 
 /// Validate Anthropic request parameters
@@ -531,6 +537,8 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
         usage: AnthropicUsage {
             input_tokens: resp.usage.prompt_tokens,
             output_tokens: resp.usage.completion_tokens,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
         },
     }
 }
@@ -565,6 +573,8 @@ fn stream_event_to_anthropic_events(
                     usage: AnthropicUsage {
                         input_tokens: 0,
                         output_tokens: 0,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
                     },
                 },
             }]
@@ -652,7 +662,10 @@ fn stream_event_to_anthropic_events(
                     stop_reason: Some(stop_reason.to_string()),
                     stop_sequence: None,
                 },
-                usage: AnthropicUsageDelta { output_tokens: 0 },
+                usage: AnthropicUsageDelta {
+                    output_tokens: 0,
+                    thinking_tokens: None,
+                },
             });
 
             // Send message_stop
@@ -899,6 +912,19 @@ pub async fn messages_passthrough(
         .unwrap_or("unknown")
         .to_string();
 
+    // Extract user-agent from headers for session tracking
+    // Truncate to 255 chars to prevent database issues with extremely long user agents
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            if s.len() > 255 {
+                s.chars().take(255).collect()
+            } else {
+                s.to_string()
+            }
+        });
+
     // Use extracted session ID from metadata, or generate a new one if not available
     let recording_session_id = if state.session_recorder.is_some() {
         session_id.clone().or_else(|| Some(uuid::Uuid::new_v4().to_string()))
@@ -928,7 +954,7 @@ pub async fn messages_passthrough(
             is_streaming,
             metadata: V2Metadata {
                 client_ip: None,
-                user_agent: None,
+                user_agent: user_agent.clone(),
                 api_version: None,
                 request_headers: Default::default(),
                 session_tags: vec![],
@@ -1145,6 +1171,7 @@ pub async fn messages_passthrough(
                             session_id.clone(),
                             request_id.clone(),
                             recorder.clone(),
+                            user_agent.clone(),
                         );
                     }
                     Ok(_) => {
@@ -1247,6 +1274,7 @@ pub async fn messages_passthrough(
     {
         let raw_bytes = raw_response_bytes.clone();
         let response_headers_clone = response_headers.clone();
+        let user_agent_clone = user_agent.clone();
 
         tokio::spawn(async move {
             // Catch and log any panics/errors in background parsing
@@ -1290,23 +1318,33 @@ pub async fn messages_passthrough(
                 }
             };
 
-            // Extract tokens
-            let (input_tokens, output_tokens, thinking_tokens) = if let Some(usage) = response_json.get("usage") {
-                let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                let thinking = usage.get("thinking_tokens")
-                    .and_then(|v| v.as_u64())
-                    .or_else(|| usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()))
-                    .or_else(|| usage.get("extended_thinking_tokens").and_then(|v| v.as_u64()))
-                    .unwrap_or(0);
-                (input, output, thinking)
-            } else {
-                (0, 0, 0)
-            };
+            // Extract tokens with cache details
+            let (input_tokens, output_tokens, thinking_tokens, _cache_creation, cache_read) =
+                if let Some(usage) = response_json.get("usage") {
+                    let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
 
-            // Extract tool calls
+                    // Extract thinking tokens (extended thinking, not cache!)
+                    let thinking = usage.get("thinking_tokens")
+                        .and_then(|v| v.as_u64())
+                        .or_else(|| usage.get("extended_thinking_tokens").and_then(|v| v.as_u64()))
+                        .unwrap_or(0);
+
+                    // Extract cache tokens separately
+                    let cache_create = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64());
+                    let cache_hit = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64());
+
+                    (input, output, thinking, cache_create, cache_hit)
+                } else {
+                    (0, 0, 0, None, None)
+                };
+
+            // Extract tool calls and count content blocks
             let mut tool_calls_map = std::collections::HashMap::new();
+            let mut content_blocks = 0;
+            let mut has_refusal = false;
             if let Some(content) = response_json.get("content").and_then(|c| c.as_array()) {
+                content_blocks = content.len();
                 for block in content {
                     if let Some("tool_use") = block.get("type").and_then(|t| t.as_str())
                         && let Some(tool_name) = block.get("name").and_then(|n| n.as_str())
@@ -1316,8 +1354,16 @@ pub async fn messages_passthrough(
                 }
             }
 
+            // Check for refusal in stop_reason
+            if let Some(stop_reason) = response_json.get("stop_reason").and_then(|s| s.as_str()) {
+                has_refusal = stop_reason == "end_turn"; // Simplified - actual refusal detection may vary
+            }
+
             // Extract model
             let model_used = response_json.get("model").and_then(|m| m.as_str()).map(|s| s.to_string());
+
+            // Calculate response size
+            let response_size_bytes = bytes_for_parsing.len();
 
             // Build updates if we have meaningful data
             let has_tokens = input_tokens > 0 || output_tokens > 0;
@@ -1327,12 +1373,19 @@ pub async fn messages_passthrough(
                 use lunaroute_session::events::{TokenTotals, ToolUsageSummary, ToolStats};
 
                 let token_updates = if has_tokens {
+                    let cache_r = cache_read.unwrap_or(0);
+                    let cache_c = _cache_creation.unwrap_or(0);
                     Some(TokenTotals {
                         total_input: input_tokens,
                         total_output: output_tokens,
-                        total_thinking: thinking_tokens,
-                        total_cached: 0,
-                        grand_total: input_tokens + output_tokens,
+                        total_thinking: thinking_tokens,  // Anthropic extended thinking tokens
+                        total_reasoning: 0,  // Anthropic doesn't have reasoning tokens (that's OpenAI)
+                        total_cached: cache_r,  // Deprecated field, kept for backward compat
+                        total_cache_read: cache_r,  // Anthropic cache hits (90% discount)
+                        total_cache_creation: cache_c,  // Anthropic cache writes (25% markup)
+                        total_audio_input: 0,  // Anthropic doesn't have audio tokens yet
+                        total_audio_output: 0,
+                        grand_total: input_tokens + output_tokens + thinking_tokens,
                         by_model: Default::default(),
                     })
                 } else {
@@ -1368,6 +1421,10 @@ pub async fn messages_passthrough(
                     token_updates,
                     tool_call_updates: tool_summary,
                     model_used,
+                    response_size_bytes,
+                    content_blocks,
+                    has_refusal,
+                    user_agent: user_agent_clone,
                 });
 
                 tracing::debug!(

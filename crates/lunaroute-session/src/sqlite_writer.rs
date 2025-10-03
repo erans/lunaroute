@@ -215,6 +215,12 @@ impl SqliteWriter {
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
+        // Index for user_agent queries
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_user_agent ON sessions(user_agent)")
+            .execute(pool)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
         // Session stats table
         sqlx::query(
             r#"
@@ -229,8 +235,11 @@ impl SqliteWriter {
                 input_tokens INTEGER DEFAULT 0,
                 output_tokens INTEGER DEFAULT 0,
                 thinking_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
                 cache_read_tokens INTEGER DEFAULT 0,
-                cache_write_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0,
+                audio_input_tokens INTEGER DEFAULT 0,
+                audio_output_tokens INTEGER DEFAULT 0,
                 tokens_per_second REAL,
                 thinking_percentage REAL,
                 request_size_bytes INTEGER,
@@ -239,6 +248,7 @@ impl SqliteWriter {
                 content_blocks INTEGER,
                 has_tools BOOLEAN DEFAULT 0,
                 has_refusal BOOLEAN DEFAULT 0,
+                user_agent TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
             )
@@ -254,6 +264,11 @@ impl SqliteWriter {
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_session_stats_model ON session_stats(model_name, created_at DESC)")
+            .execute(pool)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_session_stats_user_agent ON session_stats(user_agent)")
             .execute(pool)
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
@@ -820,6 +835,7 @@ impl SessionWriter for SqliteWriter {
                     // Safe conversions for all u32/u64/usize values
                     let output_tokens = Self::safe_u32_to_i64(stats.tokens.output_tokens);
                     let thinking_tokens = stats.tokens.thinking_tokens.map(Self::safe_u32_to_i64);
+                    let reasoning_tokens = stats.tokens.reasoning_tokens.map(Self::safe_u32_to_i64);
                     let input_tokens = Self::safe_u32_to_i64(stats.tokens.input_tokens);
                     let provider_latency = Self::safe_u64_to_i64(stats.provider_latency_ms, "provider_latency_ms")?;
                     let chunk_count = stats.chunk_count.map(Self::safe_u32_to_i64);
@@ -827,7 +843,9 @@ impl SessionWriter for SqliteWriter {
                         .map(|d| Self::safe_u64_to_i64(d, "streaming_duration_ms"))
                         .transpose()?;
                     let cache_read = stats.tokens.cache_read_tokens.map(Self::safe_u32_to_i64);
-                    let cache_write = stats.tokens.cache_write_tokens.map(Self::safe_u32_to_i64);
+                    let cache_creation = stats.tokens.cache_creation_tokens.map(Self::safe_u32_to_i64);
+                    let audio_input = stats.tokens.audio_input_tokens.map(Self::safe_u32_to_i64);
+                    let audio_output = stats.tokens.audio_output_tokens.map(Self::safe_u32_to_i64);
                     let response_size = Self::safe_usize_to_i64(stats.response_size_bytes, "response_size_bytes")?;
                     let content_blocks = Self::safe_usize_to_i64(stats.content_blocks, "content_blocks")?;
 
@@ -869,11 +887,12 @@ impl SessionWriter for SqliteWriter {
                         INSERT INTO session_stats (
                             session_id, request_id, model_name,
                             post_processing_ms, proxy_overhead_ms,
-                            input_tokens, output_tokens, thinking_tokens,
-                            cache_read_tokens, cache_write_tokens,
+                            input_tokens, output_tokens, thinking_tokens, reasoning_tokens,
+                            cache_read_tokens, cache_creation_tokens,
+                            audio_input_tokens, audio_output_tokens,
                             tokens_per_second, thinking_percentage,
                             response_size_bytes, content_blocks, has_refusal
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         "#,
                     )
                     .bind(session_id)
@@ -884,8 +903,11 @@ impl SessionWriter for SqliteWriter {
                     .bind(input_tokens)
                     .bind(output_tokens)
                     .bind(thinking_tokens)
+                    .bind(reasoning_tokens)
                     .bind(cache_read)
-                    .bind(cache_write)
+                    .bind(cache_creation)
+                    .bind(audio_input)
+                    .bind(audio_output)
                     .bind(stats.tokens.tokens_per_second.map(|t| t as f64))
                     .bind(stats.tokens.thinking_percentage.map(|t| t as f64))
                     .bind(response_size)
@@ -955,6 +977,10 @@ impl SessionWriter for SqliteWriter {
                     token_updates,
                     tool_call_updates,
                     model_used,
+                    response_size_bytes,
+                    content_blocks,
+                    has_refusal,
+                    user_agent,
                     ..
                 } => {
                     Self::handle_stats_updated(
@@ -964,6 +990,10 @@ impl SessionWriter for SqliteWriter {
                         token_updates.as_ref(),
                         tool_call_updates.as_ref(),
                         model_used.as_deref(),
+                        *response_size_bytes,
+                        *content_blocks,
+                        *has_refusal,
+                        user_agent.as_deref(),
                     )
                     .await?;
                 }
@@ -997,7 +1027,7 @@ impl SqliteWriter {
         success: bool,
         error: &Option<String>,
         finish_reason: &Option<String>,
-        final_stats: &Box<FinalSessionStats>,
+        final_stats: &FinalSessionStats,
     ) -> WriterResult<()> {
         // Update session with completion data AND token totals from final_stats
         // For streaming sessions: tokens are 0 initially, so we set them here
@@ -1051,6 +1081,7 @@ impl SqliteWriter {
 
     /// Handle stats update event - updates session with late-arriving data from async parsing
     /// This is used in passthrough mode where we parse response data asynchronously
+    #[allow(clippy::too_many_arguments)]
     async fn handle_stats_updated(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         session_id: &str,
@@ -1058,8 +1089,12 @@ impl SqliteWriter {
         token_updates: Option<&TokenTotals>,
         tool_call_updates: Option<&ToolUsageSummary>,
         model_used: Option<&str>,
+        response_size_bytes: usize,
+        content_blocks: usize,
+        has_refusal: bool,
+        user_agent: Option<&str>,
     ) -> WriterResult<()> {
-        // Update session tokens if provided (use MAX to preserve any existing higher values)
+        // Update session tokens if provided (uses MAX to keep highest values)
         if let Some(tokens) = token_updates {
             let input_tokens = Self::safe_u64_to_i64(tokens.total_input, "input_tokens")?;
             let output_tokens = Self::safe_u64_to_i64(tokens.total_output, "output_tokens")?;
@@ -1071,14 +1106,13 @@ impl SqliteWriter {
                 SET input_tokens = MAX(COALESCE(input_tokens, 0), ?),
                     output_tokens = MAX(COALESCE(output_tokens, 0), ?),
                     thinking_tokens = MAX(COALESCE(thinking_tokens, 0), ?)
-                WHERE session_id = ? AND request_id = ?
+                WHERE session_id = ?
                 "#,
             )
             .bind(input_tokens)
             .bind(output_tokens)
             .bind(thinking_tokens)
             .bind(session_id)
-            .bind(request_id)
             .execute(&mut **tx)
             .await
             .map_err(|e| {
@@ -1095,12 +1129,11 @@ impl SqliteWriter {
                 r#"
                 UPDATE sessions
                 SET model_used = COALESCE(model_used, ?)
-                WHERE session_id = ? AND request_id = ?
+                WHERE session_id = ?
                 "#,
             )
             .bind(model)
             .bind(session_id)
-            .bind(request_id)
             .execute(&mut **tx)
             .await
             .map_err(|e| {
@@ -1112,40 +1145,155 @@ impl SqliteWriter {
         }
 
         // Insert/update tool calls if provided
-        if let Some(tool_summary) = tool_call_updates {
-            if tool_summary.total_tool_calls > 0 {
-                for (tool_name, tool_stats) in &tool_summary.by_tool {
-                    let call_count = Self::safe_u32_to_i64(tool_stats.call_count);
-                    let avg_time = Self::safe_u64_to_i64(tool_stats.avg_execution_time_ms, "tool avg_execution_time_ms")?;
-                    let error_count = Self::safe_u32_to_i64(tool_stats.error_count);
+        if let Some(tool_summary) = tool_call_updates
+            && tool_summary.total_tool_calls > 0
+        {
+            for (tool_name, tool_stats) in &tool_summary.by_tool {
+                let call_count = Self::safe_u32_to_i64(tool_stats.call_count);
+                let avg_time = Self::safe_u64_to_i64(tool_stats.avg_execution_time_ms, "tool avg_execution_time_ms")?;
+                let error_count = Self::safe_u32_to_i64(tool_stats.error_count);
 
-                    sqlx::query(
-                        r#"
-                        INSERT INTO tool_calls (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(session_id, request_id, tool_name)
-                        DO UPDATE SET
-                            call_count = MAX(call_count, excluded.call_count),
-                            avg_execution_time_ms = excluded.avg_execution_time_ms,
-                            error_count = MAX(error_count, excluded.error_count)
-                        "#,
-                    )
-                    .bind(session_id)
-                    .bind(request_id)
-                    .bind(tool_name)
-                    .bind(call_count)
-                    .bind(avg_time)
-                    .bind(error_count)
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(|e| {
-                        WriterError::Database(format!(
-                            "Failed to upsert tool call {} for session {}: {}",
-                            tool_name, session_id, e
-                        ))
-                    })?;
-                }
+                sqlx::query(
+                    r#"
+                    INSERT INTO tool_calls (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id, request_id, tool_name)
+                    DO UPDATE SET
+                        call_count = MAX(call_count, excluded.call_count),
+                        avg_execution_time_ms = excluded.avg_execution_time_ms,
+                        error_count = MAX(error_count, excluded.error_count)
+                    "#,
+                )
+                .bind(session_id)
+                .bind(request_id)
+                .bind(tool_name)
+                .bind(call_count)
+                .bind(avg_time)
+                .bind(error_count)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Failed to upsert tool call {} for session {}: {}",
+                        tool_name, session_id, e
+                    ))
+                })?;
             }
+        }
+
+        // Insert into session_stats if we have model information
+        // This is used in passthrough mode to record per-request stats
+        tracing::debug!("handle_stats_updated: model_used={:?}, has_tokens={}", model_used, token_updates.is_some());
+        if let Some(model) = model_used {
+            tracing::debug!("Inserting into session_stats for session={}, request={}, model={}", session_id, request_id, model);
+            let input_tokens = if let Some(tokens) = token_updates {
+                Self::safe_u64_to_i64(tokens.total_input, "input_tokens")?
+            } else {
+                0
+            };
+
+            let output_tokens = if let Some(tokens) = token_updates {
+                Self::safe_u64_to_i64(tokens.total_output, "output_tokens")?
+            } else {
+                0
+            };
+
+            let thinking_tokens = if let Some(tokens) = token_updates {
+                Self::safe_u64_to_i64(tokens.total_thinking, "thinking_tokens")?
+            } else {
+                0
+            };
+
+            let reasoning_tokens = if let Some(tokens) = token_updates {
+                Self::safe_u64_to_i64(tokens.total_reasoning, "reasoning_tokens")?
+            } else {
+                0
+            };
+
+            let cache_read = if let Some(tokens) = token_updates {
+                // Use new total_cache_read field, fall back to deprecated total_cached
+                let cache_r = if tokens.total_cache_read > 0 {
+                    tokens.total_cache_read
+                } else {
+                    tokens.total_cached
+                };
+                Self::safe_u64_to_i64(cache_r, "cache_read_tokens")?
+            } else {
+                0
+            };
+
+            let cache_creation = if let Some(tokens) = token_updates {
+                Self::safe_u64_to_i64(tokens.total_cache_creation, "cache_creation_tokens")?
+            } else {
+                0
+            };
+
+            let audio_input = if let Some(tokens) = token_updates {
+                Self::safe_u64_to_i64(tokens.total_audio_input, "audio_input_tokens")?
+            } else {
+                0
+            };
+
+            let audio_output = if let Some(tokens) = token_updates {
+                Self::safe_u64_to_i64(tokens.total_audio_output, "audio_output_tokens")?
+            } else {
+                0
+            };
+
+            let response_size = Self::safe_usize_to_i64(response_size_bytes, "response_size_bytes")?;
+            let content_blocks_i64 = Self::safe_usize_to_i64(content_blocks, "content_blocks")?;
+            let has_refusal_i64 = if has_refusal { 1i64 } else { 0i64 };
+
+            // Calculate thinking_percentage if we have thinking tokens
+            let thinking_percentage = if thinking_tokens > 0 && output_tokens > 0 {
+                Some((thinking_tokens as f64 / output_tokens as f64) * 100.0)
+            } else {
+                None
+            };
+
+            // Check if we have tool calls
+            let has_tools = tool_call_updates.map(|t| t.total_tool_calls > 0).unwrap_or(false);
+            let has_tools_i64 = if has_tools { 1i64 } else { 0i64 };
+
+            sqlx::query(
+                r#"
+                INSERT INTO session_stats (
+                    session_id, request_id, model_name,
+                    input_tokens, output_tokens, thinking_tokens, reasoning_tokens,
+                    cache_read_tokens, cache_creation_tokens,
+                    audio_input_tokens, audio_output_tokens,
+                    thinking_percentage,
+                    response_size_bytes, content_blocks,
+                    has_tools, has_refusal, user_agent
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(session_id)
+            .bind(request_id)
+            .bind(model)
+            .bind(input_tokens)
+            .bind(output_tokens)
+            .bind(thinking_tokens)
+            .bind(reasoning_tokens)
+            .bind(cache_read)
+            .bind(cache_creation)
+            .bind(audio_input)
+            .bind(audio_output)
+            .bind(thinking_percentage)
+            .bind(response_size)
+            .bind(content_blocks_i64)
+            .bind(has_tools_i64)
+            .bind(has_refusal_i64)
+            .bind(user_agent)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| {
+                WriterError::Database(format!(
+                    "Failed to insert session_stats for request {}: {}",
+                    request_id, e
+                ))
+            })?;
         }
 
         Ok(())
@@ -1256,7 +1404,7 @@ mod tests {
     use crate::events::*;
     use chrono::Utc;
     use std::collections::HashMap;
-    use tempfile::tempdir;
+    use tempfile::{tempdir, TempDir};
 
     #[test]
     fn test_validate_session_id_valid() {
@@ -1386,7 +1534,10 @@ mod tests {
                         output_tokens: 20,
                         thinking_tokens: None,
                         cache_read_tokens: None,
-                        cache_write_tokens: None,
+                        cache_creation_tokens: None,
+                        reasoning_tokens: None,
+                        audio_input_tokens: None,
+                        audio_output_tokens: None,
                         total_tokens: 30,
                         thinking_percentage: None,
                         tokens_per_second: Some(200.0),
@@ -1471,6 +1622,11 @@ mod tests {
                         total_thinking: 50,
                         total_cached: 20,
                         grand_total: 650,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                         by_model: HashMap::new(),
                     },
                     tool_summary: ToolUsageSummary::default(),
@@ -1593,7 +1749,10 @@ mod tests {
                             output_tokens: 20 + (i as u32 * 5),
                             thinking_tokens: None,
                             cache_read_tokens: None,
-                            cache_write_tokens: None,
+                            cache_creation_tokens: None,
+                        reasoning_tokens: None,
+                        audio_input_tokens: None,
+                        audio_output_tokens: None,
                             total_tokens: 30 + (i as u32 * 5),
                             thinking_percentage: None,
                             tokens_per_second: Some(200.0),
@@ -1690,7 +1849,10 @@ mod tests {
                             output_tokens: 200,
                             thinking_tokens: None,
                             cache_read_tokens: None,
-                            cache_write_tokens: None,
+                            cache_creation_tokens: None,
+                        reasoning_tokens: None,
+                        audio_input_tokens: None,
+                        audio_output_tokens: None,
                             total_tokens: 300,
                             thinking_percentage: None,
                             tokens_per_second: Some(200.0),
@@ -1721,6 +1883,11 @@ mod tests {
                             total_thinking: 0,
                             total_cached: 0,
                             grand_total: 300,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                             by_model: HashMap::new(),
                         },
                         tool_summary: ToolUsageSummary::default(),
@@ -1869,7 +2036,10 @@ mod tests {
                             output_tokens: 20,
                             thinking_tokens: None,
                             cache_read_tokens: None,
-                            cache_write_tokens: None,
+                            cache_creation_tokens: None,
+                        reasoning_tokens: None,
+                        audio_input_tokens: None,
+                        audio_output_tokens: None,
                             total_tokens: 30,
                             thinking_percentage: None,
                             tokens_per_second: Some(200.0),
@@ -1956,7 +2126,10 @@ mod tests {
                             output_tokens: (token_count / 2) as u32,
                             thinking_tokens: None,
                             cache_read_tokens: None,
-                            cache_write_tokens: None,
+                            cache_creation_tokens: None,
+                        reasoning_tokens: None,
+                        audio_input_tokens: None,
+                        audio_output_tokens: None,
                             total_tokens: token_count as u32,
                             thinking_percentage: None,
                             tokens_per_second: Some(200.0),
@@ -2045,6 +2218,11 @@ mod tests {
                             total_thinking: 0,
                             total_cached: 0,
                             grand_total: 300,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                             by_model: HashMap::new(),
                         },
                         tool_summary: ToolUsageSummary::default(),
@@ -2144,6 +2322,11 @@ mod tests {
                             total_thinking: 0,
                             total_cached: 0,
                             grand_total: 300,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                             by_model: HashMap::new(),
                         },
                         tool_summary: ToolUsageSummary::default(),
@@ -2238,6 +2421,11 @@ mod tests {
                             total_thinking: 0,
                             total_cached: 0,
                             grand_total: 300,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                             by_model: HashMap::new(),
                         },
                         tool_summary: ToolUsageSummary::default(),
@@ -2349,7 +2537,10 @@ mod tests {
                             output_tokens: tokens,
                             thinking_tokens: None,
                             cache_read_tokens: None,
-                            cache_write_tokens: None,
+                            cache_creation_tokens: None,
+                        reasoning_tokens: None,
+                        audio_input_tokens: None,
+                        audio_output_tokens: None,
                             total_tokens: tokens * 2,
                             thinking_percentage: None,
                             tokens_per_second: Some(200.0),
@@ -2380,6 +2571,11 @@ mod tests {
                             total_thinking: 0,
                             total_cached: 0,
                             grand_total: (tokens * 2) as u64,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                             by_model: HashMap::new(),
                         },
                         tool_summary: ToolUsageSummary::default(),
@@ -2574,7 +2770,10 @@ mod tests {
                             output_tokens: tokens,
                             thinking_tokens: None,
                             cache_read_tokens: None,
-                            cache_write_tokens: None,
+                            cache_creation_tokens: None,
+                        reasoning_tokens: None,
+                        audio_input_tokens: None,
+                        audio_output_tokens: None,
                             total_tokens: tokens * 2,
                             thinking_percentage: None,
                             tokens_per_second: Some(200.0),
@@ -2605,6 +2804,11 @@ mod tests {
                             total_thinking: 0,
                             total_cached: 0,
                             grand_total: (tokens * 2) as u64,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                             by_model: HashMap::new(),
                         },
                         tool_summary: ToolUsageSummary::default(),
@@ -2695,6 +2899,11 @@ mod tests {
                         total_thinking: 50,
                         total_cached: 0,
                         grand_total: 550,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                         by_model: HashMap::new(),
                     },
                     tool_summary: ToolUsageSummary::default(),
@@ -2762,7 +2971,10 @@ mod tests {
                         output_tokens: 225,
                         thinking_tokens: Some(25),
                         cache_read_tokens: None,
-                        cache_write_tokens: None,
+                        cache_creation_tokens: None,
+                        reasoning_tokens: None,
+                        audio_input_tokens: None,
+                        audio_output_tokens: None,
                         total_tokens: 325,
                         thinking_percentage: None,
                         tokens_per_second: Some(150.0),
@@ -2793,6 +3005,11 @@ mod tests {
                         total_thinking: 25,
                         total_cached: 0,
                         grand_total: 325,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                         by_model: HashMap::new(),
                     },
                     tool_summary: ToolUsageSummary::default(),
@@ -2878,6 +3095,11 @@ mod tests {
                         total_thinking: 0,
                         total_cached: 0,
                         grand_total: 300,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                         by_model: HashMap::new(),
                     },
                     tool_summary: ToolUsageSummary {
@@ -3009,6 +3231,11 @@ mod tests {
                         total_thinking: 50,
                         total_cached: 0,
                         grand_total: 350,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                         by_model: HashMap::new(),
                     },
                     tool_summary: ToolUsageSummary {
@@ -3068,6 +3295,11 @@ mod tests {
                     total_thinking: 75,
                     total_cached: 0,
                     grand_total: 475,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                     by_model: HashMap::new(),
                 },
                 tool_summary: ToolUsageSummary {
@@ -3152,7 +3384,10 @@ mod tests {
                         output_tokens: 300,
                         thinking_tokens: Some(50),
                         cache_read_tokens: None,
-                        cache_write_tokens: None,
+                        cache_creation_tokens: None,
+                        reasoning_tokens: None,
+                        audio_input_tokens: None,
+                        audio_output_tokens: None,
                         total_tokens: 450,
                         thinking_percentage: None,
                         tokens_per_second: Some(200.0),
@@ -3183,6 +3418,11 @@ mod tests {
                         total_thinking: 50,
                         total_cached: 0,
                         grand_total: 450,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                         by_model: HashMap::new(),
                     },
                     tool_summary: ToolUsageSummary::default(),
@@ -3282,10 +3522,19 @@ mod tests {
                 total_thinking: 200,
                 total_cached: 0,
                 grand_total: 2500,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                 by_model: HashMap::new(),
             }),
             tool_call_updates: None,
             model_used: Some("claude-3-opus-20240229".to_string()),
+            response_size_bytes: 1024,
+            content_blocks: 1,
+            has_refusal: false,
+            user_agent: Some("test-client/1.0.0".to_string()),
         };
 
         writer.write_event(&update_event).await.unwrap();
@@ -3400,6 +3649,10 @@ mod tests {
                 tool_error_count: 0,
             }),
             model_used: None,
+            response_size_bytes: 2048,
+            content_blocks: 2,
+            has_refusal: false,
+            user_agent: None,
         };
 
         writer.write_event(&update_event).await.unwrap();
@@ -3482,6 +3735,11 @@ mod tests {
                         total_thinking: 0,
                         total_cached: 0,
                         grand_total: 300,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                         by_model: HashMap::new(),
                     },
                     tool_summary: ToolUsageSummary::default(),
@@ -3505,10 +3763,19 @@ mod tests {
                 total_thinking: 0,
                 total_cached: 0,
                 grand_total: 200,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                 by_model: HashMap::new(),
             }),
             tool_call_updates: None,
             model_used: None,
+            response_size_bytes: 512,
+            content_blocks: 1,
+            has_refusal: false,
+            user_agent: None,
         };
 
         writer.write_event(&update_event).await.unwrap();
@@ -3536,10 +3803,19 @@ mod tests {
                 total_thinking: 50, // Higher than 0
                 total_cached: 0,
                 grand_total: 450,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
                 by_model: HashMap::new(),
             }),
             tool_call_updates: None,
             model_used: None,
+            response_size_bytes: 1500,
+            content_blocks: 3,
+            has_refusal: false,
+            user_agent: Some("test-client/2.0.0".to_string()),
         };
 
         writer.write_event(&update_event2).await.unwrap();
@@ -3556,5 +3832,221 @@ mod tests {
         assert_eq!(input, Some(150)); // Updated to higher value
         assert_eq!(output, Some(250)); // Updated to higher value
         assert_eq!(thinking, Some(50)); // Updated to higher value
+    }
+
+    #[tokio::test]
+    async fn test_long_user_agent() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_long_ua.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "test-session-long-ua";
+        let request_id = "test-request-long-ua";
+
+        // Create a very long user agent (500+ characters)
+        let long_ua = "a".repeat(500);
+
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                model_requested: "claude-3-opus-20240229".to_string(),
+                provider: "anthropic".to_string(),
+                listener: "anthropic".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: Some(long_ua.clone()),
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            },
+            SessionEvent::StatsUpdated {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                token_updates: Some(TokenTotals {
+                    total_input: 100,
+                    total_output: 50,
+                    total_thinking: 0,
+                    total_cached: 0,
+                    grand_total: 150,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
+                    by_model: HashMap::new(),
+                }),
+                tool_call_updates: None,
+                model_used: Some("claude-3-opus-20240229".to_string()),
+                response_size_bytes: 1024,
+                content_blocks: 1,
+                has_refusal: false,
+                user_agent: Some(long_ua),
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        // Verify the user agent was stored (potentially truncated by application logic)
+        let stored_ua: Option<String> = sqlx::query_scalar(
+            "SELECT user_agent FROM sessions WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert!(stored_ua.is_some());
+        // Note: The truncation happens at ingress layer, not database layer
+    }
+
+    #[tokio::test]
+    async fn test_special_chars_in_user_agent() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_special_chars_ua.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "test-session-special-chars";
+        let request_id = "test-request-special-chars";
+
+        // User agent with special characters, quotes, and unicode
+        let special_ua = r#"Mozilla/5.0 (X11; Linux x86_64) "test" 'quotes' 🚀 emoji \n newline"#;
+
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                model_requested: "claude-3-opus-20240229".to_string(),
+                provider: "anthropic".to_string(),
+                listener: "anthropic".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: Some(special_ua.to_string()),
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            },
+            SessionEvent::StatsUpdated {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                token_updates: Some(TokenTotals {
+                    total_input: 100,
+                    total_output: 50,
+                    total_thinking: 0,
+                    total_cached: 0,
+                    grand_total: 150,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
+                    by_model: HashMap::new(),
+                }),
+                tool_call_updates: None,
+                model_used: Some("claude-3-opus-20240229".to_string()),
+                response_size_bytes: 1024,
+                content_blocks: 1,
+                has_refusal: false,
+                user_agent: Some(special_ua.to_string()),
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        // Verify the special characters are preserved correctly
+        let stored_ua: Option<String> = sqlx::query_scalar(
+            "SELECT user_agent FROM sessions WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(stored_ua.as_deref(), Some(special_ua));
+
+        // Also verify in session_stats
+        let stats_ua: Option<String> = sqlx::query_scalar(
+            "SELECT user_agent FROM session_stats WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(stats_ua.as_deref(), Some(special_ua));
+    }
+
+    #[tokio::test]
+    async fn test_null_user_agent() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_null_ua.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "test-session-null-ua";
+        let request_id = "test-request-null-ua";
+
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                model_requested: "claude-3-opus-20240229".to_string(),
+                provider: "anthropic".to_string(),
+                listener: "anthropic".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None, // No user agent
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            },
+            SessionEvent::StatsUpdated {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                token_updates: Some(TokenTotals {
+                    total_input: 100,
+                    total_output: 50,
+                    total_thinking: 0,
+                    total_cached: 0,
+                    grand_total: 150,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
+                    by_model: HashMap::new(),
+                }),
+                tool_call_updates: None,
+                model_used: Some("claude-3-opus-20240229".to_string()),
+                response_size_bytes: 1024,
+                content_blocks: 1,
+                has_refusal: false,
+                user_agent: None, // No user agent
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        // Verify NULL is stored correctly
+        let stored_ua: Option<String> = sqlx::query_scalar(
+            "SELECT user_agent FROM sessions WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(stored_ua, None);
     }
 }

@@ -94,6 +94,14 @@ pub enum SessionEvent {
         tool_call_updates: Option<ToolUsageSummary>,
         /// Model name extracted from response
         model_used: Option<String>,
+        /// Response size in bytes
+        response_size_bytes: usize,
+        /// Number of content blocks in response
+        content_blocks: usize,
+        /// Whether response contains a refusal
+        has_refusal: bool,
+        /// User agent of the client that made the request
+        user_agent: Option<String>,
     },
 }
 
@@ -166,12 +174,24 @@ pub struct ResponseStats {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenStats {
+    // Core tokens (always present)
     pub input_tokens: u32,
     pub output_tokens: u32,
-    pub thinking_tokens: Option<u32>,
-    pub cache_read_tokens: Option<u32>,
-    pub cache_write_tokens: Option<u32>,
     pub total_tokens: u32,
+
+    // Extended/reasoning tokens (model-specific)
+    pub thinking_tokens: Option<u32>,         // Anthropic extended thinking
+    pub reasoning_tokens: Option<u32>,        // OpenAI o1/o3/o4 reasoning
+
+    // Cache tokens (separated by type)
+    pub cache_read_tokens: Option<u32>,       // Tokens FROM cache (cheap)
+    pub cache_creation_tokens: Option<u32>,   // Tokens TO cache (normal price)
+
+    // Audio/multimodal tokens
+    pub audio_input_tokens: Option<u32>,
+    pub audio_output_tokens: Option<u32>,
+
+    // Metrics
     pub thinking_percentage: Option<f32>,
     pub tokens_per_second: Option<f32>,
 }
@@ -231,8 +251,18 @@ pub struct StreamingStats {
 pub struct TokenTotals {
     pub total_input: u64,
     pub total_output: u64,
-    pub total_thinking: u64,
-    pub total_cached: u64,
+    pub total_thinking: u64,  // Anthropic extended thinking
+    #[serde(default)]
+    pub total_reasoning: u64,  // OpenAI o1/o3/o4 reasoning
+    pub total_cached: u64,  // Deprecated: use total_cache_read instead
+    #[serde(default)]
+    pub total_cache_read: u64,  // Tokens FROM cache (discounted)
+    #[serde(default)]
+    pub total_cache_creation: u64,  // Tokens TO cache (normal price)
+    #[serde(default)]
+    pub total_audio_input: u64,  // Audio input tokens
+    #[serde(default)]
+    pub total_audio_output: u64,  // Audio output tokens
     pub grand_total: u64,
     #[serde(default)]
     pub by_model: HashMap<String, TokenStats>,

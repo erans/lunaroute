@@ -91,7 +91,9 @@ Each session is stored as a series of newline-delimited JSON events in a single 
     "usage": {
       "input_tokens": 12,
       "output_tokens": 245,
-      "thinking_tokens": 15420
+      "thinking_tokens": 15420,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
     }
   },
   "model_used": "claude-3-5-sonnet-20241022",
@@ -102,10 +104,13 @@ Each session is stored as a series of newline-delimited JSON events in a single 
     "tokens": {
       "input_tokens": 12,
       "output_tokens": 245,
-      "thinking_tokens": 15420,
-      "cache_read_tokens": null,
-      "cache_write_tokens": null,
       "total_tokens": 15677,
+      "thinking_tokens": 15420,
+      "reasoning_tokens": null,
+      "cache_read_tokens": null,
+      "cache_creation_tokens": null,
+      "audio_input_tokens": null,
+      "audio_output_tokens": null,
       "thinking_percentage": 98.4,
       "tokens_per_second": 69.5
     },
@@ -170,10 +175,13 @@ Each session is stored as a series of newline-delimited JSON events in a single 
         "claude-3-5-sonnet-20241022": {
           "input_tokens": 1250,
           "output_tokens": 8420,
-          "thinking_tokens": 45230,
-          "cache_read_tokens": 0,
-          "cache_write_tokens": 0,
           "total_tokens": 54900,
+          "thinking_tokens": 45230,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_creation_tokens": 0,
+          "audio_input_tokens": 0,
+          "audio_output_tokens": 0,
           "thinking_percentage": 82.4,
           "tokens_per_second": 276.2
         }
@@ -520,7 +528,12 @@ The `Completed` event includes comprehensive streaming statistics:
       "total_input": 50,
       "total_output": 300,
       "total_thinking": 25,
+      "total_reasoning": 0,
       "total_cached": 10,
+      "total_cache_read": 10,
+      "total_cache_creation": 0,
+      "total_audio_input": 0,
+      "total_audio_output": 0,
       "grand_total": 375,
       "by_model": {}
     },

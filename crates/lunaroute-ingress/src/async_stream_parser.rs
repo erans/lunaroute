@@ -31,6 +31,9 @@ pub struct ParsedStreamData {
     pub tokens: TokenTotals,
     pub tool_summary: ToolUsageSummary,
     pub model_used: Option<String>,
+    pub response_size_bytes: usize,
+    pub content_blocks: usize,
+    pub has_refusal: bool,
 }
 
 /// Parse Anthropic SSE stream to extract tokens and tool calls
@@ -47,10 +50,14 @@ where
     let mut data = ParsedStreamData::default();
     let mut tool_calls: HashMap<String, u32> = HashMap::new();
     let mut seen_tool_ids: HashSet<String> = HashSet::new(); // Prevent duplicate counting
+    let mut seen_content_block_ids: HashSet<String> = HashSet::new(); // Track unique content blocks
 
     while let Some(event_result) = stream.next().await {
-        if let Ok(event) = event_result
-            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&event.data) {
+        if let Ok(event) = event_result {
+                // Track response size
+                data.response_size_bytes += event.data.len();
+
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&event.data) {
                 // Extract tokens from message_start
                 if let Some("message_start") = json.get("type").and_then(|t| t.as_str())
                     && let Some(message) = json.get("message") {
@@ -66,16 +73,34 @@ where
                     }
 
                 // Extract output tokens from message_delta
-                if let Some("message_delta") = json.get("type").and_then(|t| t.as_str())
-                    && let Some(usage) = json.get("usage")
+                if let Some("message_delta") = json.get("type").and_then(|t| t.as_str()) {
+                    if let Some(usage) = json.get("usage")
                         && let Some(output) = usage.get("output_tokens").and_then(|t| t.as_u64()) {
                             data.tokens.total_output = output;
                         }
 
-                // Extract tool calls from content_block_start (track by unique ID to avoid duplicates)
+                    // Check for refusal in stop_reason
+                    if let Some(delta) = json.get("delta")
+                        && let Some(stop_reason) = delta.get("stop_reason").and_then(|s| s.as_str())
+                        && stop_reason == "end_turn"
+                    {
+                        // Check for refusal content
+                        data.has_refusal = false; // Will be set in content_block if needed
+                    }
+                }
+
+                // Extract content blocks from content_block_start
                 if let Some("content_block_start") = json.get("type").and_then(|t| t.as_str())
-                    && let Some(block) = json.get("content_block")
-                        && let Some("tool_use") = block.get("type").and_then(|t| t.as_str())
+                    && let Some(block) = json.get("content_block") {
+                        // Count unique content blocks
+                        if let Some(block_id) = block.get("id").and_then(|id| id.as_str())
+                            && seen_content_block_ids.insert(block_id.to_string())
+                        {
+                            data.content_blocks += 1;
+                        }
+
+                        // Extract tool calls
+                        if let Some("tool_use") = block.get("type").and_then(|t| t.as_str())
                             && let Some(name) = block.get("name").and_then(|n| n.as_str()) {
                                 // Use tool ID if available, otherwise fall back to index-based tracking
                                 let tool_id = block.get("id")
@@ -88,7 +113,9 @@ where
                                     *tool_calls.entry(name.to_string()).or_insert(0) += 1;
                                 }
                             }
+                    }
             }
+        }
     }
 
     // Build tool summary
@@ -131,8 +158,11 @@ where
     let mut seen_tool_ids: HashSet<String> = HashSet::new(); // Prevent duplicate counting
 
     while let Some(event_result) = stream.next().await {
-        if let Ok(event) = event_result
-            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&event.data) {
+        if let Ok(event) = event_result {
+                // Track response size
+                data.response_size_bytes += event.data.len();
+
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&event.data) {
                 // Extract model
                 if let Some(model) = json.get("model").and_then(|m| m.as_str()) {
                     data.model_used = Some(model.to_string());
@@ -146,13 +176,33 @@ where
                     if let Some(output) = usage.get("completion_tokens").and_then(|t| t.as_u64()) {
                         data.tokens.total_output = output;
                     }
+
+                    // Extract reasoning tokens from completion_tokens_details (o1/o3/o4 models)
+                    if let Some(details) = usage.get("completion_tokens_details")
+                        && let Some(reasoning) = details.get("reasoning_tokens").and_then(|t| t.as_u64())
+                    {
+                        data.tokens.total_thinking = reasoning;
+                    }
+
+                    // Extract cached tokens from prompt_tokens_details
+                    if let Some(details) = usage.get("prompt_tokens_details")
+                        && let Some(cached) = details.get("cached_tokens").and_then(|t| t.as_u64())
+                    {
+                        data.tokens.total_cached = cached;
+                    }
                 }
 
-                // Extract tool calls from delta (track by unique ID to avoid duplicates)
+                // Extract tool calls and content from delta
                 if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
                     for choice in choices {
-                        if let Some(delta) = choice.get("delta")
-                            && let Some(tool_calls_arr) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                        if let Some(delta) = choice.get("delta") {
+                            // Track content blocks (OpenAI doesn't have explicit blocks, count non-empty content)
+                            if delta.get("content").and_then(|c| c.as_str()).is_some() {
+                                data.content_blocks = data.content_blocks.max(1); // At least 1 content block
+                            }
+
+                            // Extract tool calls
+                            if let Some(tool_calls_arr) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                                 for tool_call in tool_calls_arr {
                                     if let Some(function) = tool_call.get("function")
                                         && let Some(name) = function.get("name").and_then(|n| n.as_str()) {
@@ -170,9 +220,18 @@ where
                                         }
                                 }
                             }
+
+                            // Check for refusal
+                            if let Some(refusal) = delta.get("refusal").and_then(|r| r.as_str())
+                                && !refusal.is_empty()
+                            {
+                                data.has_refusal = true;
+                            }
+                        }
                     }
                 }
             }
+        }
     }
 
     // Build tool summary
@@ -213,6 +272,7 @@ pub fn spawn_anthropic_parser<E>(
     session_id: String,
     request_id: String,
     recorder: Arc<lunaroute_session::MultiWriterRecorder>,
+    user_agent: Option<String>,
 ) {
     tokio::spawn(async move {
         // Catch and log any panics/errors in background parsing
@@ -243,6 +303,10 @@ pub fn spawn_anthropic_parser<E>(
                         None
                     },
                     model_used: parsed.model_used,
+                    response_size_bytes: parsed.response_size_bytes,
+                    content_blocks: parsed.content_blocks,
+                    has_refusal: parsed.has_refusal,
+                    user_agent,
                 });
             }
         });
@@ -271,6 +335,7 @@ pub fn spawn_openai_parser<E>(
     session_id: String,
     request_id: String,
     recorder: Arc<lunaroute_session::MultiWriterRecorder>,
+    user_agent: Option<String>,
 ) {
     tokio::spawn(async move {
         // Catch and log any panics/errors in background parsing
@@ -301,6 +366,10 @@ pub fn spawn_openai_parser<E>(
                         None
                     },
                     model_used: parsed.model_used,
+                    response_size_bytes: parsed.response_size_bytes,
+                    content_blocks: parsed.content_blocks,
+                    has_refusal: parsed.has_refusal,
+                    user_agent,
                 });
             }
         });
