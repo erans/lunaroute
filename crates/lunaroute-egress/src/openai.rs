@@ -77,7 +77,7 @@ impl OpenAIConnector {
         &self,
         request_json: serde_json::Value,
         headers: std::collections::HashMap<String, String>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
         debug!("Sending passthrough request to OpenAI (no normalization)");
 
         let max_retries = self.config.client_config.max_retries;
@@ -131,10 +131,11 @@ impl OpenAIConnector {
     }
 
     /// Handle passthrough response (for send_passthrough)
+    /// Returns (json_body, headers_map)
     async fn handle_openai_passthrough_response(
         &self,
         response: reqwest::Response,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
         let status = response.status();
 
         if !status.is_success() {
@@ -156,12 +157,22 @@ impl OpenAIConnector {
             });
         }
 
-        response
+        // Capture response headers before consuming the response
+        let mut headers_map = std::collections::HashMap::new();
+        for (name, value) in response.headers() {
+            if let Ok(value_str) = value.to_str() {
+                headers_map.insert(name.to_string(), value_str.to_string());
+            }
+        }
+
+        let json_body = response
             .json::<serde_json::Value>()
             .await
             .map_err(|e| {
                 EgressError::ParseError(format!("Failed to parse OpenAI passthrough response: {}", e))
-            })
+            })?;
+
+        Ok((json_body, headers_map))
     }
 
     /// Stream raw OpenAI request (passthrough mode - no normalization)

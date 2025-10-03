@@ -1049,8 +1049,8 @@ pub async fn messages_passthrough(
         .send_passthrough(req, passthrough_headers)
         .await;
 
-    let response = match response_result {
-        Ok(resp) => resp,
+    let (response, response_headers) = match response_result {
+        Ok((resp, headers)) => (resp, headers),
         Err(e) => {
             // Record error in session if recording is enabled
             if let (Some(recorder), Some(session_id), Some(request_id)) =
@@ -1232,7 +1232,20 @@ pub async fn messages_passthrough(
             });
         }
 
-    let response_result = Ok(Json(response).into_response());
+    // Build response with headers from Anthropic's API
+    let mut axum_response = Json(response).into_response();
+    let axum_headers = axum_response.headers_mut();
+
+    // Forward Anthropic's response headers (rate limits, request-id, etc.)
+    for (name, value) in &response_headers {
+        if let Ok(header_name) = axum::http::HeaderName::from_bytes(name.as_bytes()) {
+            if let Ok(header_value) = axum::http::HeaderValue::from_str(value) {
+                axum_headers.insert(header_name, header_value);
+            }
+        }
+    }
+
+    let response_result = Ok(axum_response);
 
     let total_time = std::time::Instant::now().duration_since(start_time);
     let post_provider_overhead = total_time - provider_time - pre_provider_overhead;
