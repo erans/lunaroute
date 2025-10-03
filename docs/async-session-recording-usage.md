@@ -11,6 +11,36 @@ The async multi-writer session recording system provides:
 - **Disk space management**: Retention policies with automatic cleanup and compression
 - **Advanced search**: Powerful filtering, pagination, and analytics via SQLite
 
+## Session ID Handling
+
+### Automatic Session ID Extraction
+
+LunaRoute automatically extracts session IDs from Anthropic API metadata to group related requests:
+
+**Anthropic API Format:**
+```json
+{
+  "model": "claude-sonnet-4",
+  "messages": [...],
+  "metadata": {
+    "user_id": "user_<hash>_account_<uuid>_session_<session_id>"
+  }
+}
+```
+
+The session ID is parsed from after the `_session_` marker. For example:
+- `user_abc123_account_def456_session_550e8400` → session ID: `550e8400`
+- All requests with the same session ID are grouped in one JSONL file
+
+**Security Validation:**
+Session IDs are validated at multiple layers (ingress, storage, database) to prevent path traversal attacks:
+- Must be alphanumeric with hyphens (`-`) and underscores (`_`) only
+- Maximum 255 characters
+- Rejects `..`, `/`, `\`, and other unsafe characters
+
+**Fallback Behavior:**
+If no valid session ID is found in metadata, a new UUID is generated for each request.
+
 ## Configuration
 
 ### YAML Configuration

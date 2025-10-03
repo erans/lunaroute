@@ -148,7 +148,7 @@ If session recording is enabled:
 - ✅ **Passthrough mode**: When dialect matches provider, zero-copy routing with 100% API fidelity (with session recording support)
 - ✅ **Circuit breakers**: Prevent cascading failures
 - ✅ **Health monitoring**: Track provider availability
-- ✅ **Session recording**: Optional request/response capture
+- ✅ **Session recording**: Optional request/response capture with session grouping
 - ✅ **Session statistics**: Per-session tracking of tokens (input/output/thinking), requests, tool usage, and proxy overhead
 - ✅ **Request logging**: Print all traffic to stdout
 - ✅ **Detailed timing metrics**: Pre/post proxy overhead, provider response time (DEBUG level)
@@ -169,6 +169,25 @@ Configure max sessions tracked in config file:
 ```yaml
 session_stats_max_sessions: 100  # Default: 100
 ```
+
+### Session ID Extraction
+
+For proper session grouping in session recording, LunaRoute can extract session IDs from Anthropic metadata:
+
+**Anthropic API** - Include session ID in `metadata.user_id`:
+```json
+{
+  "model": "claude-sonnet-4",
+  "messages": [...],
+  "metadata": {
+    "user_id": "user_abc123_account_def456_session_550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+The session ID `550e8400-e29b-41d4-a716-446655440000` will be extracted from after `_session_`, and all requests with the same session ID will be grouped in a single JSONL file.
+
+If no session ID is found in metadata, a new UUID will be generated for each request.
 
 ## Building
 
