@@ -63,6 +63,35 @@ impl SqliteWriter {
         Ok(Self { pool })
     }
 
+    /// Validate session ID to prevent SQL injection and path traversal attacks
+    /// Returns error if ID contains unsafe characters
+    fn validate_session_id(session_id: &str) -> WriterResult<()> {
+        // Check for empty or too long IDs
+        if session_id.is_empty() {
+            return Err(WriterError::InvalidData("Session ID cannot be empty".into()));
+        }
+
+        if session_id.len() > 255 {
+            return Err(WriterError::InvalidData(format!(
+                "Session ID too long: {} chars (max 255)",
+                session_id.len()
+            )));
+        }
+
+        // Check that ID only contains safe characters (alphanumeric, hyphen, underscore)
+        if !session_id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(WriterError::InvalidData(format!(
+                "Invalid session ID: contains unsafe characters: {}",
+                session_id
+            )));
+        }
+
+        Ok(())
+    }
+
     async fn initialize_schema(pool: &SqlitePool) -> WriterResult<()> {
         // Schema version table
         sqlx::query(
@@ -637,6 +666,20 @@ impl SessionWriter for SqliteWriter {
     }
 
     async fn write_batch(&self, events: &[SessionEvent]) -> WriterResult<()> {
+        // Validate all session IDs before starting transaction
+        for event in events {
+            let session_id = match event {
+                SessionEvent::Started { session_id, .. }
+                | SessionEvent::StreamStarted { session_id, .. }
+                | SessionEvent::RequestRecorded { session_id, .. }
+                | SessionEvent::ResponseRecorded { session_id, .. }
+                | SessionEvent::ToolCallRecorded { session_id, .. }
+                | SessionEvent::StatsSnapshot { session_id, .. }
+                | SessionEvent::Completed { session_id, .. } => session_id,
+            };
+            Self::validate_session_id(session_id)?;
+        }
+
         let mut tx = self
             .pool
             .begin()
@@ -887,6 +930,78 @@ mod tests {
     use chrono::Utc;
     use std::collections::HashMap;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_validate_session_id_valid() {
+        // Valid UUIDs
+        assert!(SqliteWriter::validate_session_id("550e8400-e29b-41d4-a716-446655440000").is_ok());
+        assert!(SqliteWriter::validate_session_id("test-123").is_ok());
+        assert!(SqliteWriter::validate_session_id("session_abc_123").is_ok());
+        assert!(SqliteWriter::validate_session_id("abc123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_session_id_empty() {
+        let result = SqliteWriter::validate_session_id("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_validate_session_id_too_long() {
+        let long_id = "a".repeat(256);
+        let result = SqliteWriter::validate_session_id(&long_id);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too long"));
+    }
+
+    #[test]
+    fn test_validate_session_id_path_traversal() {
+        // Path traversal attempts
+        assert!(SqliteWriter::validate_session_id("../../../etc/passwd").is_err());
+        assert!(SqliteWriter::validate_session_id("..").is_err());
+        assert!(SqliteWriter::validate_session_id("./test").is_err());
+        assert!(SqliteWriter::validate_session_id("test/../admin").is_err());
+    }
+
+    #[test]
+    fn test_validate_session_id_special_chars() {
+        // Special characters that could be dangerous
+        assert!(SqliteWriter::validate_session_id("test;DROP TABLE sessions").is_err());
+        assert!(SqliteWriter::validate_session_id("test\0null").is_err());
+        assert!(SqliteWriter::validate_session_id("test/path").is_err());
+        assert!(SqliteWriter::validate_session_id("test\\path").is_err());
+        assert!(SqliteWriter::validate_session_id("test@host").is_err());
+        assert!(SqliteWriter::validate_session_id("test$var").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_writer_rejects_invalid_session_id() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let event = SessionEvent::Started {
+            session_id: "../../../evil".to_string(),
+            request_id: "req-123".to_string(),
+            timestamp: Utc::now(),
+            model_requested: "test".to_string(),
+            provider: "test".to_string(),
+            listener: "test".to_string(),
+            is_streaming: false,
+            metadata: SessionMetadata {
+                client_ip: None,
+                user_agent: None,
+                api_version: None,
+                request_headers: HashMap::new(),
+                session_tags: vec![],
+            },
+        };
+
+        let result = writer.write_event(&event).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid session ID"));
+    }
 
     #[tokio::test]
     async fn test_sqlite_writer_schema_creation() {

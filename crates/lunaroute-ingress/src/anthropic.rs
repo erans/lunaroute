@@ -829,14 +829,32 @@ pub async fn messages_passthrough(
         .and_then(|user_id| {
             // Try to extract session ID from user_id field
             // Format: user_<hash>_account_<uuid>_session_<uuid>
-            if let Some(pos) = user_id.rfind("_session_") {
+            let session_part = if let Some(pos) = user_id.rfind("_session_") {
                 // Extract everything after "_session_"
-                let session_part = &user_id[pos + "_session_".len()..];
-                Some(session_part.to_string())
+                &user_id[pos + "_session_".len()..]
             } else {
                 // Fallback: use entire user_id if no "_session_" marker found
-                Some(user_id.to_string())
+                user_id
+            };
+
+            // Validate session ID format to prevent path traversal attacks
+            // Only allow alphanumeric characters, hyphens, and underscores
+            if session_part.is_empty() {
+                tracing::warn!("Empty session ID extracted from user_id");
+                return None;
             }
+
+            if session_part.len() > 255 {
+                tracing::warn!("Session ID too long: {} chars (max 255)", session_part.len());
+                return None;
+            }
+
+            if !session_part.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+                tracing::warn!("Invalid session ID format (contains unsafe characters): {}", session_part);
+                return None;
+            }
+
+            Some(session_part.to_string())
         });
 
     // Pass through ALL headers from the client (except hop-by-hop headers)
@@ -1817,5 +1835,94 @@ mod tests {
             }
             _ => panic!("Expected Blocks variant"),
         }
+    }
+
+    // Helper function for testing session ID extraction
+    fn extract_and_validate_session_id(user_id: &str) -> Option<String> {
+        let session_part = if let Some(pos) = user_id.rfind("_session_") {
+            &user_id[pos + "_session_".len()..]
+        } else {
+            user_id
+        };
+
+        // Validate session ID format
+        if session_part.is_empty() {
+            return None;
+        }
+
+        if session_part.len() > 255 {
+            return None;
+        }
+
+        if !session_part.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+            return None;
+        }
+
+        Some(session_part.to_string())
+    }
+
+    #[test]
+    fn test_session_id_extraction_valid() {
+        // Valid session ID with marker
+        let user_id = "user_abc123_account_def456_session_550e8400-e29b-41d4-a716-446655440000";
+        let session_id = extract_and_validate_session_id(user_id);
+        assert_eq!(session_id, Some("550e8400-e29b-41d4-a716-446655440000".to_string()));
+    }
+
+    #[test]
+    fn test_session_id_extraction_no_marker() {
+        // No session marker - should use entire user_id
+        let user_id = "user_abc123_account_def456";
+        let session_id = extract_and_validate_session_id(user_id);
+        assert_eq!(session_id, Some(user_id.to_string()));
+    }
+
+    #[test]
+    fn test_session_id_extraction_empty() {
+        // Empty session ID after marker
+        let user_id = "user_abc_session_";
+        let session_id = extract_and_validate_session_id(user_id);
+        assert_eq!(session_id, None);
+    }
+
+    #[test]
+    fn test_session_id_validation_path_traversal() {
+        // Path traversal attempts should be rejected
+        let user_id = "user_abc_session_../../../etc/passwd";
+        let session_id = extract_and_validate_session_id(user_id);
+        assert_eq!(session_id, None);
+    }
+
+    #[test]
+    fn test_session_id_validation_special_chars() {
+        // Special characters should be rejected
+        let test_cases = vec![
+            "user_session_test;DROP_TABLE",
+            "user_session_test/path",
+            "user_session_test\\path",
+            "user_session_test@host",
+            "user_session_test$var",
+        ];
+
+        for user_id in test_cases {
+            let session_id = extract_and_validate_session_id(user_id);
+            assert_eq!(session_id, None, "Should reject: {}", user_id);
+        }
+    }
+
+    #[test]
+    fn test_session_id_validation_too_long() {
+        // Session ID too long should be rejected
+        let long_id = format!("user_session_{}", "a".repeat(256));
+        let session_id = extract_and_validate_session_id(&long_id);
+        assert_eq!(session_id, None);
+    }
+
+    #[test]
+    fn test_session_id_validation_multiple_markers() {
+        // Should use the last occurrence of _session_
+        let user_id = "user_session_old_session_new_session_final-uuid-123";
+        let session_id = extract_and_validate_session_id(user_id);
+        assert_eq!(session_id, Some("final-uuid-123".to_string()));
     }
 }

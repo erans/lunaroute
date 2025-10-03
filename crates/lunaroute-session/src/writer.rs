@@ -24,6 +24,9 @@ pub enum WriterError {
 
     #[error("Writer not initialized")]
     NotInitialized,
+
+    #[error("Invalid data: {0}")]
+    InvalidData(String),
 }
 
 pub type WriterResult<T> = Result<T, WriterError>;

@@ -333,14 +333,41 @@ impl SessionRecordingConfig {
 }
 
 /// Expand tilde (~) in a path to the user's home directory
+/// Uses the dirs crate for cross-platform compatibility
+/// Also canonicalizes the path to prevent path traversal attacks
 fn expand_tilde(path: &PathBuf) -> PathBuf {
     if let Some(path_str) = path.to_str() {
         if path_str.starts_with("~/") || path_str == "~" {
-            if let Ok(home) = std::env::var("HOME") {
-                if path_str == "~" {
-                    return PathBuf::from(home);
+            // Use dirs::home_dir() for cross-platform compatibility
+            if let Some(home) = dirs::home_dir() {
+                let expanded = if path_str == "~" {
+                    home.clone()
                 } else {
-                    return PathBuf::from(path_str.replacen("~", &home, 1));
+                    // Join the home dir with the path after "~/"
+                    home.join(&path_str[2..])
+                };
+
+                // Canonicalize to resolve any .. or . components and prevent path traversal
+                // Note: canonicalize() requires the path to exist, so we fall back to the
+                // expanded path if it doesn't exist yet (e.g., during initial setup)
+                match expanded.canonicalize() {
+                    Ok(canonical) => return canonical,
+                    Err(_) => {
+                        // Path doesn't exist yet, return the expanded path
+                        // but ensure it's within the home directory for security
+                        if let Ok(home_canonical) = home.canonicalize() {
+                            if expanded.starts_with(&home_canonical) {
+                                return expanded;
+                            } else {
+                                tracing::warn!(
+                                    "Path expansion resulted in path outside home directory: {:?}",
+                                    expanded
+                                );
+                                return path.clone();
+                            }
+                        }
+                        return expanded;
+                    }
                 }
             }
         }
@@ -387,6 +414,66 @@ mod tests {
         assert!(!config.is_jsonl_enabled());
         assert!(config.is_sqlite_enabled());
         assert!(config.has_writers());
+    }
+
+    #[test]
+    fn test_expand_tilde_home_only() {
+        let path = PathBuf::from("~");
+        let expanded = expand_tilde(&path);
+        // Should expand to home directory
+        assert!(expanded != path);
+        assert!(!expanded.to_str().unwrap().contains('~'));
+    }
+
+    #[test]
+    fn test_expand_tilde_with_path() {
+        let path = PathBuf::from("~/.lunaroute/sessions");
+        let expanded = expand_tilde(&path);
+        // Should expand tilde
+        assert!(!expanded.to_str().unwrap().starts_with('~'));
+        // Should contain the subdirectory
+        assert!(expanded.to_str().unwrap().contains(".lunaroute"));
+    }
+
+    #[test]
+    fn test_expand_tilde_no_tilde() {
+        let path = PathBuf::from("/absolute/path");
+        let expanded = expand_tilde(&path);
+        // Should remain unchanged
+        assert_eq!(path, expanded);
+    }
+
+    #[test]
+    fn test_expand_tilde_relative_path() {
+        let path = PathBuf::from("relative/path");
+        let expanded = expand_tilde(&path);
+        // Should remain unchanged
+        assert_eq!(path, expanded);
+    }
+
+    #[test]
+    fn test_expand_paths() {
+        let mut config = SessionRecordingConfig {
+            enabled: true,
+            jsonl: Some(JsonlConfig {
+                enabled: true,
+                directory: PathBuf::from("~/.lunaroute/sessions"),
+                retention: RetentionPolicy::default(),
+            }),
+            sqlite: Some(SqliteConfig {
+                enabled: true,
+                path: PathBuf::from("~/.lunaroute/sessions.db"),
+                max_connections: 5,
+            }),
+            worker: WorkerConfig::default(),
+            pii: None,
+        };
+
+        config.expand_paths();
+
+        // Both paths should be expanded
+        assert!(!config.jsonl.as_ref().unwrap().directory.to_str().unwrap().starts_with('~'));
+        assert!(!config.sqlite.as_ref().unwrap().path.to_str().unwrap().starts_with('~'));
     }
 
     #[test]
