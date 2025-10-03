@@ -47,19 +47,6 @@ impl SqliteWriter {
         // Initialize schema
         Self::initialize_schema(&pool).await?;
 
-        // Verify schema version
-        let version: i32 = sqlx::query_scalar("SELECT version FROM schema_version")
-            .fetch_one(&pool)
-            .await
-            .map_err(|e| WriterError::Database(e.to_string()))?;
-
-        if version != 1 {
-            return Err(WriterError::Database(format!(
-                "Unsupported schema version: {}",
-                version
-            )));
-        }
-
         Ok(Self { pool })
     }
 
@@ -368,6 +355,73 @@ impl SqliteWriter {
             .execute(pool)
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
+
+        // Run migrations if needed
+        Self::run_migrations(pool).await?;
+
+        Ok(())
+    }
+
+    /// Run schema migrations to bring database up to current version
+    async fn run_migrations(pool: &SqlitePool) -> WriterResult<()> {
+        const CURRENT_VERSION: i32 = 2;
+
+        // Get current schema version
+        let version: i32 = sqlx::query_scalar("SELECT version FROM schema_version")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
+        if version > CURRENT_VERSION {
+            return Err(WriterError::Database(format!(
+                "Database schema version {} is newer than supported version {}. Please upgrade lunaroute.",
+                version, CURRENT_VERSION
+            )));
+        }
+
+        // Apply migrations one by one
+        let mut current_version = version;
+
+        // Migration 1 -> 2: Add new token columns to sessions table
+        if current_version == 1 {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN reasoning_tokens INTEGER DEFAULT 0")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (reasoning_tokens): {}", e)))?;
+
+            sqlx::query("ALTER TABLE sessions ADD COLUMN cache_read_tokens INTEGER DEFAULT 0")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (cache_read_tokens): {}", e)))?;
+
+            sqlx::query("ALTER TABLE sessions ADD COLUMN cache_creation_tokens INTEGER DEFAULT 0")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (cache_creation_tokens): {}", e)))?;
+
+            sqlx::query("ALTER TABLE sessions ADD COLUMN audio_input_tokens INTEGER DEFAULT 0")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (audio_input_tokens): {}", e)))?;
+
+            sqlx::query("ALTER TABLE sessions ADD COLUMN audio_output_tokens INTEGER DEFAULT 0")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (audio_output_tokens): {}", e)))?;
+
+            sqlx::query("UPDATE schema_version SET version = 2")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (version update): {}", e)))?;
+
+            current_version = 2;
+        }
+
+        // Future migrations go here
+        // if current_version == 2 {
+        //     // Migration 2 -> 3
+        //     current_version = 3;
+        // }
 
         Ok(())
     }
