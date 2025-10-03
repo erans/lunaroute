@@ -687,6 +687,14 @@ impl SessionWriter for SqliteWriter {
 }
 ```
 
+**Note:** The actual implementation includes additional handling in the `Completed` event to extract token counts and tool calls from `final_stats`:
+
+- **Token Recording:** Uses `MAX(COALESCE(existing, 0), new_value)` to handle both streaming (no prior `ResponseRecorded`) and non-streaming (has `ResponseRecorded`) sessions without double-counting
+- **Tool Call Recording:** Extracts tool usage from `final_stats.tool_summary.by_tool` and inserts into `tool_calls` table
+- **Streaming Metrics:** If `final_stats.streaming_stats` is present, inserts into `stream_metrics` table with TTFT, chunk counts, and latency percentiles
+
+This ensures complete data capture for both streaming and non-streaming sessions. See `crates/lunaroute-session/src/sqlite_writer.rs:849-938` for the full implementation.
+
 ## Usage in Passthrough Handler
 
 ```rust

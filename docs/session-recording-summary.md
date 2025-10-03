@@ -95,9 +95,10 @@ All stats tables include **session_id**, **request_id**, and **model_name** for 
 ### Streaming Sessions
 1. **Started**: Session initialized with metadata (is_streaming: true)
 2. **StreamStarted**: First chunk received, TTFT recorded
-3. **RequestRecorded**: (Optional) User request with pre-processing stats
-4. **ResponseRecorded**: (Optional) Partial response with stats
-5. **Completed**: Final statistics including StreamingStats with percentiles
+3. **RequestRecorded**: User request with pre-processing stats
+4. **Completed**: Final statistics including StreamingStats with percentiles and token totals
+
+**Important:** Streaming sessions do NOT emit `ResponseRecorded` events. All token counts and tool call data come from the `Completed` event's `final_stats` field. The SQLite writer extracts this data using `MAX(COALESCE(existing, 0), new_value)` to ensure correct recording for both streaming and non-streaming sessions.
 
 ## Querying Capabilities
 

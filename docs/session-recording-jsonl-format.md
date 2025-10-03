@@ -564,11 +564,19 @@ A complete streaming session includes these events:
 
 1. **Started** with `is_streaming: true`
 2. **StreamStarted** with TTFT (time to first chunk)
-3. **Completed** with `streaming_stats` containing:
+3. **Completed** with `streaming_stats` and `final_stats` containing:
    - Time-to-first-token (TTFT)
    - Total chunk count
    - Chunk latency percentiles (P50, P95, P99)
    - Min/max/avg chunk latencies
    - Total streaming duration
+   - Token totals (input, output, thinking, cached)
+   - Tool usage summary
+
+**Critical Difference from Non-Streaming:**
+- Streaming sessions do **NOT** emit `ResponseRecorded` events
+- All token counts come from `Completed.final_stats.total_tokens`
+- Tool calls come from `Completed.final_stats.tool_summary.by_tool`
+- The SQLite writer uses `MAX(COALESCE(existing, 0), new_value)` to handle both session types without double-counting
 
 This approach captures comprehensive streaming performance metrics without recording every individual chunk, keeping file sizes manageable while providing detailed analytics.

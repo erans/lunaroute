@@ -504,6 +504,35 @@ The async session recording system fully supports streaming requests with compre
 2. **First chunk received** → `StreamStarted` event with TTFT
 3. **Stream completes** → `Completed` event with full `streaming_stats`
 
+**Important:** Streaming sessions do NOT emit `ResponseRecorded` events. All token counts and tool call data are recorded from the `Completed` event's `final_stats` field. The SQLite writer extracts this data and writes it to the `sessions` table and `tool_calls` table.
+
+### Event Flow for Non-Streaming
+
+1. **Request starts** → `Started` event with `is_streaming: false`
+2. **Response received** → `ResponseRecorded` event with token counts and tool calls
+3. **Request completes** → `Completed` event with final statistics
+
+**Important:** Non-streaming sessions emit `ResponseRecorded` events that contain per-request token counts. The `Completed` event also contains `final_stats` with cumulative totals. The SQLite writer uses `MAX()` to avoid double-counting tokens when both events are present.
+
+### Token and Tool Call Recording
+
+**Streaming Sessions:**
+- Token counts come from `Completed.final_stats.total_tokens` → `sessions` table
+- Tool calls come from `Completed.final_stats.tool_summary.by_tool` → `tool_calls` table
+- No `ResponseRecorded` event is emitted
+
+**Non-Streaming Sessions:**
+- Token counts come from `ResponseRecorded.stats.tokens` → `sessions` table
+- Tool calls come from `ResponseRecorded.stats.tool_calls` → `tool_calls` table
+- `Completed` event provides cumulative totals but doesn't override existing data
+
+**SQLite Implementation:**
+The `Completed` event handler uses `MAX(COALESCE(existing, 0), new_value)` for token updates:
+- For streaming: `existing=0`, so `MAX(0, new_value) = new_value` ✓
+- For non-streaming: `existing=value`, so `MAX(value, same_value) = value` ✓
+
+This ensures accurate recording regardless of session type.
+
 ### Performance Considerations
 
 **Zero-Copy Passthrough**

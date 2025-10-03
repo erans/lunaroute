@@ -1,7 +1,7 @@
 //! SQLite session writer implementation
 
 #[cfg(feature = "sqlite-writer")]
-use crate::events::SessionEvent;
+use crate::events::{FinalSessionStats, SessionEvent, StreamingStats};
 #[cfg(feature = "sqlite-writer")]
 use crate::search::{SearchResults, SessionAggregates, SessionFilter, SessionRecord, SortOrder};
 #[cfg(feature = "sqlite-writer")]
@@ -90,6 +90,33 @@ impl SqliteWriter {
         }
 
         Ok(())
+    }
+
+    /// Safely convert u64 to i64 for SQLite storage
+    /// Returns error if value exceeds i64::MAX
+    fn safe_u64_to_i64(value: u64, context: &str) -> WriterResult<i64> {
+        i64::try_from(value).map_err(|_| {
+            WriterError::InvalidData(format!(
+                "{} value {} exceeds maximum SQLite integer (i64::MAX)",
+                context, value
+            ))
+        })
+    }
+
+    /// Safely convert u32 to i64 for SQLite storage (always safe)
+    fn safe_u32_to_i64(value: u32) -> i64 {
+        value as i64
+    }
+
+    /// Safely convert usize to i64 for SQLite storage
+    /// Returns error if value exceeds i64::MAX
+    fn safe_usize_to_i64(value: usize, context: &str) -> WriterResult<i64> {
+        i64::try_from(value).map_err(|_| {
+            WriterError::InvalidData(format!(
+                "{} value {} exceeds maximum SQLite integer (i64::MAX)",
+                context, value
+            ))
+        })
     }
 
     async fn initialize_schema(pool: &SqlitePool) -> WriterResult<()> {
@@ -275,6 +302,12 @@ impl SqliteWriter {
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
+        // Unique index for ON CONFLICT handling (prevents duplicate tool entries per session/request)
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_calls_unique ON tool_calls(session_id, request_id, tool_name)")
+            .execute(pool)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
         // Stream metrics table
         sqlx::query(
             r#"
@@ -382,12 +415,21 @@ impl SqliteWriter {
             for value in &bind_values {
                 query = query.bind(value);
             }
+
+            // Safe cast for page_size and offset (validated to reasonable limits already)
+            let page_size_i64 = i64::try_from(filter.page_size).map_err(|_| {
+                WriterError::InvalidData(format!("Page size {} exceeds i64::MAX", filter.page_size))
+            })?;
+            let offset_i64 = i64::try_from(offset).map_err(|_| {
+                WriterError::InvalidData(format!("Offset {} exceeds i64::MAX", offset))
+            })?;
+
             query
-                .bind(filter.page_size as i64)
-                .bind(offset as i64)
+                .bind(page_size_i64)
+                .bind(offset_i64)
                 .fetch_all(&self.pool)
                 .await
-                .map_err(|e| WriterError::Database(e.to_string()))?
+                .map_err(|e| WriterError::Database(format!("Failed to fetch sessions: {}", e)))?
         };
 
         Ok(SearchResults::new(
@@ -724,6 +766,7 @@ impl SessionWriter for SqliteWriter {
                     time_to_first_token_ms,
                     ..
                 } => {
+                    let ttft = Self::safe_u64_to_i64(*time_to_first_token_ms, "time_to_first_token_ms")?;
                     sqlx::query(
                         r#"
                         UPDATE sessions
@@ -731,11 +774,16 @@ impl SessionWriter for SqliteWriter {
                         WHERE session_id = ?
                         "#,
                     )
-                    .bind(*time_to_first_token_ms as i64)
+                    .bind(ttft)
                     .bind(session_id)
                     .execute(&mut *tx)
                     .await
-                    .map_err(|e| WriterError::Database(e.to_string()))?;
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Failed to update TTFT for session {}: {}",
+                            session_id, e
+                        ))
+                    })?;
                 }
 
                 SessionEvent::RequestRecorded {
@@ -768,6 +816,20 @@ impl SessionWriter for SqliteWriter {
                     stats,
                     ..
                 } => {
+                    // Safe conversions for all u32/u64/usize values
+                    let output_tokens = Self::safe_u32_to_i64(stats.tokens.output_tokens);
+                    let thinking_tokens = stats.tokens.thinking_tokens.map(Self::safe_u32_to_i64);
+                    let input_tokens = Self::safe_u32_to_i64(stats.tokens.input_tokens);
+                    let provider_latency = Self::safe_u64_to_i64(stats.provider_latency_ms, "provider_latency_ms")?;
+                    let chunk_count = stats.chunk_count.map(Self::safe_u32_to_i64);
+                    let streaming_duration = stats.streaming_duration_ms
+                        .map(|d| Self::safe_u64_to_i64(d, "streaming_duration_ms"))
+                        .transpose()?;
+                    let cache_read = stats.tokens.cache_read_tokens.map(Self::safe_u32_to_i64);
+                    let cache_write = stats.tokens.cache_write_tokens.map(Self::safe_u32_to_i64);
+                    let response_size = Self::safe_usize_to_i64(stats.response_size_bytes, "response_size_bytes")?;
+                    let content_blocks = Self::safe_usize_to_i64(stats.content_blocks, "content_blocks")?;
+
                     sqlx::query(
                         r#"
                         UPDATE sessions
@@ -784,16 +846,21 @@ impl SessionWriter for SqliteWriter {
                     )
                     .bind(response_text)
                     .bind(model_used)
-                    .bind(stats.tokens.output_tokens as i64)
-                    .bind(stats.tokens.thinking_tokens.map(|t| t as i64))
-                    .bind(stats.tokens.input_tokens as i64)
-                    .bind(stats.provider_latency_ms as i64)
-                    .bind(stats.chunk_count.map(|c| c as i64))
-                    .bind(stats.streaming_duration_ms.map(|d| d as i64))
+                    .bind(output_tokens)
+                    .bind(thinking_tokens)
+                    .bind(input_tokens)
+                    .bind(provider_latency)
+                    .bind(chunk_count)
+                    .bind(streaming_duration)
                     .bind(session_id)
                     .execute(&mut *tx)
                     .await
-                    .map_err(|e| WriterError::Database(e.to_string()))?;
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Failed to update session {} with response: {}",
+                            session_id, e
+                        ))
+                    })?;
 
                     // Insert session stats
                     sqlx::query(
@@ -813,22 +880,31 @@ impl SessionWriter for SqliteWriter {
                     .bind(model_used)
                     .bind(stats.post_processing_ms)
                     .bind(stats.total_proxy_overhead_ms)
-                    .bind(stats.tokens.input_tokens as i64)
-                    .bind(stats.tokens.output_tokens as i64)
-                    .bind(stats.tokens.thinking_tokens.map(|t| t as i64))
-                    .bind(stats.tokens.cache_read_tokens.map(|t| t as i64))
-                    .bind(stats.tokens.cache_write_tokens.map(|t| t as i64))
+                    .bind(input_tokens)
+                    .bind(output_tokens)
+                    .bind(thinking_tokens)
+                    .bind(cache_read)
+                    .bind(cache_write)
                     .bind(stats.tokens.tokens_per_second.map(|t| t as f64))
                     .bind(stats.tokens.thinking_percentage.map(|t| t as f64))
-                    .bind(stats.response_size_bytes as i64)
-                    .bind(stats.content_blocks as i64)
+                    .bind(response_size)
+                    .bind(content_blocks)
                     .bind(stats.has_refusal)
                     .execute(&mut *tx)
                     .await
-                    .map_err(|e| WriterError::Database(e.to_string()))?;
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Failed to insert session stats for {}: {}",
+                            session_id, e
+                        ))
+                    })?;
 
                     // Insert tool calls
                     for tool in &stats.tool_calls {
+                        let exec_time = tool.execution_time_ms
+                            .map(|t| Self::safe_u64_to_i64(t, "tool execution_time_ms"))
+                            .transpose()?;
+
                         sqlx::query(
                             r#"
                             INSERT INTO tool_calls (session_id, request_id, model_name, tool_name, call_count, avg_execution_time_ms)
@@ -839,10 +915,15 @@ impl SessionWriter for SqliteWriter {
                         .bind(request_id)
                         .bind(model_used)
                         .bind(&tool.tool_name)
-                        .bind(tool.execution_time_ms.map(|t| t as i64))
+                        .bind(exec_time)
                         .execute(&mut *tx)
                         .await
-                        .map_err(|e| WriterError::Database(e.to_string()))?;
+                        .map_err(|e| {
+                            WriterError::Database(format!(
+                                "Failed to insert tool call {} for session {}: {}",
+                                tool.tool_name, session_id, e
+                            ))
+                        })?;
                     }
                 }
 
@@ -855,83 +936,16 @@ impl SessionWriter for SqliteWriter {
                     final_stats,
                     ..
                 } => {
-                    // Update session with completion data AND token totals from final_stats
-                    // For streaming sessions: tokens are 0 initially, so we set them here
-                    // For non-streaming sessions: tokens already set by ResponseRecorded, use MAX to keep cumulative totals
-                    sqlx::query(
-                        r#"
-                        UPDATE sessions
-                        SET completed_at = CURRENT_TIMESTAMP,
-                            success = ?,
-                            error_message = ?,
-                            finish_reason = ?,
-                            total_duration_ms = ?,
-                            input_tokens = MAX(COALESCE(input_tokens, 0), ?),
-                            output_tokens = MAX(COALESCE(output_tokens, 0), ?),
-                            thinking_tokens = MAX(COALESCE(thinking_tokens, 0), ?)
-                        WHERE session_id = ?
-                        "#,
+                    Self::handle_session_completed(
+                        &mut tx,
+                        session_id,
+                        request_id,
+                        *success,
+                        error,
+                        finish_reason,
+                        final_stats,
                     )
-                    .bind(success)
-                    .bind(error)
-                    .bind(finish_reason)
-                    .bind(final_stats.total_duration_ms as i64)
-                    .bind(final_stats.total_tokens.total_input as i64)
-                    .bind(final_stats.total_tokens.total_output as i64)
-                    .bind(final_stats.total_tokens.total_thinking as i64)
-                    .bind(session_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| WriterError::Database(e.to_string()))?;
-
-                    // Insert tool call summary if there were any tool calls
-                    if final_stats.tool_summary.total_tool_calls > 0 {
-                        for (tool_name, tool_stats) in &final_stats.tool_summary.by_tool {
-                            sqlx::query(
-                                r#"
-                                INSERT INTO tool_calls (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count)
-                                VALUES (?, ?, ?, ?, ?, ?)
-                                "#,
-                            )
-                            .bind(session_id)
-                            .bind(request_id)
-                            .bind(tool_name)
-                            .bind(tool_stats.call_count as i64)
-                            .bind(tool_stats.avg_execution_time_ms as i64)
-                            .bind(tool_stats.error_count as i64)
-                            .execute(&mut *tx)
-                            .await
-                            .map_err(|e| WriterError::Database(e.to_string()))?;
-                        }
-                    }
-
-                    // Insert stream metrics if this was a streaming session
-                    if let Some(streaming_stats) = &final_stats.streaming_stats {
-                        sqlx::query(
-                            r#"
-                            INSERT INTO stream_metrics (
-                                session_id, request_id,
-                                time_to_first_token_ms, total_chunks, streaming_duration_ms,
-                                avg_chunk_latency_ms, p50_chunk_latency_ms, p95_chunk_latency_ms,
-                                p99_chunk_latency_ms, max_chunk_latency_ms, min_chunk_latency_ms
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            "#,
-                        )
-                        .bind(session_id)
-                        .bind(request_id)
-                        .bind(streaming_stats.time_to_first_token_ms as i64)
-                        .bind(streaming_stats.total_chunks as i64)
-                        .bind(streaming_stats.streaming_duration_ms as i64)
-                        .bind(streaming_stats.avg_chunk_latency_ms)
-                        .bind(streaming_stats.p50_chunk_latency_ms.map(|p| p as i64))
-                        .bind(streaming_stats.p95_chunk_latency_ms.map(|p| p as i64))
-                        .bind(streaming_stats.p99_chunk_latency_ms.map(|p| p as i64))
-                        .bind(streaming_stats.max_chunk_latency_ms as i64)
-                        .bind(streaming_stats.min_chunk_latency_ms as i64)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|e| WriterError::Database(e.to_string()))?;
-                    }
+                    .await?;
                 }
 
                 _ => {
@@ -949,6 +963,167 @@ impl SessionWriter for SqliteWriter {
 
     fn supports_batching(&self) -> bool {
         true
+    }
+}
+
+// Private helper methods for SqliteWriter
+#[cfg(feature = "sqlite-writer")]
+impl SqliteWriter {
+    /// Process session completion event - updates tokens, tool calls, and streaming stats
+    async fn handle_session_completed(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        session_id: &str,
+        request_id: &str,
+        success: bool,
+        error: &Option<String>,
+        finish_reason: &Option<String>,
+        final_stats: &Box<FinalSessionStats>,
+    ) -> WriterResult<()> {
+        // Update session with completion data AND token totals from final_stats
+        // For streaming sessions: tokens are 0 initially, so we set them here
+        // For non-streaming sessions: tokens already set by ResponseRecorded, use MAX to keep cumulative totals
+        let total_duration = Self::safe_u64_to_i64(final_stats.total_duration_ms, "total_duration_ms")?;
+        let input_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_input, "input_tokens")?;
+        let output_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_output, "output_tokens")?;
+        let thinking_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_thinking, "thinking_tokens")?;
+
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET completed_at = CURRENT_TIMESTAMP,
+                success = ?,
+                error_message = ?,
+                finish_reason = ?,
+                total_duration_ms = ?,
+                input_tokens = MAX(COALESCE(input_tokens, 0), ?),
+                output_tokens = MAX(COALESCE(output_tokens, 0), ?),
+                thinking_tokens = MAX(COALESCE(thinking_tokens, 0), ?)
+            WHERE session_id = ?
+            "#,
+        )
+        .bind(success)
+        .bind(error)
+        .bind(finish_reason)
+        .bind(total_duration)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(thinking_tokens)
+        .bind(session_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| {
+            WriterError::Database(format!(
+                "Failed to update session {} on completion: {}",
+                session_id, e
+            ))
+        })?;
+
+        // Insert tool calls if any (using ON CONFLICT to handle duplicates)
+        Self::insert_tool_calls(tx, session_id, request_id, final_stats).await?;
+
+        // Insert streaming metrics if present
+        if let Some(streaming_stats) = &final_stats.streaming_stats {
+            Self::insert_streaming_metrics(tx, session_id, request_id, streaming_stats).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Insert tool call summary into database with duplicate handling
+    async fn insert_tool_calls(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        session_id: &str,
+        request_id: &str,
+        final_stats: &FinalSessionStats,
+    ) -> WriterResult<()> {
+        if final_stats.tool_summary.total_tool_calls == 0 {
+            return Ok(());
+        }
+
+        // Batch insert all tool calls in a single multi-value INSERT
+        // Using ON CONFLICT to handle duplicates (update with latest values)
+        for (tool_name, tool_stats) in &final_stats.tool_summary.by_tool {
+            let call_count = Self::safe_u32_to_i64(tool_stats.call_count);
+            let avg_time = Self::safe_u64_to_i64(tool_stats.avg_execution_time_ms, "tool avg_execution_time_ms")?;
+            let error_count = Self::safe_u32_to_i64(tool_stats.error_count);
+
+            sqlx::query(
+                r#"
+                INSERT INTO tool_calls (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, request_id, tool_name)
+                DO UPDATE SET
+                    call_count = excluded.call_count,
+                    avg_execution_time_ms = excluded.avg_execution_time_ms,
+                    error_count = excluded.error_count
+                "#,
+            )
+            .bind(session_id)
+            .bind(request_id)
+            .bind(tool_name)
+            .bind(call_count)
+            .bind(avg_time)
+            .bind(error_count)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| {
+                WriterError::Database(format!(
+                    "Failed to insert tool call {} for session {}: {}",
+                    tool_name, session_id, e
+                ))
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// Insert streaming metrics into database
+    async fn insert_streaming_metrics(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        session_id: &str,
+        request_id: &str,
+        streaming_stats: &StreamingStats,
+    ) -> WriterResult<()> {
+        let ttft = Self::safe_u64_to_i64(streaming_stats.time_to_first_token_ms, "time_to_first_token_ms")?;
+        let total_chunks = Self::safe_u32_to_i64(streaming_stats.total_chunks);
+        let duration = Self::safe_u64_to_i64(streaming_stats.streaming_duration_ms, "streaming_duration_ms")?;
+        let p50 = streaming_stats.p50_chunk_latency_ms.map(|v| Self::safe_u64_to_i64(v, "p50_chunk_latency")).transpose()?;
+        let p95 = streaming_stats.p95_chunk_latency_ms.map(|v| Self::safe_u64_to_i64(v, "p95_chunk_latency")).transpose()?;
+        let p99 = streaming_stats.p99_chunk_latency_ms.map(|v| Self::safe_u64_to_i64(v, "p99_chunk_latency")).transpose()?;
+        let max_latency = Self::safe_u64_to_i64(streaming_stats.max_chunk_latency_ms, "max_chunk_latency_ms")?;
+        let min_latency = Self::safe_u64_to_i64(streaming_stats.min_chunk_latency_ms, "min_chunk_latency_ms")?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO stream_metrics (
+                session_id, request_id,
+                time_to_first_token_ms, total_chunks, streaming_duration_ms,
+                avg_chunk_latency_ms, p50_chunk_latency_ms, p95_chunk_latency_ms,
+                p99_chunk_latency_ms, max_chunk_latency_ms, min_chunk_latency_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(session_id)
+        .bind(request_id)
+        .bind(ttft)
+        .bind(total_chunks)
+        .bind(duration)
+        .bind(streaming_stats.avg_chunk_latency_ms)
+        .bind(p50)
+        .bind(p95)
+        .bind(p99)
+        .bind(max_latency)
+        .bind(min_latency)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| {
+            WriterError::Database(format!(
+                "Failed to insert streaming metrics for session {}: {}",
+                session_id, e
+            ))
+        })?;
+
+        Ok(())
     }
 }
 
@@ -2637,5 +2812,278 @@ mod tests {
         assert_eq!(call_count, 2);
         assert_eq!(avg_time, 200);
         assert_eq!(errors, 1);
+    }
+
+    /// Test integer overflow handling with i64::MAX values
+    #[tokio::test]
+    async fn test_safe_u64_to_i64_overflow() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let _writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        // Test that overflow is properly detected
+        let result = SqliteWriter::safe_u64_to_i64(u64::MAX, "test_value");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceeds maximum"));
+
+        // Test that i64::MAX works
+        let result = SqliteWriter::safe_u64_to_i64(i64::MAX as u64, "test_value");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), i64::MAX);
+    }
+
+    /// Test duplicate tool entries with ON CONFLICT handling
+    #[tokio::test]
+    async fn test_duplicate_tool_entries() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "duplicate-tools-test";
+
+        // Create first Completed event with Read tool (count: 3)
+        let mut by_tool = HashMap::new();
+        by_tool.insert(
+            "Read".to_string(),
+            ToolStats {
+                call_count: 3,
+                total_execution_time_ms: 150,
+                avg_execution_time_ms: 50,
+                error_count: 0,
+            },
+        );
+
+        let events1 = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: "req-1".to_string(),
+                timestamp: Utc::now(),
+                model_requested: "gpt-4".to_string(),
+                provider: "openai".to_string(),
+                listener: "openai".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            },
+            SessionEvent::Completed {
+                session_id: session_id.to_string(),
+                request_id: "req-1".to_string(),
+                timestamp: Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: Some("end_turn".to_string()),
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: 500,
+                    provider_time_ms: 450,
+                    proxy_overhead_ms: 50.0,
+                    total_tokens: TokenTotals {
+                        total_input: 100,
+                        total_output: 200,
+                        total_thinking: 50,
+                        total_cached: 0,
+                        grand_total: 350,
+                        by_model: HashMap::new(),
+                    },
+                    tool_summary: ToolUsageSummary {
+                        total_tool_calls: 3,
+                        unique_tool_count: 1,
+                        by_tool: by_tool.clone(),
+                        total_tool_time_ms: 150,
+                        tool_error_count: 0,
+                    },
+                    performance: PerformanceMetrics::default(),
+                    streaming_stats: None,
+                    estimated_cost: None,
+                }),
+            },
+        ];
+
+        writer.write_batch(&events1).await.unwrap();
+
+        // Verify initial state
+        let (call_count, avg_time): (i64, i64) = sqlx::query_as(
+            "SELECT call_count, avg_execution_time_ms FROM tool_calls WHERE session_id = ? AND tool_name = 'Read'",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(call_count, 3);
+        assert_eq!(avg_time, 50);
+
+        // Create second Completed event with same tool but different stats
+        let mut by_tool2 = HashMap::new();
+        by_tool2.insert(
+            "Read".to_string(),
+            ToolStats {
+                call_count: 5,
+                total_execution_time_ms: 300,
+                avg_execution_time_ms: 60,
+                error_count: 1,
+            },
+        );
+
+        let events2 = vec![SessionEvent::Completed {
+            session_id: session_id.to_string(),
+            request_id: "req-1".to_string(),
+            timestamp: Utc::now(),
+            success: true,
+            error: None,
+            finish_reason: Some("end_turn".to_string()),
+            final_stats: Box::new(FinalSessionStats {
+                total_duration_ms: 700,
+                provider_time_ms: 650,
+                proxy_overhead_ms: 50.0,
+                total_tokens: TokenTotals {
+                    total_input: 150,
+                    total_output: 250,
+                    total_thinking: 75,
+                    total_cached: 0,
+                    grand_total: 475,
+                    by_model: HashMap::new(),
+                },
+                tool_summary: ToolUsageSummary {
+                    total_tool_calls: 5,
+                    unique_tool_count: 1,
+                    by_tool: by_tool2,
+                    total_tool_time_ms: 300,
+                    tool_error_count: 1,
+                },
+                performance: PerformanceMetrics::default(),
+                streaming_stats: None,
+                estimated_cost: None,
+            }),
+        }];
+
+        writer.write_batch(&events2).await.unwrap();
+
+        // Verify ON CONFLICT updated the values
+        let (call_count, avg_time, errors): (i64, i64, i64) = sqlx::query_as(
+            "SELECT call_count, avg_execution_time_ms, error_count FROM tool_calls WHERE session_id = ? AND tool_name = 'Read'",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(call_count, 5, "Call count should be updated to 5");
+        assert_eq!(avg_time, 60, "Avg time should be updated to 60");
+        assert_eq!(errors, 1, "Error count should be updated to 1");
+
+        // Verify we still only have one row
+        let row_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tool_calls WHERE session_id = ? AND tool_name = 'Read'",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(row_count, 1, "Should only have one row for the tool");
+    }
+
+    /// Test MAX() logic for token updates
+    #[tokio::test]
+    async fn test_token_update_max_logic() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "max-logic-test";
+
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: "req-1".to_string(),
+                timestamp: Utc::now(),
+                model_requested: "gpt-4".to_string(),
+                provider: "openai".to_string(),
+                listener: "openai".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            },
+            SessionEvent::ResponseRecorded {
+                session_id: session_id.to_string(),
+                request_id: "req-1".to_string(),
+                timestamp: Utc::now(),
+                response_text: "Response".to_string(),
+                response_json: serde_json::json!({}),
+                model_used: "gpt-4".to_string(),
+                stats: ResponseStats {
+                    provider_latency_ms: 500,
+                    post_processing_ms: 10.0,
+                    total_proxy_overhead_ms: 15.0,
+                    tokens: TokenStats {
+                        input_tokens: 100,
+                        output_tokens: 300,
+                        thinking_tokens: Some(50),
+                        cache_read_tokens: None,
+                        cache_write_tokens: None,
+                        total_tokens: 450,
+                        thinking_percentage: None,
+                        tokens_per_second: Some(200.0),
+                    },
+                    tool_calls: vec![],
+                    response_size_bytes: 500,
+                    content_blocks: 1,
+                    chunk_count: None,
+                    streaming_duration_ms: None,
+                    has_refusal: false,
+                    is_streaming: false,
+                },
+            },
+            SessionEvent::Completed {
+                session_id: session_id.to_string(),
+                request_id: "req-1".to_string(),
+                timestamp: Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: Some("end_turn".to_string()),
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: 600,
+                    provider_time_ms: 550,
+                    proxy_overhead_ms: 50.0,
+                    total_tokens: TokenTotals {
+                        total_input: 100,
+                        total_output: 300,
+                        total_thinking: 50,
+                        total_cached: 0,
+                        grand_total: 450,
+                        by_model: HashMap::new(),
+                    },
+                    tool_summary: ToolUsageSummary::default(),
+                    performance: PerformanceMetrics::default(),
+                    streaming_stats: None,
+                    estimated_cost: None,
+                }),
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        // Verify tokens remain correct (MAX logic)
+        let (input, output, thinking): (i64, i64, Option<i64>) = sqlx::query_as(
+            "SELECT input_tokens, output_tokens, thinking_tokens FROM sessions WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(input, 100);
+        assert_eq!(output, 300);
+        assert_eq!(thinking, Some(50));
     }
 }
