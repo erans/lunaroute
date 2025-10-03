@@ -29,11 +29,11 @@ Optimized for Claude Code CLI with zero-copy passthrough mode.
 ```bash
 # Option 1: Use environment variable
 ANTHROPIC_API_KEY=sk-ant-... lunaroute-server --config examples/configs/claude-code-proxy.yaml
-export ANTHROPIC_BASE_URL=http://localhost:3000
+export ANTHROPIC_BASE_URL=http://localhost:8081
 
 # Option 2: Let Claude Code provide auth (recommended - no env var needed)
 lunaroute-server --config examples/configs/claude-code-proxy.yaml
-export ANTHROPIC_BASE_URL=http://localhost:3000
+export ANTHROPIC_BASE_URL=http://localhost:8081
 # Claude Code will send its API key in the x-api-key header
 ```
 
@@ -124,7 +124,7 @@ All configurations support:
 
 Example:
 ```bash
-# Config says port 3000, but override to 8080
+# Config says port 8081, but override to 8080
 lunaroute-server --config production.yaml --port 8080
 ```
 

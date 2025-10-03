@@ -23,7 +23,7 @@
 //! Test with:
 //! ```bash
 //! # OpenAI GPT-5 mini (routes to OpenAI)
-//! curl http://localhost:3000/v1/chat/completions \
+//! curl http://localhost:8081/v1/chat/completions \
 //!   -H "Content-Type: application/json" \
 //!   -d '{
 //!     "model": "gpt-5-mini",
@@ -31,7 +31,7 @@
 //!   }'
 //!
 //! # Claude Sonnet 4.5 (routes to Anthropic, falls back to OpenAI if unavailable)
-//! curl http://localhost:3000/v1/chat/completions \
+//! curl http://localhost:8081/v1/chat/completions \
 //!   -H "Content-Type: application/json" \
 //!   -d '{
 //!     "model": "claude-sonnet-4-5",
@@ -39,7 +39,7 @@
 //!   }'
 //!
 //! # Streaming request
-//! curl http://localhost:3000/v1/chat/completions \
+//! curl http://localhost:8081/v1/chat/completions \
 //!   -H "Content-Type: application/json" \
 //!   -d '{
 //!     "model": "gpt-5-mini",

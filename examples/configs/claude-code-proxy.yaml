@@ -3,7 +3,7 @@
 # Zero-copy passthrough mode with minimal overhead
 
 host: "127.0.0.1"
-port: 3000
+port: 8081
 
 # IMPORTANT: Must be "anthropic" for passthrough mode
 api_dialect: "anthropic"
@@ -19,12 +19,12 @@ session_recording:
   enabled: false  # Disable for maximum performance
 
 logging:
-  level: "info"
+  level: "debug"
   log_requests: true  # See requests in stdout
 
 # Usage with Claude Code:
 # 1. Start server: lunaroute-server --config claude-code-proxy.yaml
-# 2. Set proxy: export ANTHROPIC_BASE_URL=http://localhost:3000
+# 2. Set proxy: export ANTHROPIC_BASE_URL=http://localhost:8081
 # 3. Run Claude Code normally
 #
 # Features:

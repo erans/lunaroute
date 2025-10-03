@@ -2,7 +2,7 @@
 # Accepts OpenAI-compatible requests and forwards to OpenAI
 
 host: "127.0.0.1"
-port: 3000
+port: 8081
 
 # API dialect - accept OpenAI format
 api_dialect: "openai"
