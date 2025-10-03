@@ -900,6 +900,40 @@ pub async fn messages_passthrough(
                 session_tags: vec![],
             },
         });
+
+        // Record the request
+        use lunaroute_session::events::RequestStats;
+
+        // Extract request text from messages (best effort for passthrough mode)
+        let request_text = req.get("messages")
+            .and_then(|m| m.as_array())
+            .and_then(|msgs| msgs.last())
+            .and_then(|msg| msg.get("content"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let message_count = req.get("messages").and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
+        let has_system_prompt = req.get("system").is_some();
+        let has_tools = req.get("tools").is_some();
+        let tool_count = req.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
+
+        recorder.record_event(SessionEvent::RequestRecorded {
+            session_id: session_id.clone(),
+            request_id: request_id.clone(),
+            timestamp: chrono::Utc::now(),
+            request_text,
+            request_json: req.clone(),
+            estimated_tokens: 0, // Not available in passthrough mode
+            stats: RequestStats {
+                pre_processing_ms: pre_provider_overhead.as_secs_f64() * 1000.0,
+                request_size_bytes: serde_json::to_string(&req).map(|s| s.len()).unwrap_or(0),
+                message_count,
+                has_system_prompt,
+                has_tools,
+                tool_count,
+            },
+        });
     }
 
     if is_streaming {
