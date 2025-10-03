@@ -909,6 +909,23 @@ pub async fn messages_passthrough(
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
+        // Extract response headers before consuming the stream
+        // Headers to skip (reqwest handles these automatically)
+        let skip_headers = ["content-encoding", "content-length", "transfer-encoding"];
+        let mut response_headers = axum::http::HeaderMap::new();
+
+        for (name, value) in stream_response.headers() {
+            let name_lower = name.as_str().to_lowercase();
+
+            // Skip headers that reqwest auto-handles (compression, chunking)
+            if skip_headers.contains(&name_lower.as_str()) {
+                continue;
+            }
+
+            // Forward all other headers (rate limits, request-id, etc.)
+            response_headers.insert(name.clone(), value.clone());
+        }
+
         // Track streaming metrics using shared module
         use futures::StreamExt;
         use crate::streaming_metrics::StreamingMetricsTracker;
@@ -1038,10 +1055,14 @@ pub async fn messages_passthrough(
             })
         });
 
-        // Create SSE response
+        // Create SSE response with forwarded headers
         let sse_response = Sse::new(final_stream).keep_alive(KeepAlive::default());
+        let mut response = sse_response.into_response();
 
-        return Ok(sse_response.into_response());
+        // Add the response headers from Anthropic
+        response.headers_mut().extend(response_headers);
+
+        return Ok(response);
     }
 
     // Send directly to Anthropic API (non-streaming)
@@ -1236,8 +1257,18 @@ pub async fn messages_passthrough(
     let mut axum_response = Json(response).into_response();
     let axum_headers = axum_response.headers_mut();
 
+    // Headers to skip (reqwest handles these automatically)
+    let skip_headers = ["content-encoding", "content-length", "transfer-encoding"];
+
     // Forward Anthropic's response headers (rate limits, request-id, etc.)
     for (name, value) in &response_headers {
+        let name_lower = name.to_lowercase();
+
+        // Skip headers that reqwest auto-handles (compression, chunking)
+        if skip_headers.contains(&name_lower.as_str()) {
+            continue;
+        }
+
         if let Ok(header_name) = axum::http::HeaderName::from_bytes(name.as_bytes()) {
             if let Ok(header_value) = axum::http::HeaderValue::from_str(value) {
                 axum_headers.insert(header_name, header_value);
