@@ -43,6 +43,9 @@ async fn test_openai_real_api_simple_completion() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -149,6 +152,9 @@ async fn test_openai_with_system_message() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -235,6 +241,9 @@ async fn test_openai_error_handling_invalid_model() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -275,6 +284,9 @@ async fn test_both_providers_sequential() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let openai_connector = OpenAIConnector::new(openai_config).unwrap();
 
@@ -348,6 +360,9 @@ async fn test_openai_streaming_basic() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -494,6 +509,9 @@ async fn test_openai_streaming_with_system_prompt() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -617,6 +635,9 @@ async fn test_anthropic_request_routed_to_openai_real_api() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let openai_connector = OpenAIConnector::new(openai_config).unwrap();
 

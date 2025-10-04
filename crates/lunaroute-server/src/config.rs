@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -52,6 +53,68 @@ pub struct ProviderSettings {
 
     #[serde(default = "default_true")]
     pub enabled: bool,
+
+    /// Custom headers to inject into requests sent to this provider
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_headers: Option<HeadersConfig>,
+
+    /// Request body modifications (defaults, overrides, prepend)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_body: Option<RequestBodyModConfig>,
+
+    /// Response body modifications (metadata injection, extension fields)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_body: Option<ResponseBodyModConfig>,
+}
+
+/// Configuration for custom HTTP headers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeadersConfig {
+    /// Map of header name to header value (supports ${variable} template syntax)
+    #[serde(flatten)]
+    pub headers: HashMap<String, String>,
+}
+
+/// Configuration for request body modifications
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestBodyModConfig {
+    /// Fields to set only if missing from client request (deep merge)
+    /// Example: {"temperature": 0.7, "max_tokens": 1000}
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defaults: Option<serde_json::Value>,
+
+    /// Fields to always override in request body (deep merge, takes precedence)
+    /// Example: {"temperature": 0.5} - will always replace client's temperature
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<serde_json::Value>,
+
+    /// Messages to prepend to the messages array (useful for system messages)
+    /// Example: [{"role": "system", "content": "You are a helpful assistant."}]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepend_messages: Option<Vec<serde_json::Value>>,
+}
+
+/// Configuration for response body modifications
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseBodyModConfig {
+    /// Whether to enable response body modifications
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Namespace for metadata object (default: "lunaroute")
+    /// Creates: {"choices": [...], "lunaroute": {"request_id": "...", ...}}
+    #[serde(default = "default_metadata_namespace")]
+    pub metadata_namespace: String,
+
+    /// Fields to include in metadata (supports ${variable} template syntax)
+    /// Example: {"request_id": "${request_id}", "provider": "${provider}"}
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<HashMap<String, String>>,
+
+    /// Alternative: extension fields at top level (experimental)
+    /// Creates: {"choices": [...], "x-request-id": "...", "x-provider": "..."}
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extension_fields: Option<HashMap<String, String>>,
 }
 
 // SessionRecordingConfig is now imported from lunaroute_session crate
@@ -141,6 +204,9 @@ impl ServerConfig {
                 api_key: None,
                 base_url: None,
                 enabled: true,
+                request_headers: None,
+                request_body: None,
+                response_body: None,
             });
             provider.api_key = Some(api_key);
         }
@@ -150,6 +216,9 @@ impl ServerConfig {
                 api_key: None,
                 base_url: None,
                 enabled: true,
+                request_headers: None,
+                request_body: None,
+                response_body: None,
             });
             provider.api_key = Some(api_key);
         }
@@ -252,4 +321,8 @@ fn default_true() -> bool {
 
 fn default_false() -> bool {
     false
+}
+
+fn default_metadata_namespace() -> String {
+    "lunaroute".to_string()
 }

@@ -62,6 +62,9 @@ async fn test_anthropic_request_translates_to_openai_api() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let openai_connector = OpenAIConnector::new(config).unwrap();
 
@@ -140,6 +143,9 @@ async fn test_anthropic_request_with_temperature() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let openai_connector = OpenAIConnector::new(config).unwrap();
     let app = anthropic::router(Arc::new(openai_connector));
@@ -214,6 +220,9 @@ async fn test_anthropic_assistant_message_in_conversation() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let openai_connector = OpenAIConnector::new(config).unwrap();
     let app = anthropic::router(Arc::new(openai_connector));
@@ -277,6 +286,9 @@ data: [DONE]
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let openai_connector = OpenAIConnector::new(config).unwrap();
     let app = anthropic::router(Arc::new(openai_connector));

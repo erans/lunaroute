@@ -33,6 +33,7 @@ bytes = { workspace = true }
 thiserror = { workspace = true }
 async-trait = "0.1"
 flate2 = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 mockall = { workspace = true }

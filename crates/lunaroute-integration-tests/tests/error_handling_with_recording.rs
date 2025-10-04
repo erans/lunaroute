@@ -77,6 +77,9 @@ async fn test_openai_400_error_with_recording() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = Arc::new(OpenAIConnector::new(config).unwrap());
 
@@ -174,6 +177,9 @@ async fn test_openai_500_error_with_recording() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = Arc::new(OpenAIConnector::new(config).unwrap());
 
@@ -475,6 +481,9 @@ async fn test_openai_streaming_error_with_recording() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = Arc::new(OpenAIConnector::new(config).unwrap());
 

@@ -1,0 +1,25 @@
+# LunaRoute Server Configuration
+
+# Server settings
+host: "127.0.0.1"
+port: 8081
+
+# API dialect
+api_dialect: "anthropic"
+
+# Provider configuration
+providers:
+  anthropic:
+    enabled: true
+    api_key: "${ANTHROPIC_API_KEY}"
+
+# Session recording
+session_recording:
+  enabled: true
+  directory: "~/.lunaroute/sessions"
+  format: "both"  # Record to both JSONL and SQLite
+
+# Logging configuration
+logging:
+  level: "debug"
+  log_requests: false

@@ -1,0 +1,67 @@
+# OpenAI Proxy Configuration with Session Recording
+# Records all conversations to both JSONL files and SQLite database
+
+host: "127.0.0.1"
+port: 8081
+
+# IMPORTANT: Must be "openai" for passthrough mode
+api_dialect: "openai"
+
+providers:
+  openai:
+    enabled: true
+    api_key: ""
+    base_url: "https://api.openai.com/v1"
+
+  # Explicitly disable other providers for passthrough mode
+  anthropic:
+    enabled: false
+
+# Session recording with both JSONL and SQLite
+session_recording:
+  enabled: true
+
+  # JSONL writer - human-readable session logs
+  jsonl:
+    enabled: true
+    directory: "~/.lunaroute/sessions"
+    retention:
+      max_age_days: 30  # Keep sessions for 30 days
+      max_size_mb: 1024  # Delete oldest when total size exceeds 1GB
+
+  # SQLite writer - queryable session database
+  sqlite:
+    enabled: true
+    path: "~/.lunaroute/sessions.db"
+    max_connections: 10
+
+# Track up to 1000 session statistics in memory
+session_stats_max_sessions: 1000
+
+logging:
+  level: "debug"
+  log_requests: true  # See requests in stdout
+
+# Usage with OpenAI clients:
+# 1. Start server: lunaroute serve --config openai-proxy-with-recording.yaml
+# 2. Set base URL in your OpenAI client to http://localhost:8081/v1
+#    - Python: OpenAI(base_url="http://localhost:8081/v1")
+#    - Node: new OpenAI({ baseURL: "http://localhost:8081/v1" })
+#    - curl: curl http://localhost:8081/v1/chat/completions ...
+# 3. Ensure OPENAI_API_KEY is set or pass Authorization header
+#
+# Sessions will be recorded to:
+# - JSONL: ~/.lunaroute/sessions/YYYY-MM-DD/<session-id>.jsonl
+# - SQLite: ~/.lunaroute/sessions.db
+#
+# Query sessions:
+# sqlite3 ~/.lunaroute/sessions.db "SELECT * FROM sessions ORDER BY created_at DESC LIMIT 10"
+#
+# Features:
+# - Zero-copy passthrough (no normalization overhead)
+# - 100% API fidelity (preserves all OpenAI features)
+# - Dual-format recording (JSONL + SQLite)
+# - Automatic retention management
+# - Session statistics tracking
+# - User-Agent tracking
+# - Prometheus metrics at /metrics

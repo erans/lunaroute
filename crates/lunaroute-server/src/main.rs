@@ -56,7 +56,7 @@ use config::{ApiDialect, ServerConfig};
 use lunaroute_core::provider::Provider;
 use lunaroute_egress::{
     anthropic::{AnthropicConfig, AnthropicConnector},
-    openai::{OpenAIConfig, OpenAIConnector},
+    openai::{OpenAIConfig, OpenAIConnector, RequestBodyModConfig, ResponseBodyModConfig},
 };
 use lunaroute_ingress::{anthropic as anthropic_ingress, openai};
 use lunaroute_observability::{health_router, HealthState, Metrics};
@@ -317,6 +317,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut provider_config = OpenAIConfig::new(api_key.clone());
         provider_config.base_url = base_url;
+
+        // Wire custom headers and body modifications
+        if let Some(headers_config) = &openai_config.request_headers {
+            provider_config.custom_headers = Some(headers_config.headers.clone());
+        }
+        if let Some(request_body) = &openai_config.request_body {
+            provider_config.request_body_config = Some(RequestBodyModConfig {
+                defaults: request_body.defaults.clone(),
+                overrides: request_body.overrides.clone(),
+                prepend_messages: request_body.prepend_messages.clone(),
+            });
+        }
+        if let Some(response_body) = &openai_config.response_body {
+            provider_config.response_body_config = Some(ResponseBodyModConfig {
+                enabled: response_body.enabled,
+                metadata_namespace: response_body.metadata_namespace.clone(),
+                fields: response_body.fields.clone(),
+                extension_fields: response_body.extension_fields.clone(),
+            });
+        }
+
         let conn = OpenAIConnector::new(provider_config)?;
 
         // Build the provider stack (order matters!)

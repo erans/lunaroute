@@ -56,6 +56,9 @@ mod e2e_tests {
             base_url: mock_server.uri(),
             organization: None,
             client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
         };
         let connector = Arc::new(OpenAIConnector::new(config).unwrap());
 
@@ -139,6 +142,9 @@ mod e2e_tests {
             base_url: mock_server.uri(),
             organization: None,
             client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
         };
         let connector = Arc::new(OpenAIConnector::new(config).unwrap());
         let app = openai::router(connector);
@@ -191,6 +197,9 @@ mod e2e_tests {
             base_url: mock_server.uri(),
             organization: None,
             client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
         };
         let connector = Arc::new(OpenAIConnector::new(config).unwrap());
         let app = openai::router(connector);
@@ -236,6 +245,9 @@ mod e2e_tests {
             base_url: mock_server.uri(),
             organization: None,
             client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
         };
         let connector = Arc::new(OpenAIConnector::new(config).unwrap());
         let app = openai::router(connector);
@@ -314,6 +326,9 @@ mod e2e_tests {
             base_url: mock_server.uri(),
             organization: None,
             client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
         };
         let connector = Arc::new(OpenAIConnector::new(config).unwrap());
         let app = openai::router(connector);

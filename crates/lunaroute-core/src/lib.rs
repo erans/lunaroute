@@ -4,9 +4,11 @@
 //! - Normalized request/response types
 //! - Provider trait abstractions
 //! - Core error types
+//! - Template engine for variable substitution
 
 pub mod error;
 pub mod normalized;
 pub mod provider;
+pub mod template;
 
 pub use error::{Error, Result};

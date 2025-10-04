@@ -30,6 +30,39 @@ pub struct OpenAIConfig {
 
     /// HTTP client configuration
     pub client_config: HttpClientConfig,
+
+    /// Custom request headers (supports template variables)
+    pub custom_headers: Option<std::collections::HashMap<String, String>>,
+
+    /// Request body modifications
+    pub request_body_config: Option<RequestBodyModConfig>,
+
+    /// Response body modifications
+    pub response_body_config: Option<ResponseBodyModConfig>,
+}
+
+/// Request body modification configuration
+#[derive(Debug, Clone)]
+pub struct RequestBodyModConfig {
+    /// Fields to set only if missing
+    pub defaults: Option<serde_json::Value>,
+    /// Fields to always override
+    pub overrides: Option<serde_json::Value>,
+    /// Messages to prepend
+    pub prepend_messages: Option<Vec<serde_json::Value>>,
+}
+
+/// Response body modification configuration
+#[derive(Debug, Clone)]
+pub struct ResponseBodyModConfig {
+    /// Whether enabled
+    pub enabled: bool,
+    /// Namespace for metadata
+    pub metadata_namespace: String,
+    /// Metadata fields
+    pub fields: Option<std::collections::HashMap<String, String>>,
+    /// Extension fields (alternative)
+    pub extension_fields: Option<std::collections::HashMap<String, String>>,
 }
 
 impl OpenAIConfig {
@@ -40,6 +73,9 @@ impl OpenAIConfig {
             base_url: "https://api.openai.com/v1".to_string(),
             organization: None,
             client_config: HttpClientConfig::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
         }
     }
 
@@ -79,6 +115,37 @@ impl OpenAIConnector {
         headers: std::collections::HashMap<String, String>,
     ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
         self.send_passthrough_to_endpoint("chat/completions", request_json, headers).await
+    }
+
+    /// Send with context for custom headers and body modifications
+    #[instrument(skip(self, request_json))]
+    pub async fn send_passthrough_with_context(
+        &self,
+        mut request_json: serde_json::Value,
+        mut headers: std::collections::HashMap<String, String>,
+        request_id: &str,
+        session_id: Option<&str>,
+    ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
+        // Extract model from request for context (clone to own it)
+        let model = request_json.get("model")
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Apply request body modifications
+        self.apply_request_body_modifications(&mut request_json);
+
+        // Apply custom headers with template substitution
+        self.apply_custom_headers(&mut headers, request_id, &model, session_id);
+
+        // Send the request
+        let (mut response_json, response_headers) =
+            self.send_passthrough_to_endpoint("chat/completions", request_json, headers).await?;
+
+        // Apply response body modifications
+        self.apply_response_body_modifications(&mut response_json, request_id, &model, session_id);
+
+        Ok((response_json, response_headers))
     }
 
     /// Send a raw JSON request to a specific OpenAI endpoint (passthrough mode)
@@ -434,6 +501,130 @@ impl OpenAIConnector {
 
         Ok(response)
     }
+
+    /// Apply custom headers with template variable substitution
+    fn apply_custom_headers(
+        &self,
+        headers: &mut std::collections::HashMap<String, String>,
+        request_id: &str,
+        model: &str,
+        session_id: Option<&str>,
+    ) {
+        if let Some(custom_headers) = &self.config.custom_headers {
+            // Create template context
+            let mut context = lunaroute_core::template::TemplateContext::new(
+                request_id.to_string(),
+                "openai".to_string(),
+                model.to_string(),
+            );
+            if let Some(sid) = session_id {
+                context = context.with_session_id(sid.to_string());
+            }
+
+            // Substitute and merge custom headers
+            let substituted = lunaroute_core::template::substitute_headers(custom_headers, &mut context);
+            headers.extend(substituted);
+        }
+    }
+
+    /// Deep merge two JSON values (used for defaults/overrides)
+    fn deep_merge(base: &mut serde_json::Value, overlay: &serde_json::Value) {
+        if let (Some(base_obj), Some(overlay_obj)) = (base.as_object_mut(), overlay.as_object()) {
+            for (key, value) in overlay_obj {
+                if let Some(base_value) = base_obj.get_mut(key) {
+                    if base_value.is_object() && value.is_object() {
+                        Self::deep_merge(base_value, value);
+                    } else {
+                        *base_value = value.clone();
+                    }
+                } else {
+                    base_obj.insert(key.clone(), value.clone());
+                }
+            }
+        } else {
+            *base = overlay.clone();
+        }
+    }
+
+    /// Apply request body modifications (defaults, overrides, prepend)
+    fn apply_request_body_modifications(
+        &self,
+        request_json: &mut serde_json::Value,
+    ) {
+        if let Some(body_config) = &self.config.request_body_config {
+            // Apply defaults (only if field missing)
+            if let Some(defaults) = &body_config.defaults {
+                let mut base = defaults.clone();
+                Self::deep_merge(&mut base, request_json);
+                *request_json = base;
+            }
+
+            // Apply overrides (always replace)
+            if let Some(overrides) = &body_config.overrides {
+                Self::deep_merge(request_json, overrides);
+            }
+
+            // Prepend messages to messages array
+            if let Some(prepend_msgs) = &body_config.prepend_messages
+                && let Some(messages) = request_json.get_mut("messages")
+                && let Some(messages_array) = messages.as_array_mut()
+            {
+                // Prepend in reverse order to maintain order
+                for msg in prepend_msgs.iter().rev() {
+                    messages_array.insert(0, msg.clone());
+                }
+            }
+        }
+    }
+
+    /// Apply response body modifications (metadata injection)
+    fn apply_response_body_modifications(
+        &self,
+        response_json: &mut serde_json::Value,
+        request_id: &str,
+        model: &str,
+        session_id: Option<&str>,
+    ) {
+        if let Some(body_config) = &self.config.response_body_config {
+            if !body_config.enabled {
+                return;
+            }
+
+            let mut context = lunaroute_core::template::TemplateContext::new(
+                request_id.to_string(),
+                "openai".to_string(),
+                model.to_string(),
+            );
+            if let Some(sid) = session_id {
+                context = context.with_session_id(sid.to_string());
+            }
+
+            // Inject metadata object
+            if let Some(fields) = &body_config.fields
+                && let Some(response_obj) = response_json.as_object_mut()
+            {
+                let mut metadata = serde_json::Map::new();
+                for (key, template) in fields {
+                    let value = lunaroute_core::template::substitute_string(template, &mut context);
+                    metadata.insert(key.clone(), serde_json::Value::String(value));
+                }
+                response_obj.insert(
+                    body_config.metadata_namespace.clone(),
+                    serde_json::Value::Object(metadata),
+                );
+            }
+
+            // Alternative: inject extension fields at top level
+            if let Some(ext_fields) = &body_config.extension_fields
+                && let Some(response_obj) = response_json.as_object_mut()
+            {
+                for (key, template) in ext_fields {
+                    let value = lunaroute_core::template::substitute_string(template, &mut context);
+                    response_obj.insert(key.clone(), serde_json::Value::String(value));
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -442,7 +633,32 @@ impl Provider for OpenAIConnector {
     async fn send(&self, request: NormalizedRequest) -> lunaroute_core::Result<NormalizedResponse> {
         debug!("Sending non-streaming request to OpenAI");
 
-        let openai_req = to_openai_request(request)?;
+        let openai_req = to_openai_request(request.clone())?;
+
+        // Convert to JSON for body modifications
+        let mut request_json = serde_json::to_value(&openai_req)
+            .map_err(|e| EgressError::ParseError(format!("Failed to serialize request: {}", e)))?;
+
+        // Apply request body modifications (defaults, overrides, prepend messages)
+        self.apply_request_body_modifications(&mut request_json);
+
+        // Prepare headers with template substitution if custom headers are configured
+        let mut headers_to_apply = std::collections::HashMap::new();
+        if let Some(ref custom_headers) = self.config.custom_headers {
+            // Create template context for header substitution
+            use lunaroute_core::template::TemplateContext;
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let model = request.model.clone();
+
+            let mut template_ctx = TemplateContext::new(
+                request_id,
+                "openai".to_string(),
+                model,
+            );
+
+            // Substitute templates in headers
+            headers_to_apply = lunaroute_core::template::substitute_headers(custom_headers, &mut template_ctx);
+        }
 
         // Log request headers at debug level
         debug!("┌─────────────────────────────────────────────────────────");
@@ -453,18 +669,31 @@ impl Provider for OpenAIConnector {
         if let Some(ref org) = self.config.organization {
             debug!("│ OpenAI-Organization: {}", org);
         }
+
+        // Log custom headers if present
+        for (name, value) in &headers_to_apply {
+            debug!("│ {}: {}", name, value);
+        }
         debug!("└─────────────────────────────────────────────────────────");
 
         let max_retries = self.config.client_config.max_retries;
         let result = with_retry(max_retries, || {
-            let openai_req = openai_req.clone();
+            let request_json = request_json.clone();
+            let headers_to_apply = headers_to_apply.clone();
             async move {
-                let response = self.client
+                let mut request_builder = self.client
                     .post(format!("{}/chat/completions", self.config.base_url))
                     .header("Authorization", format!("Bearer {}", self.config.api_key))
                     .header("Content-Type", "application/json")
-                    .apply_organization_header(&self.config)
-                    .json(&openai_req)
+                    .apply_organization_header(&self.config);
+
+                // Apply custom headers with templates already substituted
+                for (name, value) in headers_to_apply {
+                    request_builder = request_builder.header(name, value);
+                }
+
+                let response = request_builder
+                    .json(&request_json)
                     .send()
                     .await?;
 
@@ -498,6 +727,31 @@ impl Provider for OpenAIConnector {
         let mut openai_req = to_openai_request(request)?;
         openai_req.stream = Some(true);
 
+        // Convert to JSON for body modifications
+        let mut request_json = serde_json::to_value(&openai_req)
+            .map_err(|e| EgressError::ParseError(format!("Failed to serialize request: {}", e)))?;
+
+        // Apply request body modifications (defaults, overrides, prepend messages)
+        self.apply_request_body_modifications(&mut request_json);
+
+        // Prepare headers with template substitution if custom headers are configured
+        let mut headers_to_apply = std::collections::HashMap::new();
+        if let Some(ref custom_headers) = self.config.custom_headers {
+            // Create template context for header substitution
+            use lunaroute_core::template::TemplateContext;
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let model = openai_req.model.clone();
+
+            let mut template_ctx = TemplateContext::new(
+                request_id,
+                "openai".to_string(),
+                model,
+            );
+
+            // Substitute templates in headers
+            headers_to_apply = lunaroute_core::template::substitute_headers(custom_headers, &mut template_ctx);
+        }
+
         // Log request headers at debug level
         debug!("┌─────────────────────────────────────────────────────────");
         debug!("│ OpenAI Streaming Request Headers");
@@ -507,15 +761,27 @@ impl Provider for OpenAIConnector {
         if let Some(ref org) = self.config.organization {
             debug!("│ OpenAI-Organization: {}", org);
         }
+
+        // Log custom headers with templates substituted
+        for (name, value) in &headers_to_apply {
+            debug!("│ {}: {}", name, value);
+        }
         debug!("└─────────────────────────────────────────────────────────");
 
-        let response = self
+        let mut request_builder = self
             .client
             .post(format!("{}/chat/completions", self.config.base_url))
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
-            .apply_organization_header(&self.config)
-            .json(&openai_req)
+            .apply_organization_header(&self.config);
+
+        // Apply custom headers with templates already substituted
+        for (name, value) in headers_to_apply {
+            request_builder = request_builder.header(name, value);
+        }
+
+        let response = request_builder
+            .json(&request_json)
             .send()
             .await
             .map_err(EgressError::from)?;

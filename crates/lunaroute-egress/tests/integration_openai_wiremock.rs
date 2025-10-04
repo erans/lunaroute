@@ -50,6 +50,9 @@ async fn test_openai_send_success() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -123,6 +126,9 @@ async fn test_openai_send_with_organization() {
         base_url: mock_server.uri(),
         organization: Some("org-123".to_string()),
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -177,6 +183,9 @@ async fn test_openai_send_rate_limit_error() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -253,6 +262,9 @@ async fn test_openai_send_server_error_with_retry() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -306,6 +318,9 @@ async fn test_openai_send_invalid_api_key() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -376,6 +391,9 @@ async fn test_openai_send_with_tools() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
