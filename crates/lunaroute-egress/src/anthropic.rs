@@ -725,6 +725,7 @@ enum AnthropicStreamEvent {
         usage: AnthropicStreamUsage,
     },
     MessageStop,
+    Ping,
     #[serde(other)]
     Unknown,
 }
@@ -779,17 +780,18 @@ fn create_anthropic_stream(
     response: reqwest::Response,
 ) -> Pin<Box<dyn Stream<Item = lunaroute_core::Result<NormalizedStreamEvent>> + Send + Unpin>> {
     use futures::StreamExt;
+    use std::collections::HashMap;
 
     let byte_stream = response.bytes_stream();
     let event_stream = eventsource_stream::EventStream::new(byte_stream);
 
-    // Track state across events
+    // Track state across events with HashMap for per-index tracking
     let stream = event_stream.scan(
-        (None, None, String::new()),
-        |(stream_id, tool_call_state, tool_args_buffer): &mut (
+        (None, HashMap::new(), HashMap::new()),
+        |(stream_id, tool_call_states, tool_args_buffers): &mut (
             Option<String>,
-            Option<(String, String)>,
-            String,
+            HashMap<u32, (String, String)>,  // index -> (id, name)
+            HashMap<u32, String>,             // index -> accumulated args
         ),
          result| {
             let event = match result {
@@ -837,10 +839,10 @@ fn create_anthropic_stream(
                             return futures::future::ready(None);
                         }
                         AnthropicStreamContentBlock::ToolUse { id, name } => {
-                            // Start of tool call
-                            debug!("Tool call started: id={}, name={}", id, name);
-                            *tool_call_state = Some((id.clone(), name.clone()));
-                            tool_args_buffer.clear();
+                            // Start of tool call - track by index
+                            debug!("Tool call started at index {}: id={}, name={}", index, id, name);
+                            tool_call_states.insert(index, (id.clone(), name.clone()));
+                            tool_args_buffers.insert(index, String::new());
                             return futures::future::ready(None);
                         }
                     }
@@ -858,10 +860,12 @@ fn create_anthropic_stream(
                             })
                         }
                         AnthropicStreamDelta::InputJsonDelta { partial_json } => {
-                            // Accumulate tool call arguments
-                            tool_args_buffer.push_str(&partial_json);
+                            // Accumulate tool call arguments for this index
+                            if let Some(buffer) = tool_args_buffers.get_mut(&index) {
+                                buffer.push_str(&partial_json);
+                            }
 
-                            if let Some((id, name)) = tool_call_state.as_ref() {
+                            if let Some((id, name)) = tool_call_states.get(&index) {
                                 Ok(NormalizedStreamEvent::ToolCallDelta {
                                     index,
                                     tool_call_index: 0,
@@ -872,17 +876,17 @@ fn create_anthropic_stream(
                                     }),
                                 })
                             } else {
-                                debug!("InputJsonDelta without active tool call");
+                                debug!("InputJsonDelta at index {} without active tool call", index);
                                 return futures::future::ready(None);
                             }
                         }
                     }
                 }
 
-                AnthropicStreamEvent::ContentBlockStop { .. } => {
-                    // Reset tool call state
-                    *tool_call_state = None;
-                    tool_args_buffer.clear();
+                AnthropicStreamEvent::ContentBlockStop { index } => {
+                    // Remove tool call state for this specific index
+                    tool_call_states.remove(&index);
+                    tool_args_buffers.remove(&index);
                     return futures::future::ready(None);
                 }
 
@@ -924,6 +928,12 @@ fn create_anthropic_stream(
                 AnthropicStreamEvent::MessageStop => {
                     // Final event - already sent End in MessageDelta
                     debug!("Anthropic stream stopped");
+                    return futures::future::ready(None);
+                }
+
+                AnthropicStreamEvent::Ping => {
+                    // Ping event - used to keep connection alive, no action needed
+                    debug!("Received ping event");
                     return futures::future::ready(None);
                 }
 
@@ -1649,8 +1659,11 @@ mod tests {
         // Helper to parse SSE events and convert to normalized events
         // This tests the core conversion logic without needing HTTP mocking
         async fn parse_sse_events(events: Vec<&str>) -> Vec<lunaroute_core::Result<NormalizedStreamEvent>> {
+            use std::collections::HashMap;
+
             let mut results = Vec::new();
-            let mut state: (Option<String>, Option<(String, String)>, String) = (None, None, String::new());
+            let mut state: (Option<String>, HashMap<u32, (String, String)>, HashMap<u32, String>) =
+                (None, HashMap::new(), HashMap::new());
 
             for event_data in events {
                 let anthropic_event: AnthropicStreamEvent = match serde_json::from_str(event_data) {
@@ -1664,7 +1677,7 @@ mod tests {
                     }
                 };
 
-                let (stream_id, tool_call_state, tool_args_buffer) = &mut state;
+                let (stream_id, tool_call_states, tool_args_buffers) = &mut state;
 
                 // This is the same logic as in create_anthropic_stream
                 match anthropic_event {
@@ -1683,9 +1696,9 @@ mod tests {
                                 debug!("Text content block started at index {}", index);
                             }
                             AnthropicStreamContentBlock::ToolUse { id, name } => {
-                                debug!("Tool call started: id={}, name={}", id, name);
-                                *tool_call_state = Some((id.clone(), name.clone()));
-                                tool_args_buffer.clear();
+                                debug!("Tool call started at index {}: id={}, name={}", index, id, name);
+                                tool_call_states.insert(index, (id.clone(), name.clone()));
+                                tool_args_buffers.insert(index, String::new());
                             }
                         }
                     }
@@ -1702,9 +1715,12 @@ mod tests {
                                 }));
                             }
                             AnthropicStreamDelta::InputJsonDelta { partial_json } => {
-                                tool_args_buffer.push_str(&partial_json);
+                                // Accumulate tool call arguments for this index
+                                if let Some(buffer) = tool_args_buffers.get_mut(&index) {
+                                    buffer.push_str(&partial_json);
+                                }
 
-                                if let Some((id, name)) = tool_call_state.as_ref() {
+                                if let Some((id, name)) = tool_call_states.get(&index) {
                                     results.push(Ok(NormalizedStreamEvent::ToolCallDelta {
                                         index,
                                         tool_call_index: 0,
@@ -1719,9 +1735,10 @@ mod tests {
                         }
                     }
 
-                    AnthropicStreamEvent::ContentBlockStop { .. } => {
-                        *tool_call_state = None;
-                        tool_args_buffer.clear();
+                    AnthropicStreamEvent::ContentBlockStop { index } => {
+                        // Remove tool call state for this specific index
+                        tool_call_states.remove(&index);
+                        tool_args_buffers.remove(&index);
                     }
 
                     AnthropicStreamEvent::MessageDelta { delta, usage } => {
@@ -1748,6 +1765,10 @@ mod tests {
 
                     AnthropicStreamEvent::MessageStop => {
                         debug!("Anthropic stream stopped");
+                    }
+
+                    AnthropicStreamEvent::Ping => {
+                        debug!("Received ping event");
                     }
 
                     AnthropicStreamEvent::Unknown => {

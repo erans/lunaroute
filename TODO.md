@@ -308,7 +308,9 @@
 - [x] Full tool support (tool_use, tool_result blocks)
 - [x] System message extraction
 - [x] Content blocks (text, tool_use, tool_result)
-- [x] 29 tests passing (18 unit + 5 streaming + 6 integration)
+- [x] **Concurrent content blocks support** (HashMap-based state tracking per index)
+- [x] **Ping event handling** (keep-alive support for long streams)
+- [x] 23 tests passing (all unit + streaming tests with concurrent block validation)
 
 ### Connection Management ✅
 - [x] Create connection pooling (32 idle connections per host)

@@ -895,90 +895,93 @@ fn from_openai_response(resp: OpenAIChatResponse) -> Result<NormalizedResponse> 
 
 fn create_openai_stream(
     response: reqwest::Response,
-) -> Pin<Box<dyn Stream<Item = lunaroute_core::Result<NormalizedStreamEvent>> + Send + Unpin>> {
+) -> Pin<Box<dyn Stream<Item = lunaroute_core::Result<NormalizedStreamEvent>> + Send>> {
     use futures::StreamExt;
 
     let byte_stream = response.bytes_stream();
     let event_stream = eventsource_stream::EventStream::new(byte_stream);
 
-    let stream = event_stream.map(|result| match result {
-        Ok(event) => {
-            if event.data == "[DONE]" {
-                return Ok(NormalizedStreamEvent::End {
-                    finish_reason: FinishReason::Stop,
-                });
-            }
-
-            match serde_json::from_str::<OpenAIStreamChunk>(&event.data) {
-                Ok(chunk) => {
-                    // Convert chunk to normalized events
-                    if let Some(usage) = chunk.usage {
-                        return Ok(NormalizedStreamEvent::Usage {
-                            usage: Usage {
-                                prompt_tokens: usage.prompt_tokens,
-                                completion_tokens: usage.completion_tokens,
-                                total_tokens: usage.total_tokens,
-                            },
-                        });
-                    }
-
-                    if let Some(choice) = chunk.choices.first() {
-                        if let Some(ref finish_reason) = choice.finish_reason {
-                            let reason = match finish_reason.as_str() {
-                                "stop" => FinishReason::Stop,
-                                "length" => FinishReason::Length,
-                                "tool_calls" => FinishReason::ToolCalls,
-                                "content_filter" => FinishReason::ContentFilter,
-                                _ => FinishReason::Stop,
-                            };
-                            return Ok(NormalizedStreamEvent::End { finish_reason: reason });
-                        }
-
-                        if let Some(ref content) = choice.delta.content {
-                            return Ok(NormalizedStreamEvent::Delta {
-                                index: choice.index,
-                                delta: Delta {
-                                    role: choice.delta.role.as_ref().and_then(|r| match r.as_str() {
-                                        "assistant" => Some(Role::Assistant),
-                                        "user" => Some(Role::User),
-                                        "system" => Some(Role::System),
-                                        "tool" => Some(Role::Tool),
-                                        _ => None,
-                                    }),
-                                    content: Some(content.clone()),
-                                },
-                            });
-                        }
-
-                        if let Some(ref tool_calls) = choice.delta.tool_calls
-                            && let Some(tool_call) = tool_calls.first()
-                        {
-                            return Ok(NormalizedStreamEvent::ToolCallDelta {
-                                index: choice.index,
-                                tool_call_index: tool_call.index,
-                                id: tool_call.id.clone(),
-                                function: tool_call.function.as_ref().map(|f| FunctionCallDelta {
-                                    name: f.name.clone(),
-                                    arguments: f.arguments.clone(),
-                                }),
-                            });
-                        }
-                    }
-
-                    // Default to start event
-                    Ok(NormalizedStreamEvent::Start {
-                        id: chunk.id,
-                        model: String::new(),
-                    })
+    let stream = event_stream
+        .map(|result| match result {
+            Ok(event) => {
+                // [DONE] is just a sentinel - ignore it since End event already sent with finish_reason
+                if event.data == "[DONE]" {
+                    return None;
                 }
-                Err(e) => Err(lunaroute_core::Error::Provider(format!(
-                    "Failed to parse OpenAI stream chunk: {}",
-                    e
-                ))),
+
+                match serde_json::from_str::<OpenAIStreamChunk>(&event.data) {
+                    Ok(chunk) => {
+                        // Convert chunk to normalized events
+                        if let Some(usage) = chunk.usage {
+                            return Some(Ok(NormalizedStreamEvent::Usage {
+                                usage: Usage {
+                                    prompt_tokens: usage.prompt_tokens,
+                                    completion_tokens: usage.completion_tokens,
+                                    total_tokens: usage.total_tokens,
+                                },
+                            }));
+                        }
+
+                        if let Some(choice) = chunk.choices.first() {
+                            if let Some(ref finish_reason) = choice.finish_reason {
+                                let reason = match finish_reason.as_str() {
+                                    "stop" => FinishReason::Stop,
+                                    "length" => FinishReason::Length,
+                                    "tool_calls" => FinishReason::ToolCalls,
+                                    "content_filter" => FinishReason::ContentFilter,
+                                    _ => FinishReason::Stop,
+                                };
+                                return Some(Ok(NormalizedStreamEvent::End { finish_reason: reason }));
+                            }
+
+                            if let Some(ref content) = choice.delta.content {
+                                return Some(Ok(NormalizedStreamEvent::Delta {
+                                    index: choice.index,
+                                    delta: Delta {
+                                        role: choice.delta.role.as_ref().and_then(|r| match r.as_str() {
+                                            "assistant" => Some(Role::Assistant),
+                                            "user" => Some(Role::User),
+                                            "system" => Some(Role::System),
+                                            "tool" => Some(Role::Tool),
+                                            _ => None,
+                                        }),
+                                        content: Some(content.clone()),
+                                    },
+                                }));
+                            }
+
+                            // Process ALL tool calls, not just the first
+                            if let Some(ref tool_calls) = choice.delta.tool_calls {
+                                // For now, return first tool call (TODO: need to emit multiple events)
+                                // This is a limitation of only being able to return one event per chunk
+                                if let Some(tool_call) = tool_calls.first() {
+                                    return Some(Ok(NormalizedStreamEvent::ToolCallDelta {
+                                        index: choice.index,
+                                        tool_call_index: tool_call.index,
+                                        id: tool_call.id.clone(),
+                                        function: tool_call.function.as_ref().map(|f| FunctionCallDelta {
+                                            name: f.name.clone(),
+                                            arguments: f.arguments.clone(),
+                                        }),
+                                    }));
+                                }
+                            }
+                        }
+
+                        // Skip chunks that don't contain meaningful data (e.g., first chunk with just role)
+                        // Log for debugging but don't emit an event
+                        tracing::debug!("Skipping OpenAI chunk with no actionable data: id={}", chunk.id);
+                        None
+                    }
+                    Err(e) => Some(Err(lunaroute_core::Error::Provider(format!(
+                        "Failed to parse OpenAI stream chunk: {}",
+                        e
+                    )))),
+                }
             }
-        }
-        Err(e) => Err(lunaroute_core::Error::Provider(format!("Stream error: {}", e))),
-    });
+            Err(e) => Some(Err(lunaroute_core::Error::Provider(format!("Stream error: {}", e)))),
+        })
+        .filter_map(|opt| async move { opt });
 
     Box::pin(stream)
 }
