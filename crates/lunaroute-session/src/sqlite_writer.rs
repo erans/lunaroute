@@ -380,7 +380,8 @@ impl SqliteWriter {
         }
 
         // Apply migrations one by one
-        let mut current_version = version;
+        // Note: Change to `let mut current_version` when adding migration 2->3
+        let current_version = version;
 
         // Migration 1 -> 2: Add new token columns to sessions table
         if current_version == 1 {
@@ -414,7 +415,7 @@ impl SqliteWriter {
                 .await
                 .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (version update): {}", e)))?;
 
-            current_version = 2;
+            // current_version = 2; // Uncomment when adding migration 2->3
         }
 
         // Future migrations go here
@@ -1089,8 +1090,8 @@ impl SqliteWriter {
         final_stats: &FinalSessionStats,
     ) -> WriterResult<()> {
         // Update session with completion data AND token totals from final_stats
-        // In passthrough mode, tokens are added via StatsUpdated events, so this adds any remaining tokens
-        // In non-passthrough mode, this sets the tokens from the final response
+        // Uses MAX() to avoid double-counting: for non-streaming sessions, ResponseRecorded already sets tokens
+        // For streaming/passthrough mode, StatsUpdated events accumulate tokens, and this ensures final_stats value is used
         let total_duration = Self::safe_u64_to_i64(final_stats.total_duration_ms, "total_duration_ms")?;
         let input_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_input, "input_tokens")?;
         let output_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_output, "output_tokens")?;
@@ -1109,14 +1110,14 @@ impl SqliteWriter {
                 error_message = ?,
                 finish_reason = ?,
                 total_duration_ms = ?,
-                input_tokens = COALESCE(input_tokens, 0) + ?,
-                output_tokens = COALESCE(output_tokens, 0) + ?,
-                thinking_tokens = COALESCE(thinking_tokens, 0) + ?,
-                reasoning_tokens = COALESCE(reasoning_tokens, 0) + ?,
-                cache_read_tokens = COALESCE(cache_read_tokens, 0) + ?,
-                cache_creation_tokens = COALESCE(cache_creation_tokens, 0) + ?,
-                audio_input_tokens = COALESCE(audio_input_tokens, 0) + ?,
-                audio_output_tokens = COALESCE(audio_output_tokens, 0) + ?
+                input_tokens = MAX(COALESCE(input_tokens, 0), ?),
+                output_tokens = MAX(COALESCE(output_tokens, 0), ?),
+                thinking_tokens = MAX(COALESCE(thinking_tokens, 0), ?),
+                reasoning_tokens = MAX(COALESCE(reasoning_tokens, 0), ?),
+                cache_read_tokens = MAX(COALESCE(cache_read_tokens, 0), ?),
+                cache_creation_tokens = MAX(COALESCE(cache_creation_tokens, 0), ?),
+                audio_input_tokens = MAX(COALESCE(audio_input_tokens, 0), ?),
+                audio_output_tokens = MAX(COALESCE(audio_output_tokens, 0), ?)
             WHERE session_id = ?
             "#,
         )
@@ -1155,6 +1156,7 @@ impl SqliteWriter {
 
     /// Handle stats update event - updates session with late-arriving data from async parsing
     /// This is used in passthrough mode where we parse response data asynchronously
+    /// Uses MAX() logic to keep the highest token values and avoid double-counting
     #[allow(clippy::too_many_arguments)]
     async fn handle_stats_updated(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -1182,14 +1184,14 @@ impl SqliteWriter {
             sqlx::query(
                 r#"
                 UPDATE sessions
-                SET input_tokens = COALESCE(input_tokens, 0) + ?,
-                    output_tokens = COALESCE(output_tokens, 0) + ?,
-                    thinking_tokens = COALESCE(thinking_tokens, 0) + ?,
-                    reasoning_tokens = COALESCE(reasoning_tokens, 0) + ?,
-                    cache_read_tokens = COALESCE(cache_read_tokens, 0) + ?,
-                    cache_creation_tokens = COALESCE(cache_creation_tokens, 0) + ?,
-                    audio_input_tokens = COALESCE(audio_input_tokens, 0) + ?,
-                    audio_output_tokens = COALESCE(audio_output_tokens, 0) + ?
+                SET input_tokens = MAX(COALESCE(input_tokens, 0), ?),
+                    output_tokens = MAX(COALESCE(output_tokens, 0), ?),
+                    thinking_tokens = MAX(COALESCE(thinking_tokens, 0), ?),
+                    reasoning_tokens = MAX(COALESCE(reasoning_tokens, 0), ?),
+                    cache_read_tokens = MAX(COALESCE(cache_read_tokens, 0), ?),
+                    cache_creation_tokens = MAX(COALESCE(cache_creation_tokens, 0), ?),
+                    audio_input_tokens = MAX(COALESCE(audio_input_tokens, 0), ?),
+                    audio_output_tokens = MAX(COALESCE(audio_output_tokens, 0), ?)
                 WHERE session_id = ?
                 "#,
             )

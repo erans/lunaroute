@@ -773,10 +773,284 @@ pub async fn chat_completions(
     }
 }
 
+/// OpenAI Responses API request (experimental API)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesRequest {
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    pub input: serde_json::Value, // Can be string or array of messages
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<OpenAITool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+}
+
+/// OpenAI models list response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ModelsListResponse {
+    object: String,
+    data: Vec<ModelObject>,
+}
+
+/// OpenAI model object
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ModelObject {
+    id: String,
+    object: String,
+    created: i64,
+    owned_by: String,
+}
+
+/// Passthrough handler for /v1/responses endpoint (OpenAI Responses API)
+/// Takes raw bytes, sends directly to OpenAI, returns raw response
+async fn responses_passthrough(
+    State(state): State<Arc<OpenAIPassthroughState>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Response, IngressError> {
+    tracing::debug!("OpenAI Responses API passthrough mode");
+
+    // Pass through only standard OpenAI API headers
+    // Skip ChatGPT-specific headers (chatgpt-account-id, originator, etc.) as they're
+    // incompatible with the OpenAI API when using API key authentication
+    let mut passthrough_headers = std::collections::HashMap::new();
+
+    // Allow only these headers for OpenAI API
+    let allowed_headers = [
+        "authorization",
+        "content-type",
+        "accept",
+        "user-agent",
+        "openai-beta",      // For experimental features
+        "openai-organization", // For org-specific requests
+        "x-request-id",     // For request tracking
+    ];
+
+    // Log ALL headers received from client
+    tracing::debug!("=== Headers received from client ===");
+    for (name, value) in headers.iter() {
+        if let Ok(value_str) = value.to_str() {
+            let display_value = if name.as_str().to_lowercase() == "authorization" {
+                "[REDACTED]"
+            } else {
+                value_str
+            };
+            tracing::debug!("  {}: {}", name.as_str(), display_value);
+        }
+    }
+
+    for (name, value) in headers.iter() {
+        let name_str = name.as_str().to_lowercase();
+        if !allowed_headers.contains(&name_str.as_str()) {
+            tracing::debug!("  Filtering out header: {}", name_str);
+            continue;
+        }
+        if let Ok(value_str) = value.to_str() {
+            // Normalize header names to lowercase for consistent lookups
+            passthrough_headers.insert(name.as_str().to_lowercase(), value_str.to_string());
+        }
+    }
+
+    // Log ALL headers being forwarded
+    tracing::debug!("=== Headers forwarding to OpenAI ===");
+    for (name, value) in &passthrough_headers {
+        let display_value = if name.to_lowercase() == "authorization" {
+            "[REDACTED]"
+        } else {
+            value
+        };
+        tracing::debug!("  {}: {}", name, display_value);
+    }
+
+    // Debug: Log if we have authorization header (header names are normalized to lowercase)
+    if !passthrough_headers.contains_key("authorization") {
+        tracing::warn!("No Authorization header received from client!");
+    }
+
+    // Parse body only to check if streaming, but keep original bytes
+    let is_streaming = if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
+        parsed.get("stream").and_then(|v| v.as_bool()).unwrap_or(false)
+    } else {
+        false
+    };
+
+    if is_streaming {
+        // Handle streaming passthrough for responses endpoint - pass raw bytes
+        let stream_response = match state.connector
+            .stream_passthrough_to_endpoint_bytes("responses", body, passthrough_headers)
+            .await
+        {
+            Ok(response) => response,
+            Err(e) => {
+                // Handle provider errors by returning proper status codes
+                use lunaroute_egress::EgressError;
+                return match e {
+                    EgressError::ProviderError { status_code, message } => {
+                        tracing::debug!("Provider returned error: {} - {}", status_code, message);
+                        // Parse error body as JSON if possible, otherwise wrap in error object
+                        let error_json = serde_json::from_str::<serde_json::Value>(&message)
+                            .unwrap_or_else(|_| serde_json::json!({
+                                "error": {
+                                    "message": message,
+                                    "type": "provider_error",
+                                    "code": status_code,
+                                }
+                            }));
+                        Ok((
+                            axum::http::StatusCode::from_u16(status_code)
+                                .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
+                            Json(error_json)
+                        ).into_response())
+                    }
+                    _ => Err(IngressError::ProviderError(e.to_string())),
+                };
+            }
+        };
+
+        use futures::StreamExt;
+        let byte_stream = stream_response.bytes_stream();
+        let sse_stream = eventsource_stream::EventStream::new(byte_stream);
+
+        let mapped_stream = sse_stream.map(|result| {
+            match result {
+                Ok(event) => {
+                    Ok::<_, eventsource_stream::EventStreamError<std::io::Error>>(Event::default()
+                        .data(event.data)
+                        .event(event.event))
+                },
+                Err(e) => {
+                    tracing::error!("Stream error: {}", e);
+                    Ok::<_, eventsource_stream::EventStreamError<std::io::Error>>(Event::default().data(format!("error: {}", e)))
+                }
+            }
+        });
+
+        Ok(Sse::new(mapped_stream)
+            .keep_alive(KeepAlive::default())
+            .into_response())
+    } else {
+        // Send directly to OpenAI API (non-streaming) - pass raw bytes
+        match state.connector
+            .send_passthrough_to_endpoint_bytes("responses", body, passthrough_headers)
+            .await
+        {
+            Ok((response, _response_headers)) => Ok(Json(response).into_response()),
+            Err(e) => {
+                // Handle provider errors by returning proper status codes
+                use lunaroute_egress::EgressError;
+                match e {
+                    EgressError::ProviderError { status_code, message } => {
+                        tracing::debug!("Provider returned error: {} - {}", status_code, message);
+                        // Parse error body as JSON if possible, otherwise wrap in error object
+                        let error_json = serde_json::from_str::<serde_json::Value>(&message)
+                            .unwrap_or_else(|_| serde_json::json!({
+                                "error": {
+                                    "message": message,
+                                    "type": "provider_error",
+                                    "code": status_code,
+                                }
+                            }));
+                        Ok((
+                            axum::http::StatusCode::from_u16(status_code)
+                                .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
+                            Json(error_json)
+                        ).into_response())
+                    }
+                    _ => Err(IngressError::ProviderError(e.to_string())),
+                }
+            }
+        }
+    }
+}
+
+/// Handler for /v1/models endpoint (stub for non-passthrough mode)
+async fn list_models() -> Result<Json<ModelsListResponse>, IngressError> {
+    // Return a basic list of common models
+    let models = vec![
+        ModelObject {
+            id: "gpt-4".to_string(),
+            object: "model".to_string(),
+            created: 1687882411,
+            owned_by: "openai".to_string(),
+        },
+        ModelObject {
+            id: "gpt-4-turbo".to_string(),
+            object: "model".to_string(),
+            created: 1712361441,
+            owned_by: "openai".to_string(),
+        },
+        ModelObject {
+            id: "gpt-3.5-turbo".to_string(),
+            object: "model".to_string(),
+            created: 1677610602,
+            owned_by: "openai".to_string(),
+        },
+    ];
+
+    Ok(Json(ModelsListResponse {
+        object: "list".to_string(),
+        data: models,
+    }))
+}
+
+/// Passthrough handler for /v1/models endpoint
+async fn models_passthrough(
+    State(state): State<Arc<OpenAIPassthroughState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, IngressError> {
+    tracing::debug!("OpenAI models API passthrough mode");
+
+    // Pass through headers
+    let mut passthrough_headers = std::collections::HashMap::new();
+    for (name, value) in headers.iter() {
+        if let Ok(value_str) = value.to_str() {
+            // Normalize header names to lowercase for consistent lookups
+            passthrough_headers.insert(name.as_str().to_lowercase(), value_str.to_string());
+        }
+    }
+
+    match state.connector
+        .get_passthrough("models", passthrough_headers)
+        .await
+    {
+        Ok(response) => Ok(Json(response).into_response()),
+        Err(e) => {
+            // Handle provider errors by returning proper status codes
+            use lunaroute_egress::EgressError;
+            match e {
+                EgressError::ProviderError { status_code, message } => {
+                    tracing::debug!("Provider returned error: {} - {}", status_code, message);
+                    // Parse error body as JSON if possible, otherwise wrap in error object
+                    let error_json = serde_json::from_str::<serde_json::Value>(&message)
+                        .unwrap_or_else(|_| serde_json::json!({
+                            "error": {
+                                "message": message,
+                                "type": "provider_error",
+                                "code": status_code,
+                            }
+                        }));
+                    Ok((
+                        axum::http::StatusCode::from_u16(status_code)
+                            .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
+                        Json(error_json)
+                    ).into_response())
+                }
+                _ => Err(IngressError::ProviderError(e.to_string())),
+            }
+        }
+    }
+}
+
 /// Create OpenAI router with provider state
 pub fn router(provider: Arc<dyn Provider>) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/models", axum::routing::get(list_models))
         .with_state(provider)
 }
 
@@ -804,6 +1078,8 @@ pub fn passthrough_router(
 
     Router::new()
         .route("/v1/chat/completions", post(chat_completions_passthrough))
+        .route("/v1/responses", post(responses_passthrough))
+        .route("/v1/models", axum::routing::get(models_passthrough))
         .with_state(state)
 }
 
@@ -836,6 +1112,7 @@ pub async fn chat_completions_passthrough(
     let mut passthrough_headers = std::collections::HashMap::new();
 
     // Headers that should NOT be forwarded (hop-by-hop headers per RFC 7230)
+    // Skip hop-by-hop headers + host/content-length (reqwest sets these correctly)
     let skip_headers = [
         "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
         "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length"
@@ -851,7 +1128,8 @@ pub async fn chat_completions_passthrough(
 
         // Forward all other headers including authorization
         if let Ok(value_str) = value.to_str() {
-            passthrough_headers.insert(name.as_str().to_string(), value_str.to_string());
+            // Normalize header names to lowercase for consistent lookups
+            passthrough_headers.insert(name.as_str().to_lowercase(), value_str.to_string());
         }
     }
 

@@ -14,7 +14,7 @@ use lunaroute_core::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 
 /// OpenAI connector configuration
 #[derive(Debug, Clone)]
@@ -78,7 +78,18 @@ impl OpenAIConnector {
         request_json: serde_json::Value,
         headers: std::collections::HashMap<String, String>,
     ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
-        debug!("Sending passthrough request to OpenAI (no normalization)");
+        self.send_passthrough_to_endpoint("chat/completions", request_json, headers).await
+    }
+
+    /// Send a raw JSON request to a specific OpenAI endpoint (passthrough mode)
+    #[instrument(skip(self, request_json))]
+    pub async fn send_passthrough_to_endpoint(
+        &self,
+        endpoint: &str,
+        request_json: serde_json::Value,
+        headers: std::collections::HashMap<String, String>,
+    ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
+        debug!("Sending passthrough request to OpenAI {} endpoint (JSON mode)", endpoint);
 
         let max_retries = self.config.client_config.max_retries;
         let result = with_retry(max_retries, || {
@@ -86,27 +97,88 @@ impl OpenAIConnector {
             let headers = headers.clone();
             let config_api_key = self.config.api_key.clone();
             let config = self.config.clone();
+            let endpoint = endpoint.to_string();
             async move {
                 let mut request_builder = self.client
-                    .post(format!("{}/chat/completions", config.base_url))
-                    .header("Content-Type", "application/json");
+                    .post(format!("{}/{}", config.base_url, endpoint));
 
-                // Add all passthrough headers first
+                // In passthrough mode, forward ALL headers from client as-is
                 for (name, value) in &headers {
                     request_builder = request_builder.header(name, value);
                 }
 
-                // If we have a configured API key, override any client-provided auth
-                // If not, rely on client's Authorization header
-                if !config_api_key.is_empty() {
+                // Only use configured API key if client didn't provide auth
+                let client_has_auth = headers.iter().any(|(k, _)| k.to_lowercase() == "authorization");
+                if !client_has_auth && !config_api_key.is_empty() {
                     request_builder = request_builder.header("Authorization", format!("Bearer {}", config_api_key));
                 }
 
-                // Apply organization header if configured
-                request_builder = request_builder.apply_organization_header(&config);
+                // Send raw JSON body without .json() to avoid modifying headers
+                let json_string = serde_json::to_string(&request_json)?;
 
                 let response = request_builder
-                    .json(&request_json)
+                    .body(json_string)
+                    .send()
+                    .await?;
+
+                debug!("┌─────────────────────────────────────────────────────────");
+                debug!("│ OpenAI Passthrough Response Headers");
+                debug!("├─────────────────────────────────────────────────────────");
+                debug!("│ Status: {}", response.status());
+                for (name, value) in response.headers() {
+                    if let Ok(val_str) = value.to_str() {
+                        debug!("│ {}: {}", name, val_str);
+                    }
+                }
+                debug!("└─────────────────────────────────────────────────────────");
+
+                self.handle_openai_passthrough_response(response).await
+            }
+        })
+        .await?;
+
+        Ok(result)
+    }
+
+    /// Send raw bytes to a specific OpenAI endpoint (true passthrough mode - no parsing/re-serializing)
+    #[instrument(skip(self, body))]
+    pub async fn send_passthrough_to_endpoint_bytes(
+        &self,
+        endpoint: &str,
+        body: bytes::Bytes,
+        headers: std::collections::HashMap<String, String>,
+    ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
+        debug!("Sending passthrough request to OpenAI {} endpoint (true passthrough - raw bytes)", endpoint);
+
+        let max_retries = self.config.client_config.max_retries;
+        let result = with_retry(max_retries, || {
+            let body = body.clone();
+            let headers = headers.clone();
+            let config_api_key = self.config.api_key.clone();
+            let config = self.config.clone();
+            let endpoint = endpoint.to_string();
+            async move {
+                let mut request_builder = self.client
+                    .post(format!("{}/{}", config.base_url, endpoint));
+
+                // In passthrough mode, forward ALL headers from client as-is (except auth override)
+                for (name, value) in &headers {
+                    request_builder = request_builder.header(name, value);
+                }
+
+                // Only use configured API key if client didn't provide auth
+                // Note: header names are normalized to lowercase in the ingress layer
+                let client_has_auth = headers.contains_key("authorization");
+                if !client_has_auth && !config_api_key.is_empty() {
+                    request_builder = request_builder.header("Authorization", format!("Bearer {}", config_api_key));
+                }
+
+                // In passthrough mode, do NOT apply organization header - use only client headers
+                // request_builder = request_builder.apply_organization_header(&config);
+
+                // Send raw body bytes without any parsing/re-serialization
+                let response = request_builder
+                    .body(body)
                     .send()
                     .await?;
 
@@ -183,29 +255,158 @@ impl OpenAIConnector {
         request_json: serde_json::Value,
         headers: std::collections::HashMap<String, String>,
     ) -> Result<reqwest::Response> {
-        debug!("Sending passthrough streaming request to OpenAI (no normalization)");
+        self.stream_passthrough_to_endpoint("chat/completions", request_json, headers).await
+    }
+
+    /// Stream a raw JSON request to a specific OpenAI endpoint (passthrough mode)
+    pub async fn stream_passthrough_to_endpoint(
+        &self,
+        endpoint: &str,
+        request_json: serde_json::Value,
+        headers: std::collections::HashMap<String, String>,
+    ) -> Result<reqwest::Response> {
+        debug!("Sending passthrough streaming request to OpenAI {} endpoint (JSON mode)", endpoint);
 
         let mut request_builder = self
             .client
-            .post(format!("{}/chat/completions", self.config.base_url))
-            .header("Content-Type", "application/json");
+            .post(format!("{}/{}", self.config.base_url, endpoint));
 
-        // Add all passthrough headers first
+        // In passthrough mode, forward ALL headers from client as-is
         for (name, value) in &headers {
             request_builder = request_builder.header(name, value);
         }
 
-        // If we have a configured API key, override any client-provided auth
-        // If not, rely on client's Authorization header
-        if !self.config.api_key.is_empty() {
+        // Only use configured API key if client didn't provide auth
+        // Note: header names are normalized to lowercase in the ingress layer
+        let client_has_auth = headers.contains_key("authorization");
+        if !client_has_auth && !self.config.api_key.is_empty() {
             request_builder = request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
         }
 
-        // Apply organization header if configured
-        request_builder = request_builder.apply_organization_header(&self.config);
+        // Send raw JSON body without .json() to avoid modifying headers
+        let json_string = serde_json::to_string(&request_json)?;
 
         let response = request_builder
-            .json(&request_json)
+            .body(json_string)
+            .send()
+            .await
+            .map_err(EgressError::from)?;
+
+        debug!("┌─────────────────────────────────────────────────────────");
+        debug!("│ OpenAI Streaming Passthrough Response Headers");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ Status: {}", response.status());
+        for (name, value) in response.headers() {
+            if let Ok(val_str) = value.to_str() {
+                debug!("│ {}: {}", name, val_str);
+            }
+        }
+        debug!("└─────────────────────────────────────────────────────────");
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
+            return Err(EgressError::ProviderError {
+                status_code: status,
+                message: body,
+            });
+        }
+
+        Ok(response)
+    }
+
+    /// Send a GET request to a specific OpenAI endpoint (passthrough mode)
+    pub async fn get_passthrough(
+        &self,
+        endpoint: &str,
+        headers: std::collections::HashMap<String, String>,
+    ) -> Result<serde_json::Value> {
+        debug!("Sending GET passthrough request to OpenAI {} endpoint", endpoint);
+
+        let mut request_builder = self
+            .client
+            .get(format!("{}/{}", self.config.base_url, endpoint));
+
+        // Add all passthrough headers
+        for (name, value) in &headers {
+            request_builder = request_builder.header(name, value);
+        }
+
+        // Only use configured API key if client didn't provide auth
+        // Note: header names are normalized to lowercase in the ingress layer
+        let client_has_auth = headers.contains_key("authorization");
+        if !client_has_auth && !self.config.api_key.is_empty() {
+            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
+        }
+
+        let response = request_builder.send().await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(EgressError::ProviderError {
+                status_code: status.as_u16(),
+                message: error_text,
+            });
+        }
+
+        let json = response
+            .json()
+            .await
+            .map_err(|e| EgressError::ParseError(e.to_string()))?;
+
+        Ok(json)
+    }
+
+    /// Stream raw bytes to a specific OpenAI endpoint (true passthrough mode - no parsing/re-serializing)
+    pub async fn stream_passthrough_to_endpoint_bytes(
+        &self,
+        endpoint: &str,
+        body: bytes::Bytes,
+        headers: std::collections::HashMap<String, String>,
+    ) -> Result<reqwest::Response> {
+        debug!("Sending passthrough streaming request to OpenAI {} endpoint (true passthrough - raw bytes)", endpoint);
+
+        let mut request_builder = self
+            .client
+            .post(format!("{}/{}", self.config.base_url, endpoint));
+
+        // In passthrough mode, forward ALL headers from client as-is (except auth override)
+        for (name, value) in &headers {
+            if name.to_lowercase() == "authorization" {
+                debug!("Forwarding Authorization header to OpenAI (from client): {} chars", value.len());
+            }
+            request_builder = request_builder.header(name, value);
+        }
+
+        debug!("=== ALL HEADERS BEING SENT TO OPENAI ===");
+        for (name, value) in &headers {
+            let display_value = if name.to_lowercase() == "authorization" {
+                format!("[REDACTED {} chars]", value.len())
+            } else {
+                value.clone()
+            };
+            debug!("  {}: {}", name, display_value);
+        }
+
+        // Only use configured API key if client didn't provide auth
+        // Note: header names are normalized to lowercase in the ingress layer
+        let client_has_auth = headers.contains_key("authorization");
+        if !client_has_auth && !self.config.api_key.is_empty() {
+            debug!("No client auth - using configured API key");
+            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
+        } else if client_has_auth {
+            debug!("Using client's Authorization header (passthrough mode)");
+        } else {
+            warn!("No Authorization header from client and no configured API key!");
+        }
+
+        // In passthrough mode, do NOT apply organization header - use only client headers
+        // request_builder = request_builder.apply_organization_header(&self.config);
+
+        // Send raw body bytes without any parsing/re-serialization
+        let response = request_builder
+            .body(body)
             .send()
             .await
             .map_err(EgressError::from)?;

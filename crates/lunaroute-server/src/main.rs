@@ -310,7 +310,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("✓ OpenAI provider enabled");
         }
 
-        let provider_config = OpenAIConfig::new(api_key.clone());
+        let base_url = openai_config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+
+        let mut provider_config = OpenAIConfig::new(api_key.clone());
+        provider_config.base_url = base_url;
         let conn = OpenAIConnector::new(provider_config)?;
 
         // Build the provider stack (order matters!)
@@ -477,8 +483,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("📡 API dialect: OpenAI (/v1/chat/completions)");
             if is_openai_passthrough && openai_connector.is_some() {
                 info!("⚡ Passthrough mode: OpenAI→OpenAI (no normalization)");
-                // TODO: Implement OpenAI passthrough
-                openai::router(router)
+                openai::passthrough_router(
+                    openai_connector.unwrap(),
+                    Some(stats_tracker_clone),
+                    Some(metrics.clone()),
+                    async_recorder.clone(),
+                )
             } else {
                 openai::router(router)
             }
