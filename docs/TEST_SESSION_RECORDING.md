@@ -186,16 +186,43 @@ curl http://localhost:3000/v1/chat/completions \
 
 ## 📊 Test Coverage Summary
 
-| Test Category | Unit Tests | Integration Tests (Need API Keys) |
-|--------------|------------|-----------------------------------|
-| RecordingProvider | ✅ 2/2 | ⚠️ 0/2 |
-| Session Storage | ✅ 3/3 | ⚠️ 0/3 |
-| Session Query | ✅ 1/1 | ⚠️ 0/7 |
-| IP Anonymization | ✅ (in PII tests) | ⚠️ 0/1 |
-| Streaming | ✅ 1/1 | ⚠️ 0/1 |
-| Error Handling | ✅ (in recorder tests) | ⚠️ 0/2 |
+### Automated Integration Tests (Mock-based)
 
-**Total:** 11/11 unit tests pass, 0/16 integration tests completed (blocked by API keys)
+**Passthrough Mode with Recording** - `tests/passthrough_streaming_recording.rs`
+- ✅ OpenAI passthrough non-streaming with session recording
+- ✅ OpenAI passthrough streaming with session recording
+- ✅ Anthropic passthrough non-streaming with session recording
+- ✅ Anthropic passthrough streaming with session recording
+- ✅ Verifies SessionEvent lifecycle (Started, RequestRecorded, StreamStarted, ResponseRecorded, Completed)
+
+**Cross-Provider Translation Tests** - `tests/openai_to_anthropic_translation.rs`, `tests/anthropic_to_openai_translation.rs`
+- ✅ OpenAI → Anthropic translation (basic, temperature, system messages, streaming)
+- ✅ Anthropic → OpenAI translation (basic, temperature, conversation history, streaming)
+
+**Error Handling with Recording** - `tests/error_handling_with_recording.rs`
+- ✅ 400 Bad Request error recording
+- ✅ 500 Internal Server Error with retry handling
+- ✅ 401 Unauthorized error recording
+- ✅ 429 Rate Limit error recording
+- ✅ Streaming error recording
+
+Run all automated tests:
+```bash
+cargo test --package lunaroute_integration_tests
+```
+
+### Manual Integration Tests (Require Real API Keys)
+
+| Test Category | Unit Tests | Mock Integration | Manual Tests (Need API Keys) |
+|--------------|------------|-----------------|------------------------------|
+| RecordingProvider | ✅ 2/2 | ✅ 4/4 | ⚠️ 0/2 |
+| Session Storage | ✅ 3/3 | ✅ 4/4 | ⚠️ 0/3 |
+| Session Query | ✅ 1/1 | N/A | ⚠️ 0/7 |
+| IP Anonymization | ✅ (in PII tests) | N/A | ⚠️ 0/1 |
+| Streaming | ✅ 1/1 | ✅ 2/2 | ⚠️ 0/1 |
+| Error Handling | ✅ (in recorder tests) | ✅ 5/5 | ⚠️ 0/2 |
+
+**Total:** 11/11 unit tests + 13/13 mock integration tests pass, 0/16 manual tests completed (blocked by API keys)
 
 ## 🎯 Success Criteria
 

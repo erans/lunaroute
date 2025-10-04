@@ -243,3 +243,72 @@ async fn test_anthropic_assistant_message_in_conversation() {
 
     assert_eq!(response.status(), 200);
 }
+#[tokio::test]
+async fn test_anthropic_request_streaming_translates_to_openai() {
+    // Setup: Mock OpenAI server with streaming response
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(header("authorization", "Bearer test-api-key"))
+        .and(body_partial_json(json!({
+            "model": "gpt-4",
+            "stream": true
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Streaming"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":" response"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}
+
+data: [DONE]
+
+"#
+        ))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let config = OpenAIConfig {
+        api_key: "test-api-key".to_string(),
+        base_url: mock_server.uri(),
+        organization: None,
+        client_config: Default::default(),
+    };
+    let openai_connector = OpenAIConnector::new(config).unwrap();
+    let app = anthropic::router(Arc::new(openai_connector));
+
+    // Send Anthropic streaming request (should be translated to OpenAI format)
+    let anthropic_request = json!({
+        "model": "gpt-4",
+        "max_tokens": 50,
+        "stream": true,
+        "messages": [{
+            "role": "user",
+            "content": "Stream this!"
+        }]
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/messages")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("anthropic-version", "2023-06-01")
+                .body(Body::from(serde_json::to_vec(&anthropic_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Verify streaming response
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "text/event-stream"
+    );
+}

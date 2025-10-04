@@ -6,11 +6,29 @@ This crate contains end-to-end integration tests for LunaRoute.
 
 ### 1. Mock API Tests (Default)
 
-Tests in `src/lib.rs` use Wiremock to mock provider APIs. These run by default with `cargo test`.
+Tests use Wiremock to mock provider APIs. These run by default with `cargo test`.
 
 ```bash
 cargo test --package lunaroute_integration_tests
 ```
+
+#### Available Mock Test Suites
+
+**Passthrough Mode with Session Recording** (`tests/passthrough_streaming_recording.rs`)
+- OpenAI passthrough (streaming & non-streaming) with session event recording
+- Anthropic passthrough (streaming & non-streaming) with session event recording
+- Verifies SessionEvent lifecycle (Started, RequestRecorded, StreamStarted, ResponseRecorded, Completed)
+
+**Cross-Provider Translation** (`tests/openai_to_anthropic_translation.rs`, `tests/anthropic_to_openai_translation.rs`)
+- OpenAI → Anthropic translation (basic requests, temperature, system messages, streaming)
+- Anthropic → OpenAI translation (basic requests, temperature, conversation history, streaming)
+- Verifies request/response format conversion between providers
+
+**Error Handling with Recording** (`tests/error_handling_with_recording.rs`)
+- 4xx client errors (400 Bad Request, 401 Unauthorized, 429 Rate Limit)
+- 5xx server errors (500 Internal Server Error with retry handling)
+- Streaming errors
+- Verifies error events are captured in session recording
 
 ### 2. Real API Tests (Ignored by Default)
 

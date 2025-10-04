@@ -14,6 +14,7 @@ lunaroute-ingress = { path = "../lunaroute-ingress" }
 lunaroute-egress = { path = "../lunaroute-egress" }
 lunaroute-routing = { path = "../lunaroute-routing" }
 lunaroute-observability = { path = "../lunaroute-observability" }
+lunaroute-session = { path = "../lunaroute-session", features = ["sqlite-writer"] }
 
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -24,6 +25,8 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
+tempfile = { workspace = true }
+rusqlite = "0.32"
 
 [dev-dependencies]
 dotenv = "0.15"
