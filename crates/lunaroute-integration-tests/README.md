@@ -46,12 +46,35 @@ cargo test --package lunaroute_integration_tests test_both_providers_sequential 
 
 ## Available Real API Tests
 
+### Basic Provider Tests
 1. **test_openai_real_api_simple_completion** - Basic OpenAI completion with GPT-5 mini
 2. **test_anthropic_real_api_simple_completion** - Basic Anthropic completion with Claude Sonnet 4.5
 3. **test_openai_with_system_message** - OpenAI with system message
 4. **test_anthropic_with_system_message** - Anthropic with system message
 5. **test_openai_error_handling_invalid_model** - Error handling for invalid model names
 6. **test_both_providers_sequential** - Sequential test of both providers
+
+### Bidirectional Translation Tests
+7. **test_anthropic_request_routed_to_openai_real_api** - Anthropic→OpenAI→Anthropic translation
+   - Sends Anthropic-formatted request to `/v1/messages`
+   - Routes to real OpenAI API (gpt-5-mini)
+   - Translates response back to Anthropic format
+   - Verifies complete end-to-end translation flow
+
+8. **test_openai_request_routed_to_anthropic_real_api** - OpenAI→Anthropic→OpenAI translation
+   - Sends OpenAI-formatted request to `/v1/chat/completions`
+   - Routes to real Anthropic API (claude-sonnet-4-5)
+   - Translates response back to OpenAI format
+   - Verifies complete end-to-end translation flow
+
+**Running translation tests:**
+```bash
+# Test Anthropic → OpenAI → Anthropic
+cargo test --package lunaroute_integration_tests test_anthropic_request_routed_to_openai_real_api -- --ignored --nocapture
+
+# Test OpenAI → Anthropic → OpenAI
+cargo test --package lunaroute_integration_tests test_openai_request_routed_to_anthropic_real_api -- --ignored --nocapture
+```
 
 ## Models Tested
 
