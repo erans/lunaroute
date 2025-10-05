@@ -633,69 +633,73 @@ impl Provider for OpenAIConnector {
     async fn send(&self, request: NormalizedRequest) -> lunaroute_core::Result<NormalizedResponse> {
         debug!("Sending non-streaming request to OpenAI");
 
-        let openai_req = to_openai_request(request.clone())?;
+        let openai_req = to_openai_request(request)?;
 
-        // Convert to JSON for body modifications
-        let mut request_json = serde_json::to_value(&openai_req)
-            .map_err(|e| EgressError::ParseError(format!("Failed to serialize request: {}", e)))?;
+        // Check if we need custom headers or body modifications
+        let needs_modifications = self.config.custom_headers.is_some() || self.config.request_body_config.is_some();
 
-        // Apply request body modifications (defaults, overrides, prepend messages)
-        self.apply_request_body_modifications(&mut request_json);
+        if needs_modifications {
+            // Path with modifications: serialize to JSON, modify, then send
+            let mut request_json = serde_json::to_value(&openai_req)
+                .map_err(|e| EgressError::ParseError(format!("Failed to serialize request: {}", e)))?;
 
-        // Prepare headers with template substitution if custom headers are configured
-        let mut headers_to_apply = std::collections::HashMap::new();
-        if let Some(ref custom_headers) = self.config.custom_headers {
-            // Create template context for header substitution
-            use lunaroute_core::template::TemplateContext;
-            let request_id = uuid::Uuid::new_v4().to_string();
-            let model = request.model.clone();
+            // Apply request body modifications (defaults, overrides, prepend messages)
+            self.apply_request_body_modifications(&mut request_json);
 
-            let mut template_ctx = TemplateContext::new(
-                request_id,
-                "openai".to_string(),
-                model,
-            );
+            // Prepare headers with template substitution if custom headers are configured
+            let mut headers_to_apply = std::collections::HashMap::new();
+            if let Some(ref custom_headers) = self.config.custom_headers {
+                // Create template context for header substitution
+                use lunaroute_core::template::TemplateContext;
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let model = openai_req.model.clone();
 
-            // Substitute templates in headers
-            headers_to_apply = lunaroute_core::template::substitute_headers(custom_headers, &mut template_ctx);
-        }
+                let mut template_ctx = TemplateContext::new(
+                    request_id,
+                    "openai".to_string(),
+                    model,
+                );
 
-        // Log request headers at debug level
-        debug!("┌─────────────────────────────────────────────────────────");
-        debug!("│ OpenAI Request Headers");
-        debug!("├─────────────────────────────────────────────────────────");
-        debug!("│ Authorization: Bearer <api_key>");
-        debug!("│ Content-Type: application/json");
-        if let Some(ref org) = self.config.organization {
-            debug!("│ OpenAI-Organization: {}", org);
-        }
+                // Substitute templates in headers
+                headers_to_apply = lunaroute_core::template::substitute_headers(custom_headers, &mut template_ctx);
+            }
 
-        // Log custom headers if present
-        for (name, value) in &headers_to_apply {
-            debug!("│ {}: {}", name, value);
-        }
-        debug!("└─────────────────────────────────────────────────────────");
+            // Log request headers at debug level
+            debug!("┌─────────────────────────────────────────────────────────");
+            debug!("│ OpenAI Request Headers");
+            debug!("├─────────────────────────────────────────────────────────");
+            debug!("│ Authorization: Bearer <api_key>");
+            debug!("│ Content-Type: application/json");
+            if let Some(ref org) = self.config.organization {
+                debug!("│ OpenAI-Organization: {}", org);
+            }
 
-        let max_retries = self.config.client_config.max_retries;
-        let result = with_retry(max_retries, || {
-            let request_json = request_json.clone();
-            let headers_to_apply = headers_to_apply.clone();
-            async move {
-                let mut request_builder = self.client
-                    .post(format!("{}/chat/completions", self.config.base_url))
-                    .header("Authorization", format!("Bearer {}", self.config.api_key))
-                    .header("Content-Type", "application/json")
-                    .apply_organization_header(&self.config);
+            // Log custom headers if present
+            for (name, value) in &headers_to_apply {
+                debug!("│ {}: {}", name, value);
+            }
+            debug!("└─────────────────────────────────────────────────────────");
 
-                // Apply custom headers with templates already substituted
-                for (name, value) in headers_to_apply {
-                    request_builder = request_builder.header(name, value);
-                }
+            let max_retries = self.config.client_config.max_retries;
+            let result = with_retry(max_retries, || {
+                let request_json = request_json.clone();
+                let headers_to_apply = headers_to_apply.clone();
+                async move {
+                    let mut request_builder = self.client
+                        .post(format!("{}/chat/completions", self.config.base_url))
+                        .header("Authorization", format!("Bearer {}", self.config.api_key))
+                        .header("Content-Type", "application/json")
+                        .apply_organization_header(&self.config);
 
-                let response = request_builder
-                    .json(&request_json)
-                    .send()
-                    .await?;
+                    // Apply custom headers with templates already substituted
+                    for (name, value) in headers_to_apply {
+                        request_builder = request_builder.header(name, value);
+                    }
+
+                    let response = request_builder
+                        .json(&request_json)
+                        .send()
+                        .await?;
 
                 // Log response headers at debug level
                 debug!("┌─────────────────────────────────────────────────────────");
@@ -714,8 +718,52 @@ impl Provider for OpenAIConnector {
         })
         .await?;
 
-        let normalized = from_openai_response(result)?;
-        Ok(normalized)
+            let normalized = from_openai_response(result)?;
+            Ok(normalized)
+        } else {
+            // Legacy path without modifications: use original struct-based approach
+            debug!("┌─────────────────────────────────────────────────────────");
+            debug!("│ OpenAI Request Headers");
+            debug!("├─────────────────────────────────────────────────────────");
+            debug!("│ Authorization: Bearer <api_key>");
+            debug!("│ Content-Type: application/json");
+            if let Some(ref org) = self.config.organization {
+                debug!("│ OpenAI-Organization: {}", org);
+            }
+            debug!("└─────────────────────────────────────────────────────────");
+
+            let max_retries = self.config.client_config.max_retries;
+            let result = with_retry(max_retries, || {
+                let openai_req = openai_req.clone();
+                async move {
+                    let response = self.client
+                        .post(format!("{}/chat/completions", self.config.base_url))
+                        .header("Authorization", format!("Bearer {}", self.config.api_key))
+                        .header("Content-Type", "application/json")
+                        .apply_organization_header(&self.config)
+                        .json(&openai_req)
+                        .send()
+                        .await?;
+
+                    debug!("┌─────────────────────────────────────────────────────────");
+                    debug!("│ OpenAI Response Headers");
+                    debug!("├─────────────────────────────────────────────────────────");
+                    debug!("│ Status: {}", response.status());
+                    for (name, value) in response.headers() {
+                        if let Ok(val_str) = value.to_str() {
+                            debug!("│ {}: {}", name, val_str);
+                        }
+                    }
+                    debug!("└─────────────────────────────────────────────────────────");
+
+                    response.handle_openai_response().await
+                }
+            })
+            .await?;
+
+            let normalized = from_openai_response(result)?;
+            Ok(normalized)
+        }
     }
 
     async fn stream(
