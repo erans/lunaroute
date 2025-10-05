@@ -512,6 +512,14 @@ See `crates/lunaroute-integration-tests/README.md` for details.
 - Session recording integration
 - 130 comprehensive tests
 
+**Phase 11b: Custom Headers & Body Modifications** ✅ Complete
+- Template engine with variable substitution (`${provider}`, `${model}`, `${env.VAR}`)
+- Custom HTTP headers with template support
+- Request body modifications (defaults, overrides, prepend messages)
+- Enhanced security filtering for environment variables
+- Configuration wiring with backward compatibility
+- 28 comprehensive tests (22 template engine + 6 integration tests)
+
 **Next Steps:**
 - **Phase 9**: Authentication & authorization (API key management, rate limiting)
 - **Phase 10**: Budget management (cost tracking, spending limits)
