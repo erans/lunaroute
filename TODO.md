@@ -131,6 +131,11 @@
   - [x] Message size: max 1MB per message
 - [x] Implement authentication middleware (placeholder)
 - [x] Add timeout and body size limits
+- [x] **OpenAI Passthrough Mode** (Zero-copy proxy)
+  - [x] Direct OpenAI→OpenAI passthrough without normalization
+  - [x] Client Authorization header forwarding (when `api_key: ""`)
+  - [x] Session recording integration
+  - [x] 100% API fidelity preservation
 
 ### Anthropic Ingress Adapter ✅
 - [x] Setup Axum router for Anthropic endpoints

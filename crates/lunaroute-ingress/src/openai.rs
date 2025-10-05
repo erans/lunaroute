@@ -1123,14 +1123,28 @@ pub async fn chat_completions_passthrough(
 
         // Skip hop-by-hop headers
         if skip_headers.contains(&name_str.as_str()) {
+            tracing::debug!("  Skipping header: {}", name_str);
             continue;
         }
 
         // Forward all other headers including authorization
         if let Ok(value_str) = value.to_str() {
+            let display_value = if name_str == "authorization" {
+                "[REDACTED]"
+            } else {
+                value_str
+            };
+            tracing::debug!("  Forwarding header: {} = {}", name_str, display_value);
             // Normalize header names to lowercase for consistent lookups
             passthrough_headers.insert(name.as_str().to_lowercase(), value_str.to_string());
         }
+    }
+
+    // Debug: Check if authorization header is present
+    if passthrough_headers.contains_key("authorization") {
+        tracing::debug!("✓ Authorization header is present in passthrough_headers");
+    } else {
+        tracing::warn!("✗ Authorization header is NOT present in passthrough_headers!");
     }
 
     // Extract session ID from metadata (reserved for future use)
