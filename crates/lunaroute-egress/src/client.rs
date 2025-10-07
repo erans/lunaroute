@@ -80,10 +80,7 @@ pub fn create_client(config: &HttpClientConfig) -> Result<Client> {
 }
 
 /// Retry policy for transient errors
-pub async fn with_retry<F, Fut, T>(
-    max_retries: u32,
-    operation: F,
-) -> Result<T>
+pub async fn with_retry<F, Fut, T>(max_retries: u32, operation: F) -> Result<T>
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
@@ -93,7 +90,10 @@ where
     for attempt in 0..=max_retries {
         if attempt > 0 {
             let backoff_ms = 2u64.pow(attempt - 1) * 100; // Exponential backoff: 100ms, 200ms, 400ms
-            debug!("Retrying request after {}ms (attempt {}/{})", backoff_ms, attempt, max_retries);
+            debug!(
+                "Retrying request after {}ms (attempt {}/{})",
+                backoff_ms, attempt, max_retries
+            );
             tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
         }
 
@@ -105,17 +105,22 @@ where
                     EgressError::HttpError(req_err) => {
                         // Retry on network errors, connection errors, timeouts
                         req_err.is_connect() || req_err.is_timeout() || req_err.is_request()
-                    },
+                    }
                     EgressError::ProviderError { status_code, .. } => {
                         // Retry on 429 (rate limit), 500, 502, 503, 504
                         matches!(status_code, 429 | 500 | 502 | 503 | 504)
-                    },
+                    }
                     EgressError::Timeout(_) => true,
                     _ => false,
                 };
 
                 if should_retry && attempt < max_retries {
-                    warn!("Request failed (attempt {}/{}): {:?}", attempt + 1, max_retries, e);
+                    warn!(
+                        "Request failed (attempt {}/{}): {:?}",
+                        attempt + 1,
+                        max_retries,
+                        e
+                    );
                     last_error = Some(e);
                 } else {
                     return Err(e);
@@ -124,7 +129,8 @@ where
         }
     }
 
-    Err(last_error.unwrap_or_else(|| EgressError::ConfigError("Retry loop exited unexpectedly".to_string())))
+    Err(last_error
+        .unwrap_or_else(|| EgressError::ConfigError("Retry loop exited unexpectedly".to_string())))
 }
 
 #[cfg(test)]
@@ -163,7 +169,10 @@ mod tests {
 
         // This will fail to compile if we remove pool_idle_timeout from create_client
         let client = create_client(&config);
-        assert!(client.is_ok(), "Client creation should succeed with pool_idle_timeout");
+        assert!(
+            client.is_ok(),
+            "Client creation should succeed with pool_idle_timeout"
+        );
 
         // Document the expected behavior for future maintainers
         // The client MUST have:
@@ -177,9 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_success_first_attempt() {
-        let result = with_retry(3, || async {
-            Ok::<i32, EgressError>(42)
-        }).await;
+        let result = with_retry(3, || async { Ok::<i32, EgressError>(42) }).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 42);
@@ -189,7 +196,8 @@ mod tests {
     async fn test_retry_non_retryable_error() {
         let result = with_retry(3, || async {
             Err::<i32, EgressError>(EgressError::ConfigError("Invalid config".to_string()))
-        }).await;
+        })
+        .await;
 
         assert!(result.is_err());
     }

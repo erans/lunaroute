@@ -12,11 +12,10 @@ pub mod tracing;
 
 // Re-export commonly used types
 pub use health::{
-    health_router, HealthResponse, HealthState, ProviderStatus, ReadinessChecker,
-    ReadinessResponse,
+    HealthResponse, HealthState, ProviderStatus, ReadinessChecker, ReadinessResponse, health_router,
 };
 pub use metrics::{CircuitBreakerState, HealthStatus, Metrics};
 pub use tracing::{
-    init_tracer_provider, record_error, record_success, record_token_usage, RequestSpanAttributes,
-    TracerConfig,
+    RequestSpanAttributes, TracerConfig, init_tracer_provider, record_error, record_success,
+    record_token_usage,
 };

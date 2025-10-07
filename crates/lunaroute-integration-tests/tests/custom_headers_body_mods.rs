@@ -92,7 +92,10 @@ async fn test_custom_headers_with_template_substitution() {
 
     // Verify response
     assert_eq!(response.model, "gpt-4");
-    assert_eq!(response.choices[0].message.content, MessageContent::Text("Hello!".to_string()));
+    assert_eq!(
+        response.choices[0].message.content,
+        MessageContent::Text("Hello!".to_string())
+    );
 }
 
 #[tokio::test]
@@ -226,7 +229,7 @@ async fn test_request_body_overrides() {
         }],
         system: None,
         model: "gpt-4".to_string(),
-        max_tokens: Some(50),  // Will be overridden to 200
+        max_tokens: Some(50),   // Will be overridden to 200
         temperature: Some(0.9), // Will be overridden to 0.5
         top_p: None,
         top_k: None,
@@ -269,9 +272,8 @@ async fn test_prepend_messages() {
         .mount(&mock_server)
         .await;
 
-    let prepend_messages = vec![
-        json!({"role": "system", "content": "You are a helpful assistant."})
-    ];
+    let prepend_messages =
+        vec![json!({"role": "system", "content": "You are a helpful assistant."})];
 
     let config = OpenAIConfig {
         api_key: "test-api-key".to_string(),
@@ -343,11 +345,8 @@ fn test_sensitive_env_var_rejection() {
         env::set_var("SAFE_VAR", "safe");
     }
 
-    let mut ctx = TemplateContext::new(
-        "req-1".to_string(),
-        "test".to_string(),
-        "model".to_string(),
-    );
+    let mut ctx =
+        TemplateContext::new("req-1".to_string(), "test".to_string(), "model".to_string());
 
     // Test that template substitution rejects sensitive vars
     let template1 = "${env.AWS_SECRET_ACCESS_KEY}";

@@ -334,7 +334,9 @@ impl SessionFilter {
         if let (Some(min), Some(max)) = (self.min_duration_ms, self.max_duration_ms)
             && min > max
         {
-            return Err("min_duration_ms must be less than or equal to max_duration_ms".to_string());
+            return Err(
+                "min_duration_ms must be less than or equal to max_duration_ms".to_string(),
+            );
         }
 
         if self.page_size == 0 {
@@ -588,12 +590,14 @@ mod tests {
         let now = Utc::now();
         let future = now + chrono::Duration::hours(1);
 
-        let result = SessionFilter::builder()
-            .time_range(future, now)
-            .build();
+        let result = SessionFilter::builder().time_range(future, now).build();
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("start time must be before end time"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("start time must be before end time")
+        );
     }
 
     #[test]
@@ -602,9 +606,7 @@ mod tests {
 
         // Valid: recent time range
         let hour_ago = now - chrono::Duration::hours(1);
-        let result = SessionFilter::builder()
-            .time_range(hour_ago, now)
-            .build();
+        let result = SessionFilter::builder().time_range(hour_ago, now).build();
         assert!(result.is_ok());
 
         // Invalid: start time too far in past (> 10 years)
@@ -639,9 +641,7 @@ mod tests {
         let now = Utc::now();
         let hour_ago = now - chrono::Duration::hours(1);
 
-        let result = SessionFilter::builder()
-            .time_range(hour_ago, now)
-            .build();
+        let result = SessionFilter::builder().time_range(hour_ago, now).build();
 
         assert!(result.is_ok());
 
@@ -662,25 +662,23 @@ mod tests {
 
     #[test]
     fn test_session_filter_validation_page_size() {
-        let result = SessionFilter::builder()
-            .page_size(0)
-            .build();
+        let result = SessionFilter::builder().page_size(0).build();
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("page_size must be greater than 0"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("page_size must be greater than 0")
+        );
     }
 
     #[test]
     fn test_progressive_page_size_limits_simple_query() {
         // Simple query: no filters - allows max 1000
-        let result = SessionFilter::builder()
-            .page_size(1000)
-            .build();
+        let result = SessionFilter::builder().page_size(1000).build();
         assert!(result.is_ok());
 
-        let result = SessionFilter::builder()
-            .page_size(1001)
-            .build();
+        let result = SessionFilter::builder().page_size(1001).build();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exceeds maximum"));
 
@@ -783,34 +781,19 @@ mod tests {
 
     #[test]
     fn test_search_results_pagination() {
-        let results = SearchResults::new(
-            vec![1, 2, 3, 4, 5],
-            100,
-            0,
-            10,
-        );
+        let results = SearchResults::new(vec![1, 2, 3, 4, 5], 100, 0, 10);
 
         assert_eq!(results.total_count, 100);
         assert_eq!(results.total_pages, 10);
         assert!(results.has_next_page());
         assert!(!results.has_prev_page());
 
-        let results = SearchResults::new(
-            vec![1, 2, 3],
-            100,
-            5,
-            10,
-        );
+        let results = SearchResults::new(vec![1, 2, 3], 100, 5, 10);
 
         assert!(results.has_next_page());
         assert!(results.has_prev_page());
 
-        let results = SearchResults::new(
-            vec![1, 2],
-            100,
-            9,
-            10,
-        );
+        let results = SearchResults::new(vec![1, 2], 100, 9, 10);
 
         assert!(!results.has_next_page());
         assert!(results.has_prev_page());
@@ -829,7 +812,11 @@ mod tests {
             .text_search("a".repeat(1001))
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("text_search exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("text_search exceeds maximum length")
+        );
     }
 
     #[test]
@@ -845,42 +832,66 @@ mod tests {
             .providers(vec!["provider".to_string(); 101])
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("providers array exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("providers array exceeds maximum length")
+        );
 
         // Models array exceeds max length
         let result = SessionFilter::builder()
             .models(vec!["model".to_string(); 101])
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("models array exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("models array exceeds maximum length")
+        );
 
         // Request IDs array exceeds max length
         let result = SessionFilter::builder()
             .request_ids(vec!["id".to_string(); 101])
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("request_ids array exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("request_ids array exceeds maximum length")
+        );
 
         // Session IDs array exceeds max length
         let result = SessionFilter::builder()
             .session_ids(vec!["id".to_string(); 101])
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("session_ids array exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("session_ids array exceeds maximum length")
+        );
 
         // Client IPs array exceeds max length
         let result = SessionFilter::builder()
             .client_ips(vec!["127.0.0.1".to_string(); 101])
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("client_ips array exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("client_ips array exceeds maximum length")
+        );
 
         // Finish reasons array exceeds max length
         let result = SessionFilter::builder()
             .finish_reasons(vec!["stop".to_string(); 101])
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("finish_reasons array exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("finish_reasons array exceeds maximum length")
+        );
     }
 
     #[test]
@@ -896,41 +907,65 @@ mod tests {
             .providers(vec!["a".repeat(257)])
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("provider name exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("provider name exceeds maximum length")
+        );
 
         // Model name exceeds max length
         let result = SessionFilter::builder()
             .models(vec!["a".repeat(257)])
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("model name exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("model name exceeds maximum length")
+        );
 
         // Request ID exceeds max length
         let result = SessionFilter::builder()
             .request_ids(vec!["a".repeat(257)])
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("request_id exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("request_id exceeds maximum length")
+        );
 
         // Session ID exceeds max length
         let result = SessionFilter::builder()
             .session_ids(vec!["a".repeat(257)])
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("session_id exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("session_id exceeds maximum length")
+        );
 
         // Client IP exceeds max length
         let result = SessionFilter::builder()
             .client_ips(vec!["a".repeat(257)])
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("client_ip exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("client_ip exceeds maximum length")
+        );
 
         // Finish reason exceeds max length
         let result = SessionFilter::builder()
             .finish_reasons(vec!["a".repeat(257)])
             .build();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("finish_reason exceeds maximum length"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("finish_reason exceeds maximum length")
+        );
     }
 }

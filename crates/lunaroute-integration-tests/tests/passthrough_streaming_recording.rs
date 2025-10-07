@@ -8,8 +8,8 @@
 
 use axum::body::Body;
 use axum::http::Request;
-use lunaroute_egress::openai::{OpenAIConfig, OpenAIConnector};
 use lunaroute_egress::anthropic::{AnthropicConfig, AnthropicConnector};
+use lunaroute_egress::openai::{OpenAIConfig, OpenAIConnector};
 use lunaroute_session::{MultiWriterRecorder, SessionEvent, SessionWriter, WriterResult};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -91,9 +91,9 @@ data: [DONE]
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
-            custom_headers: None,
-            request_body_config: None,
-            response_body_config: None,
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let connector = Arc::new(OpenAIConnector::new(config).unwrap());
 
@@ -156,7 +156,9 @@ data: [DONE]
     );
 
     // Verify Started event
-    let started_event = events.iter().find(|e| matches!(e, SessionEvent::Started { .. }));
+    let started_event = events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::Started { .. }));
     assert!(started_event.is_some(), "Expected SessionEvent::Started");
 
     if let Some(SessionEvent::Started {
@@ -312,7 +314,9 @@ data: {"type":"message_stop"}
     );
 
     // Verify Started event
-    let started_event = events.iter().find(|e| matches!(e, SessionEvent::Started { .. }));
+    let started_event = events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::Started { .. }));
     assert!(started_event.is_some(), "Expected SessionEvent::Started");
 
     if let Some(SessionEvent::Started {
@@ -387,9 +391,9 @@ async fn test_openai_passthrough_non_streaming_with_recording() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
-            custom_headers: None,
-            request_body_config: None,
-            response_body_config: None,
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let connector = Arc::new(OpenAIConnector::new(config).unwrap());
 
@@ -431,7 +435,10 @@ async fn test_openai_passthrough_non_streaming_with_recording() {
 
     // Verify we got a completion response
     assert_eq!(response_json["object"], "chat.completion");
-    assert_eq!(response_json["choices"][0]["message"]["content"], "Hello there!");
+    assert_eq!(
+        response_json["choices"][0]["message"]["content"],
+        "Hello there!"
+    );
 
     // Drop recorder to trigger shutdown, then wait for events to be flushed
     drop(recorder);
@@ -448,7 +455,9 @@ async fn test_openai_passthrough_non_streaming_with_recording() {
     );
 
     // Verify Started event
-    let started_event = events.iter().find(|e| matches!(e, SessionEvent::Started { .. }));
+    let started_event = events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::Started { .. }));
     assert!(started_event.is_some(), "Expected SessionEvent::Started");
 
     if let Some(SessionEvent::Started {
@@ -587,7 +596,9 @@ async fn test_anthropic_passthrough_non_streaming_with_recording() {
     );
 
     // Verify Started event
-    let started_event = events.iter().find(|e| matches!(e, SessionEvent::Started { .. }));
+    let started_event = events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::Started { .. }));
     assert!(started_event.is_some(), "Expected SessionEvent::Started");
 
     if let Some(SessionEvent::Started {

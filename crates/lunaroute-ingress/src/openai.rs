@@ -2,25 +2,25 @@
 
 use crate::types::{IngressError, IngressResult};
 use axum::{
+    Router,
     extract::{Json, State},
     response::{
-        sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
     },
     routing::post,
-    Router,
 };
 use futures::StreamExt;
+#[cfg(test)]
+use lunaroute_core::normalized::{Choice, Usage};
 use lunaroute_core::{
     normalized::{
-        ContentPart, FinishReason, FunctionCall, FunctionDefinition, Message,
-        MessageContent, NormalizedRequest, NormalizedResponse, NormalizedStreamEvent, Role, Tool,
-        ToolCall, ToolChoice,
+        ContentPart, FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent,
+        NormalizedRequest, NormalizedResponse, NormalizedStreamEvent, Role, Tool, ToolCall,
+        ToolChoice,
     },
     provider::Provider,
 };
-#[cfg(test)]
-use lunaroute_core::normalized::{Choice, Usage};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -35,16 +35,18 @@ const MAX_COLLECTED_EVENTS: usize = 10_000;
 fn validate_tool_schema(schema: &serde_json::Value, tool_name: &str) -> IngressResult<()> {
     // Ensure it's a valid JSON Schema object
     if !schema.is_object() {
-        return Err(IngressError::InvalidRequest(
-            format!("Tool '{}': parameters must be a valid JSON Schema object", tool_name)
-        ));
+        return Err(IngressError::InvalidRequest(format!(
+            "Tool '{}': parameters must be a valid JSON Schema object",
+            tool_name
+        )));
     }
 
     // Check for required "type" field (common JSON Schema requirement)
     if schema.get("type").is_none() {
-        return Err(IngressError::InvalidRequest(
-            format!("Tool '{}': schema must have 'type' field", tool_name)
-        ));
+        return Err(IngressError::InvalidRequest(format!(
+            "Tool '{}': schema must have 'type' field",
+            tool_name
+        )));
     }
 
     Ok(())
@@ -220,7 +222,7 @@ pub enum OpenAIToolChoice {
     Object {
         #[serde(rename = "type")]
         tool_type: String,
-        function: OpenAIFunctionChoice
+        function: OpenAIFunctionChoice,
     },
 }
 
@@ -250,69 +252,80 @@ pub struct OpenAIFunctionCall {
 fn validate_request(req: &OpenAIChatRequest) -> IngressResult<()> {
     // Validate temperature (0.0 to 2.0 for OpenAI)
     if let Some(temp) = req.temperature
-        && !(0.0..=2.0).contains(&temp) {
-            return Err(IngressError::InvalidRequest(
-                format!("temperature must be between 0.0 and 2.0, got {}", temp)
-            ));
-        }
+        && !(0.0..=2.0).contains(&temp)
+    {
+        return Err(IngressError::InvalidRequest(format!(
+            "temperature must be between 0.0 and 2.0, got {}",
+            temp
+        )));
+    }
 
     // Validate top_p (0.0 to 1.0)
     if let Some(top_p) = req.top_p
-        && !(0.0..=1.0).contains(&top_p) {
-            return Err(IngressError::InvalidRequest(
-                format!("top_p must be between 0.0 and 1.0, got {}", top_p)
-            ));
-        }
+        && !(0.0..=1.0).contains(&top_p)
+    {
+        return Err(IngressError::InvalidRequest(format!(
+            "top_p must be between 0.0 and 1.0, got {}",
+            top_p
+        )));
+    }
 
     // Validate max_tokens (positive integer)
     if let Some(max_tokens) = req.max_tokens {
         if max_tokens == 0 {
             return Err(IngressError::InvalidRequest(
-                "max_tokens must be greater than 0".to_string()
+                "max_tokens must be greater than 0".to_string(),
             ));
         }
         if max_tokens > 100000 {
-            return Err(IngressError::InvalidRequest(
-                format!("max_tokens must be <= 100000, got {}", max_tokens)
-            ));
+            return Err(IngressError::InvalidRequest(format!(
+                "max_tokens must be <= 100000, got {}",
+                max_tokens
+            )));
         }
     }
 
     // Validate presence_penalty (-2.0 to 2.0)
     if let Some(penalty) = req.presence_penalty
-        && !(-2.0..=2.0).contains(&penalty) {
-            return Err(IngressError::InvalidRequest(
-                format!("presence_penalty must be between -2.0 and 2.0, got {}", penalty)
-            ));
-        }
+        && !(-2.0..=2.0).contains(&penalty)
+    {
+        return Err(IngressError::InvalidRequest(format!(
+            "presence_penalty must be between -2.0 and 2.0, got {}",
+            penalty
+        )));
+    }
 
     // Validate frequency_penalty (-2.0 to 2.0)
     if let Some(penalty) = req.frequency_penalty
-        && !(-2.0..=2.0).contains(&penalty) {
-            return Err(IngressError::InvalidRequest(
-                format!("frequency_penalty must be between -2.0 and 2.0, got {}", penalty)
-            ));
-        }
+        && !(-2.0..=2.0).contains(&penalty)
+    {
+        return Err(IngressError::InvalidRequest(format!(
+            "frequency_penalty must be between -2.0 and 2.0, got {}",
+            penalty
+        )));
+    }
 
     // Validate n (number of completions)
     if let Some(n) = req.n
-        && !(1..=10).contains(&n) {
-            return Err(IngressError::InvalidRequest(
-                format!("n must be between 1 and 10, got {}", n)
-            ));
-        }
+        && !(1..=10).contains(&n)
+    {
+        return Err(IngressError::InvalidRequest(format!(
+            "n must be between 1 and 10, got {}",
+            n
+        )));
+    }
 
     // Validate model name is not empty
     if req.model.is_empty() {
         return Err(IngressError::InvalidRequest(
-            "model field cannot be empty".to_string()
+            "model field cannot be empty".to_string(),
         ));
     }
 
     // Validate messages array is not empty
     if req.messages.is_empty() {
         return Err(IngressError::InvalidRequest(
-            "messages array cannot be empty".to_string()
+            "messages array cannot be empty".to_string(),
         ));
     }
 
@@ -337,38 +350,44 @@ pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest>
                     return Err(IngressError::InvalidRequest(format!(
                         "Invalid role: {}",
                         msg.role
-                    )))
+                    )));
                 }
             };
 
             // Validate message content length if present
             if let Some(ref content) = msg.content
-                && content.len() > 1_000_000 {
-                    return Err(IngressError::InvalidRequest(
-                        format!("Message content too large: {} bytes (max 1MB)", content.len())
-                    ));
-                }
+                && content.len() > 1_000_000
+            {
+                return Err(IngressError::InvalidRequest(format!(
+                    "Message content too large: {} bytes (max 1MB)",
+                    content.len()
+                )));
+            }
 
             // Convert tool_calls
             let tool_calls = if let Some(calls) = msg.tool_calls {
-                calls.into_iter().map(|call| {
-                    // Validate tool arguments size
-                    if call.function.arguments.len() > MAX_TOOL_ARGS_SIZE {
-                        return Err(IngressError::InvalidRequest(
-                            format!("Tool arguments too large for '{}': {} bytes (max 1MB)",
-                                    call.function.name, call.function.arguments.len())
-                        ));
-                    }
+                calls
+                    .into_iter()
+                    .map(|call| {
+                        // Validate tool arguments size
+                        if call.function.arguments.len() > MAX_TOOL_ARGS_SIZE {
+                            return Err(IngressError::InvalidRequest(format!(
+                                "Tool arguments too large for '{}': {} bytes (max 1MB)",
+                                call.function.name,
+                                call.function.arguments.len()
+                            )));
+                        }
 
-                    Ok(ToolCall {
-                        id: call.id,
-                        tool_type: call.tool_type,
-                        function: FunctionCall {
-                            name: call.function.name,
-                            arguments: call.function.arguments,
-                        },
+                        Ok(ToolCall {
+                            id: call.id,
+                            tool_type: call.tool_type,
+                            function: FunctionCall {
+                                name: call.function.name,
+                                arguments: call.function.arguments,
+                            },
+                        })
                     })
-                }).collect::<Result<Vec<_>, _>>()?
+                    .collect::<Result<Vec<_>, _>>()?
             } else {
                 vec![]
             };
@@ -385,39 +404,38 @@ pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest>
 
     // Convert tools with validation
     let tools = if let Some(tools) = req.tools {
-        let result: Result<Vec<Tool>, IngressError> = tools.into_iter().map(|tool| {
-            // Validate tool parameter schema
-            validate_tool_schema(&tool.function.parameters, &tool.function.name)?;
+        let result: Result<Vec<Tool>, IngressError> = tools
+            .into_iter()
+            .map(|tool| {
+                // Validate tool parameter schema
+                validate_tool_schema(&tool.function.parameters, &tool.function.name)?;
 
-            Ok(Tool {
-                tool_type: tool.tool_type,
-                function: FunctionDefinition {
-                    name: tool.function.name,
-                    description: tool.function.description,
-                    parameters: tool.function.parameters,
-                },
+                Ok(Tool {
+                    tool_type: tool.tool_type,
+                    function: FunctionDefinition {
+                        name: tool.function.name,
+                        description: tool.function.description,
+                        parameters: tool.function.parameters,
+                    },
+                })
             })
-        }).collect();
+            .collect();
         result?
     } else {
         vec![]
     };
 
     // Convert tool_choice
-    let tool_choice = req.tool_choice.and_then(|choice| {
-        match choice {
-            OpenAIToolChoice::String(s) => {
-                match s.as_str() {
-                    "none" => Some(ToolChoice::None),
-                    "auto" => Some(ToolChoice::Auto),
-                    "required" => Some(ToolChoice::Required),
-                    _ => None,
-                }
-            },
-            OpenAIToolChoice::Object { function, .. } => {
-                Some(ToolChoice::Specific { name: function.name })
-            }
-        }
+    let tool_choice = req.tool_choice.and_then(|choice| match choice {
+        OpenAIToolChoice::String(s) => match s.as_str() {
+            "none" => Some(ToolChoice::None),
+            "auto" => Some(ToolChoice::Auto),
+            "required" => Some(ToolChoice::Required),
+            _ => None,
+        },
+        OpenAIToolChoice::Object { function, .. } => Some(ToolChoice::Specific {
+            name: function.name,
+        }),
     });
 
     Ok(NormalizedRequest {
@@ -549,12 +567,15 @@ fn stream_event_to_openai_chunk(
             choices: vec![OpenAIStreamChoice {
                 index,
                 delta: OpenAIDelta {
-                    role: delta.role.map(|r| match r {
-                        Role::System => "system",
-                        Role::User => "user",
-                        Role::Assistant => "assistant",
-                        Role::Tool => "tool",
-                    }.to_string()),
+                    role: delta.role.map(|r| {
+                        match r {
+                            Role::System => "system",
+                            Role::User => "user",
+                            Role::Assistant => "assistant",
+                            Role::Tool => "tool",
+                        }
+                        .to_string()
+                    }),
                     content: delta.content,
                     tool_calls: None,
                 },
@@ -691,7 +712,9 @@ pub async fn chat_completions(
                 match result {
                     Ok(event) => {
                         // Convert normalized event to OpenAI chunk
-                        if let Some(chunk) = stream_event_to_openai_chunk(event, stream_id.as_str(), model.as_str()) {
+                        if let Some(chunk) =
+                            stream_event_to_openai_chunk(event, stream_id.as_str(), model.as_str())
+                        {
                             // Serialize to JSON
                             match serde_json::to_string(&chunk) {
                                 Ok(json) => Some(Ok(Event::default().data(json))),
@@ -713,7 +736,8 @@ pub async fn chat_completions(
                         });
                         match serde_json::to_string(&error_json) {
                             Ok(error_msg) => Some(Ok(Event::default().data(error_msg))),
-                            Err(_) => Some(Ok(Event::default().data(r#"{"error":{"message":"Failed to serialize error"}}"#))),
+                            Err(_) => Some(Ok(Event::default()
+                                .data(r#"{"error":{"message":"Failed to serialize error"}}"#))),
                         }
                     }
                 }
@@ -826,9 +850,9 @@ async fn responses_passthrough(
         "content-type",
         "accept",
         "user-agent",
-        "openai-beta",      // For experimental features
+        "openai-beta",         // For experimental features
         "openai-organization", // For org-specific requests
-        "x-request-id",     // For request tracking
+        "x-request-id",        // For request tracking
     ];
 
     // Log ALL headers received from client
@@ -874,14 +898,18 @@ async fn responses_passthrough(
 
     // Parse body only to check if streaming, but keep original bytes
     let is_streaming = if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
-        parsed.get("stream").and_then(|v| v.as_bool()).unwrap_or(false)
+        parsed
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     } else {
         false
     };
 
     if is_streaming {
         // Handle streaming passthrough for responses endpoint - pass raw bytes
-        let stream_response = match state.connector
+        let stream_response = match state
+            .connector
             .stream_passthrough_to_endpoint_bytes("responses", body, passthrough_headers)
             .await
         {
@@ -890,22 +918,28 @@ async fn responses_passthrough(
                 // Handle provider errors by returning proper status codes
                 use lunaroute_egress::EgressError;
                 return match e {
-                    EgressError::ProviderError { status_code, message } => {
+                    EgressError::ProviderError {
+                        status_code,
+                        message,
+                    } => {
                         tracing::debug!("Provider returned error: {} - {}", status_code, message);
                         // Parse error body as JSON if possible, otherwise wrap in error object
                         let error_json = serde_json::from_str::<serde_json::Value>(&message)
-                            .unwrap_or_else(|_| serde_json::json!({
-                                "error": {
-                                    "message": message,
-                                    "type": "provider_error",
-                                    "code": status_code,
-                                }
-                            }));
+                            .unwrap_or_else(|_| {
+                                serde_json::json!({
+                                    "error": {
+                                        "message": message,
+                                        "type": "provider_error",
+                                        "code": status_code,
+                                    }
+                                })
+                            });
                         Ok((
                             axum::http::StatusCode::from_u16(status_code)
                                 .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
-                            Json(error_json)
-                        ).into_response())
+                            Json(error_json),
+                        )
+                            .into_response())
                     }
                     _ => Err(IngressError::ProviderError(e.to_string())),
                 };
@@ -916,17 +950,15 @@ async fn responses_passthrough(
         let byte_stream = stream_response.bytes_stream();
         let sse_stream = eventsource_stream::EventStream::new(byte_stream);
 
-        let mapped_stream = sse_stream.map(|result| {
-            match result {
-                Ok(event) => {
-                    Ok::<_, eventsource_stream::EventStreamError<std::io::Error>>(Event::default()
-                        .data(event.data)
-                        .event(event.event))
-                },
-                Err(e) => {
-                    tracing::error!("Stream error: {}", e);
-                    Ok::<_, eventsource_stream::EventStreamError<std::io::Error>>(Event::default().data(format!("error: {}", e)))
-                }
+        let mapped_stream = sse_stream.map(|result| match result {
+            Ok(event) => Ok::<_, eventsource_stream::EventStreamError<std::io::Error>>(
+                Event::default().data(event.data).event(event.event),
+            ),
+            Err(e) => {
+                tracing::error!("Stream error: {}", e);
+                Ok::<_, eventsource_stream::EventStreamError<std::io::Error>>(
+                    Event::default().data(format!("error: {}", e)),
+                )
             }
         });
 
@@ -935,7 +967,8 @@ async fn responses_passthrough(
             .into_response())
     } else {
         // Send directly to OpenAI API (non-streaming) - pass raw bytes
-        match state.connector
+        match state
+            .connector
             .send_passthrough_to_endpoint_bytes("responses", body, passthrough_headers)
             .await
         {
@@ -944,22 +977,28 @@ async fn responses_passthrough(
                 // Handle provider errors by returning proper status codes
                 use lunaroute_egress::EgressError;
                 match e {
-                    EgressError::ProviderError { status_code, message } => {
+                    EgressError::ProviderError {
+                        status_code,
+                        message,
+                    } => {
                         tracing::debug!("Provider returned error: {} - {}", status_code, message);
                         // Parse error body as JSON if possible, otherwise wrap in error object
                         let error_json = serde_json::from_str::<serde_json::Value>(&message)
-                            .unwrap_or_else(|_| serde_json::json!({
-                                "error": {
-                                    "message": message,
-                                    "type": "provider_error",
-                                    "code": status_code,
-                                }
-                            }));
+                            .unwrap_or_else(|_| {
+                                serde_json::json!({
+                                    "error": {
+                                        "message": message,
+                                        "type": "provider_error",
+                                        "code": status_code,
+                                    }
+                                })
+                            });
                         Ok((
                             axum::http::StatusCode::from_u16(status_code)
                                 .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
-                            Json(error_json)
-                        ).into_response())
+                            Json(error_json),
+                        )
+                            .into_response())
                     }
                     _ => Err(IngressError::ProviderError(e.to_string())),
                 }
@@ -1014,7 +1053,8 @@ async fn models_passthrough(
         }
     }
 
-    match state.connector
+    match state
+        .connector
         .get_passthrough("models", passthrough_headers)
         .await
     {
@@ -1023,22 +1063,28 @@ async fn models_passthrough(
             // Handle provider errors by returning proper status codes
             use lunaroute_egress::EgressError;
             match e {
-                EgressError::ProviderError { status_code, message } => {
+                EgressError::ProviderError {
+                    status_code,
+                    message,
+                } => {
                     tracing::debug!("Provider returned error: {} - {}", status_code, message);
                     // Parse error body as JSON if possible, otherwise wrap in error object
                     let error_json = serde_json::from_str::<serde_json::Value>(&message)
-                        .unwrap_or_else(|_| serde_json::json!({
-                            "error": {
-                                "message": message,
-                                "type": "provider_error",
-                                "code": status_code,
-                            }
-                        }));
+                        .unwrap_or_else(|_| {
+                            serde_json::json!({
+                                "error": {
+                                    "message": message,
+                                    "type": "provider_error",
+                                    "code": status_code,
+                                }
+                            })
+                        });
                     Ok((
                         axum::http::StatusCode::from_u16(status_code)
                             .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
-                        Json(error_json)
-                    ).into_response())
+                        Json(error_json),
+                    )
+                        .into_response())
                 }
                 _ => Err(IngressError::ProviderError(e.to_string())),
             }
@@ -1114,8 +1160,16 @@ pub async fn chat_completions_passthrough(
     // Headers that should NOT be forwarded (hop-by-hop headers per RFC 7230)
     // Skip hop-by-hop headers + host/content-length (reqwest sets these correctly)
     let skip_headers = [
-        "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-        "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length"
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+        "content-length",
     ];
 
     for (name, value) in headers.iter() {
@@ -1164,7 +1218,8 @@ pub async fn chat_completions_passthrough(
     );
 
     // Extract model before req is moved (for metrics and session recording)
-    let model = req.get("model")
+    let model = req
+        .get("model")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_string();
@@ -1183,9 +1238,11 @@ pub async fn chat_completions_passthrough(
     };
 
     // Start session recording if enabled (using async events)
-    if let (Some(recorder), Some(session_id), Some(request_id)) =
-        (&state.session_recorder, &recording_session_id, &recording_request_id)
-    {
+    if let (Some(recorder), Some(session_id), Some(request_id)) = (
+        &state.session_recorder,
+        &recording_session_id,
+        &recording_request_id,
+    ) {
         use lunaroute_session::{SessionEvent, events::SessionMetadata as V2Metadata};
 
         recorder.record_event(SessionEvent::Started {
@@ -1209,7 +1266,8 @@ pub async fn chat_completions_passthrough(
         use lunaroute_session::events::RequestStats;
 
         // Extract request text from messages (best effort for passthrough mode)
-        let request_text = req.get("messages")
+        let request_text = req
+            .get("messages")
             .and_then(|m| m.as_array())
             .and_then(|msgs| msgs.last())
             .and_then(|msg| msg.get("content"))
@@ -1219,29 +1277,39 @@ pub async fn chat_completions_passthrough(
                     Some(s.to_string())
                 } else if let Some(arr) = c.as_array() {
                     // For array content, try to extract text from first text block
-                    arr.iter()
-                        .find_map(|item| {
-                            if let Some("text") = item.get("type").and_then(|t| t.as_str()) {
-                                item.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
-                            } else {
-                                None
-                            }
-                        })
+                    arr.iter().find_map(|item| {
+                        if let Some("text") = item.get("type").and_then(|t| t.as_str()) {
+                            item.get("text")
+                                .and_then(|t| t.as_str())
+                                .map(|s| s.to_string())
+                        } else {
+                            None
+                        }
+                    })
                 } else {
                     None
                 }
             })
             .unwrap_or_default();
 
-        let message_count = req.get("messages").and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
-        let has_system_prompt = req.get("messages")
+        let message_count = req
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let has_system_prompt = req
+            .get("messages")
             .and_then(|m| m.as_array())
             .and_then(|msgs| msgs.first())
             .and_then(|msg| msg.get("role").and_then(|r| r.as_str()))
             .map(|role| role == "system")
             .unwrap_or(false);
         let has_tools = req.get("tools").is_some();
-        let tool_count = req.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
+        let tool_count = req
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
 
         recorder.record_event(SessionEvent::RequestRecorded {
             session_id: session_id.clone(),
@@ -1263,14 +1331,15 @@ pub async fn chat_completions_passthrough(
 
     if is_streaming {
         // Handle streaming passthrough
-        let stream_response = state.connector
+        let stream_response = state
+            .connector
             .stream_passthrough(req, passthrough_headers)
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
         // Track streaming metrics using shared module
-        use futures::StreamExt;
         use crate::streaming_metrics::StreamingMetricsTracker;
+        use futures::StreamExt;
 
         let tracker = StreamingMetricsTracker::new(before_provider);
         let tracker_ref = tracker.clone();
@@ -1457,7 +1526,8 @@ pub async fn chat_completions_passthrough(
     }
 
     // Send directly to OpenAI API (non-streaming)
-    let response_result = state.connector
+    let response_result = state
+        .connector
         .send_passthrough(req, passthrough_headers)
         .await;
 
@@ -1465,9 +1535,11 @@ pub async fn chat_completions_passthrough(
         Ok((resp, headers)) => (resp, headers),
         Err(e) => {
             // Record error in session if recording is enabled
-            if let (Some(recorder), Some(session_id), Some(request_id)) =
-                (&state.session_recorder, &recording_session_id, &recording_request_id)
-            {
+            if let (Some(recorder), Some(session_id), Some(request_id)) = (
+                &state.session_recorder,
+                &recording_session_id,
+                &recording_request_id,
+            ) {
                 use lunaroute_session::{SessionEvent, events::FinalSessionStats};
 
                 recorder.record_event(SessionEvent::Completed {
@@ -1514,9 +1586,11 @@ pub async fn chat_completions_passthrough(
     }
 
     // Spawn async parsing task to extract tool calls (zero latency for client)
-    if let (Some(recorder), Some(session_id), Some(request_id)) =
-        (state.session_recorder.clone(), recording_session_id.clone(), recording_request_id.clone())
-    {
+    if let (Some(recorder), Some(session_id), Some(request_id)) = (
+        state.session_recorder.clone(),
+        recording_session_id.clone(),
+        recording_request_id.clone(),
+    ) {
         let response_clone = response.clone();
         let user_agent_clone = user_agent.clone();
 
@@ -1524,47 +1598,70 @@ pub async fn chat_completions_passthrough(
             // Catch and log any panics/errors in background parsing
             let session_id_for_error = session_id.clone();
             let parse_result = std::panic::AssertUnwindSafe(async move {
-            // Extract tool calls from response
-            let mut tool_calls_map = std::collections::HashMap::new();
+                // Extract tool calls from response
+                let mut tool_calls_map = std::collections::HashMap::new();
 
-            if let Some(choices) = response_clone.get("choices").and_then(|c| c.as_array()) {
-                for choice in choices {
-                    if let Some(message) = choice.get("message")
-                        && let Some(tool_calls) = message.get("tool_calls").and_then(|t| t.as_array()) {
+                if let Some(choices) = response_clone.get("choices").and_then(|c| c.as_array()) {
+                    for choice in choices {
+                        if let Some(message) = choice.get("message")
+                            && let Some(tool_calls) =
+                                message.get("tool_calls").and_then(|t| t.as_array())
+                        {
                             for tool_call in tool_calls {
                                 if let Some(function) = tool_call.get("function")
-                                    && let Some(name) = function.get("name").and_then(|n| n.as_str()) {
-                                        *tool_calls_map.entry(name.to_string()).or_insert(0u32) += 1;
-                                    }
+                                    && let Some(name) =
+                                        function.get("name").and_then(|n| n.as_str())
+                                {
+                                    *tool_calls_map.entry(name.to_string()).or_insert(0u32) += 1;
+                                }
                             }
                         }
+                    }
                 }
-            }
 
-            // Extract model
-            let model_used = response_clone.get("model").and_then(|m| m.as_str()).map(|s| s.to_string());
+                // Extract model
+                let model_used = response_clone
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string());
 
-            // Extract tokens with detailed breakdown
-            let (input_tokens, output_tokens, reasoning_tokens, cached_tokens, _audio_input, _audio_output) =
-                if let Some(usage) = response_clone.get("usage") {
-                    let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                // Extract tokens with detailed breakdown
+                let (
+                    input_tokens,
+                    output_tokens,
+                    reasoning_tokens,
+                    cached_tokens,
+                    _audio_input,
+                    _audio_output,
+                ) = if let Some(usage) = response_clone.get("usage") {
+                    let input = usage
+                        .get("prompt_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let output = usage
+                        .get("completion_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
 
                     // Extract reasoning tokens from completion_tokens_details
-                    let reasoning = usage.get("completion_tokens_details")
+                    let reasoning = usage
+                        .get("completion_tokens_details")
                         .and_then(|d| d.get("reasoning_tokens"))
                         .and_then(|v| v.as_u64());
 
                     // Extract cached tokens from prompt_tokens_details
-                    let cached = usage.get("prompt_tokens_details")
+                    let cached = usage
+                        .get("prompt_tokens_details")
                         .and_then(|d| d.get("cached_tokens"))
                         .and_then(|v| v.as_u64());
 
                     // Extract audio tokens
-                    let audio_in = usage.get("prompt_tokens_details")
+                    let audio_in = usage
+                        .get("prompt_tokens_details")
                         .and_then(|d| d.get("audio_tokens"))
                         .and_then(|v| v.as_u64());
-                    let audio_out = usage.get("completion_tokens_details")
+                    let audio_out = usage
+                        .get("completion_tokens_details")
                         .and_then(|d| d.get("audio_tokens"))
                         .and_then(|v| v.as_u64());
 
@@ -1573,96 +1670,103 @@ pub async fn chat_completions_passthrough(
                     (0, 0, None, None, None, None)
                 };
 
-            // Calculate response size
-            let response_size_bytes = serde_json::to_vec(&response_clone).map(|v| v.len()).unwrap_or(0);
+                // Calculate response size
+                let response_size_bytes = serde_json::to_vec(&response_clone)
+                    .map(|v| v.len())
+                    .unwrap_or(0);
 
-            // Count content blocks (messages in choices)
-            let mut content_blocks = 0;
-            let mut has_refusal = false;
-            if let Some(choices) = response_clone.get("choices").and_then(|c| c.as_array()) {
-                content_blocks = choices.len();
+                // Count content blocks (messages in choices)
+                let mut content_blocks = 0;
+                let mut has_refusal = false;
+                if let Some(choices) = response_clone.get("choices").and_then(|c| c.as_array()) {
+                    content_blocks = choices.len();
 
-                // Check for refusal in finish_reason
-                for choice in choices {
-                    if let Some(finish_reason) = choice.get("finish_reason").and_then(|f| f.as_str())
-                        && (finish_reason == "content_filter" || finish_reason == "content_policy_violation")
-                    {
-                        has_refusal = true;
-                        break;
+                    // Check for refusal in finish_reason
+                    for choice in choices {
+                        if let Some(finish_reason) =
+                            choice.get("finish_reason").and_then(|f| f.as_str())
+                            && (finish_reason == "content_filter"
+                                || finish_reason == "content_policy_violation")
+                        {
+                            has_refusal = true;
+                            break;
+                        }
                     }
                 }
-            }
 
-            // Build updates if we have meaningful data
-            let has_tokens = input_tokens > 0 || output_tokens > 0;
-            let has_tools = !tool_calls_map.is_empty();
+                // Build updates if we have meaningful data
+                let has_tokens = input_tokens > 0 || output_tokens > 0;
+                let has_tools = !tool_calls_map.is_empty();
 
-            if has_tokens || has_tools || model_used.is_some() {
-                use lunaroute_session::events::{TokenTotals, ToolUsageSummary, ToolStats};
+                if has_tokens || has_tools || model_used.is_some() {
+                    use lunaroute_session::events::{TokenTotals, ToolStats, ToolUsageSummary};
 
-                let token_updates = if has_tokens {
-                    let reasoning = reasoning_tokens.unwrap_or(0);
-                    let cached = cached_tokens.unwrap_or(0);
-                    let audio_in = _audio_input.unwrap_or(0);
-                    let audio_out = _audio_output.unwrap_or(0);
-                    Some(TokenTotals {
-                        total_input: input_tokens,
-                        total_output: output_tokens,
-                        total_thinking: 0,  // OpenAI doesn't have thinking tokens (that's Anthropic)
-                        total_reasoning: reasoning,  // OpenAI o1/o3/o4 reasoning tokens
-                        total_cached: cached,  // Deprecated field, kept for backward compat
-                        total_cache_read: cached,  // OpenAI cached tokens (50% discount)
-                        total_cache_creation: 0,  // OpenAI doesn't report cache creation separately
-                        total_audio_input: audio_in,
-                        total_audio_output: audio_out,
-                        grand_total: input_tokens + output_tokens + reasoning,
-                        by_model: Default::default(),
-                    })
-                } else {
-                    None
-                };
+                    let token_updates = if has_tokens {
+                        let reasoning = reasoning_tokens.unwrap_or(0);
+                        let cached = cached_tokens.unwrap_or(0);
+                        let audio_in = _audio_input.unwrap_or(0);
+                        let audio_out = _audio_output.unwrap_or(0);
+                        Some(TokenTotals {
+                            total_input: input_tokens,
+                            total_output: output_tokens,
+                            total_thinking: 0, // OpenAI doesn't have thinking tokens (that's Anthropic)
+                            total_reasoning: reasoning, // OpenAI o1/o3/o4 reasoning tokens
+                            total_cached: cached, // Deprecated field, kept for backward compat
+                            total_cache_read: cached, // OpenAI cached tokens (50% discount)
+                            total_cache_creation: 0, // OpenAI doesn't report cache creation separately
+                            total_audio_input: audio_in,
+                            total_audio_output: audio_out,
+                            grand_total: input_tokens + output_tokens + reasoning,
+                            by_model: Default::default(),
+                        })
+                    } else {
+                        None
+                    };
 
-                let tool_summary = if has_tools {
-                    let total_calls: u32 = tool_calls_map.values().sum();
-                    let mut by_tool = std::collections::HashMap::new();
-                    for (name, count) in tool_calls_map {
-                        by_tool.insert(name, ToolStats {
-                            call_count: count,
-                            total_execution_time_ms: 0,
-                            avg_execution_time_ms: 0,
-                            error_count: 0,
-                        });
-                    }
-                    Some(ToolUsageSummary {
-                        total_tool_calls: total_calls,
-                        unique_tool_count: by_tool.len() as u32,
-                        by_tool,
-                        total_tool_time_ms: 0,
-                        tool_error_count: 0,
-                    })
-                } else {
-                    None
-                };
+                    let tool_summary = if has_tools {
+                        let total_calls: u32 = tool_calls_map.values().sum();
+                        let mut by_tool = std::collections::HashMap::new();
+                        for (name, count) in tool_calls_map {
+                            by_tool.insert(
+                                name,
+                                ToolStats {
+                                    call_count: count,
+                                    total_execution_time_ms: 0,
+                                    avg_execution_time_ms: 0,
+                                    error_count: 0,
+                                },
+                            );
+                        }
+                        Some(ToolUsageSummary {
+                            total_tool_calls: total_calls,
+                            unique_tool_count: by_tool.len() as u32,
+                            by_tool,
+                            total_tool_time_ms: 0,
+                            tool_error_count: 0,
+                        })
+                    } else {
+                        None
+                    };
 
-                recorder.record_event(lunaroute_session::SessionEvent::StatsUpdated {
-                    session_id,
-                    request_id,
-                    timestamp: chrono::Utc::now(),
-                    token_updates,
-                    tool_call_updates: tool_summary,
-                    model_used,
-                    response_size_bytes,
-                    content_blocks,
-                    has_refusal,
-                    user_agent: user_agent_clone,
-                });
+                    recorder.record_event(lunaroute_session::SessionEvent::StatsUpdated {
+                        session_id,
+                        request_id,
+                        timestamp: chrono::Utc::now(),
+                        token_updates,
+                        tool_call_updates: tool_summary,
+                        model_used,
+                        response_size_bytes,
+                        content_blocks,
+                        has_refusal,
+                        user_agent: user_agent_clone,
+                    });
 
-                tracing::debug!(
-                    "Async parsed OpenAI non-streaming response: tokens={}, tools={}",
-                    if has_tokens { "yes" } else { "no" },
-                    if has_tools { "yes" } else { "no" }
-                );
-            }
+                    tracing::debug!(
+                        "Async parsed OpenAI non-streaming response: tokens={}, tools={}",
+                        if has_tokens { "yes" } else { "no" },
+                        if has_tools { "yes" } else { "no" }
+                    );
+                }
             });
 
             if let Err(e) = futures::FutureExt::catch_unwind(parse_result).await {
@@ -1682,15 +1786,18 @@ pub async fn chat_completions_passthrough(
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use lunaroute_core::provider::ProviderCapabilities;
     use futures::stream;
+    use lunaroute_core::provider::ProviderCapabilities;
 
     // Mock provider for testing
     struct MockProvider;
 
     #[async_trait]
     impl Provider for MockProvider {
-        async fn send(&self, _request: NormalizedRequest) -> lunaroute_core::Result<NormalizedResponse> {
+        async fn send(
+            &self,
+            _request: NormalizedRequest,
+        ) -> lunaroute_core::Result<NormalizedResponse> {
             Ok(NormalizedResponse {
                 id: "test-123".to_string(),
                 model: "gpt-4".to_string(),
@@ -1718,7 +1825,16 @@ mod tests {
         async fn stream(
             &self,
             _request: NormalizedRequest,
-        ) -> lunaroute_core::Result<Box<dyn futures::Stream<Item = lunaroute_core::Result<lunaroute_core::normalized::NormalizedStreamEvent>> + Send + Unpin>> {
+        ) -> lunaroute_core::Result<
+            Box<
+                dyn futures::Stream<
+                        Item = lunaroute_core::Result<
+                            lunaroute_core::normalized::NormalizedStreamEvent,
+                        >,
+                    > + Send
+                    + Unpin,
+            >,
+        > {
             Ok(Box::new(stream::empty()))
         }
 
@@ -1798,7 +1914,10 @@ mod tests {
 
         let openai = from_normalized(resp);
         assert_eq!(openai.model, "gpt-4");
-        assert_eq!(openai.choices[0].message.content, Some("Hello, world!".to_string()));
+        assert_eq!(
+            openai.choices[0].message.content,
+            Some("Hello, world!".to_string())
+        );
         assert_eq!(openai.usage.total_tokens, 15);
         assert_eq!(openai.choices[0].finish_reason, Some("stop".to_string()));
     }
@@ -1988,8 +2107,14 @@ mod tests {
         assert_eq!(openai.choices.len(), 2);
         assert_eq!(openai.choices[0].index, 0);
         assert_eq!(openai.choices[1].index, 1);
-        assert_eq!(openai.choices[0].message.content, Some("First choice".to_string()));
-        assert_eq!(openai.choices[1].message.content, Some("Second choice".to_string()));
+        assert_eq!(
+            openai.choices[0].message.content,
+            Some("First choice".to_string())
+        );
+        assert_eq!(
+            openai.choices[1].message.content,
+            Some("Second choice".to_string())
+        );
     }
 
     #[test]
@@ -2003,11 +2128,9 @@ mod tests {
                 index: 0,
                 message: Message {
                     role: Role::Assistant,
-                    content: MessageContent::Parts(vec![
-                        ContentPart::Text {
-                            text: "I see an image".to_string(),
-                        },
-                    ]),
+                    content: MessageContent::Parts(vec![ContentPart::Text {
+                        text: "I see an image".to_string(),
+                    }]),
                     name: None,
                     tool_calls: vec![],
                     tool_call_id: None,
@@ -2025,7 +2148,10 @@ mod tests {
 
         let openai = from_normalized(resp);
         // Extracts text from multimodal Parts
-        assert_eq!(openai.choices[0].message.content, Some("I see an image".to_string()));
+        assert_eq!(
+            openai.choices[0].message.content,
+            Some("I see an image".to_string())
+        );
     }
 
     #[test]
@@ -2082,7 +2208,12 @@ mod tests {
         // Validation should reject empty messages array
         let result = to_normalized(req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("messages array cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("messages array cannot be empty")
+        );
     }
 
     #[test]
@@ -2128,7 +2259,12 @@ mod tests {
 
         let result = to_normalized(req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("parameters must be a valid JSON Schema object"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("parameters must be a valid JSON Schema object")
+        );
     }
 
     #[test]
@@ -2164,7 +2300,12 @@ mod tests {
 
         let result = to_normalized(req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("schema must have 'type' field"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("schema must have 'type' field")
+        );
     }
 
     #[test]
@@ -2206,7 +2347,10 @@ mod tests {
         let normalized = to_normalized(req).unwrap();
         assert_eq!(normalized.tools.len(), 1);
         assert_eq!(normalized.tools[0].function.name, "test_func");
-        assert_eq!(normalized.tools[0].function.description, Some("Test function".to_string()));
+        assert_eq!(
+            normalized.tools[0].function.description,
+            Some("Test function".to_string())
+        );
     }
 
     #[test]
@@ -2386,7 +2530,10 @@ mod tests {
         let normalized = to_normalized(req).unwrap();
         assert_eq!(normalized.messages.len(), 2);
         assert_eq!(normalized.messages[1].tool_calls.len(), 1);
-        assert_eq!(normalized.messages[1].tool_calls[0].function.arguments, "{}");
+        assert_eq!(
+            normalized.messages[1].tool_calls[0].function.arguments,
+            "{}"
+        );
     }
 
     // Multimodal content extraction tests
@@ -2429,7 +2576,10 @@ mod tests {
 
         let openai = from_normalized(resp);
         // Multiple text parts should be joined with newlines
-        assert_eq!(openai.choices[0].message.content, Some("First part\nSecond part\nThird part".to_string()));
+        assert_eq!(
+            openai.choices[0].message.content,
+            Some("First part\nSecond part\nThird part".to_string())
+        );
     }
 
     #[test]
@@ -2473,7 +2623,10 @@ mod tests {
 
         let openai = from_normalized(resp);
         // Image parts should be filtered out, only text extracted
-        assert_eq!(openai.choices[0].message.content, Some("I see\na cat".to_string()));
+        assert_eq!(
+            openai.choices[0].message.content,
+            Some("I see\na cat".to_string())
+        );
     }
 
     #[test]
@@ -2635,7 +2788,10 @@ mod tests {
         // Verify tools are preserved
         assert_eq!(normalized.tools.len(), 1);
         assert_eq!(normalized.tools[0].function.name, "get_weather");
-        assert_eq!(normalized.tools[0].function.description, Some("Get weather info".to_string()));
+        assert_eq!(
+            normalized.tools[0].function.description,
+            Some("Get weather info".to_string())
+        );
         assert_eq!(normalized.tool_choice, Some(ToolChoice::Auto));
     }
 
@@ -2669,9 +2825,15 @@ mod tests {
         // Verify response fields are preserved (ID is used as-is)
         assert_eq!(openai_resp.id, "resp-123");
         assert_eq!(openai_resp.model, "gpt-4");
-        assert_eq!(openai_resp.choices[0].message.content, Some("Hello back!".to_string()));
+        assert_eq!(
+            openai_resp.choices[0].message.content,
+            Some("Hello back!".to_string())
+        );
         assert_eq!(openai_resp.usage.total_tokens, 30);
-        assert_eq!(openai_resp.choices[0].finish_reason, Some("stop".to_string()));
+        assert_eq!(
+            openai_resp.choices[0].finish_reason,
+            Some("stop".to_string())
+        );
     }
 
     #[test]
@@ -2727,9 +2889,15 @@ mod tests {
         assert_eq!(normalized.messages.len(), 3);
         assert_eq!(normalized.messages[1].tool_calls.len(), 1);
         assert_eq!(normalized.messages[1].tool_calls[0].id, "call_123");
-        assert_eq!(normalized.messages[1].tool_calls[0].function.name, "get_weather");
+        assert_eq!(
+            normalized.messages[1].tool_calls[0].function.name,
+            "get_weather"
+        );
         assert_eq!(normalized.messages[2].role, Role::Tool);
-        assert_eq!(normalized.messages[2].tool_call_id, Some("call_123".to_string()));
+        assert_eq!(
+            normalized.messages[2].tool_call_id,
+            Some("call_123".to_string())
+        );
     }
 
     // Error path tests
@@ -2759,7 +2927,12 @@ mod tests {
 
         let result = to_normalized(req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("temperature must be between 0.0 and 2.0"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("temperature must be between 0.0 and 2.0")
+        );
     }
 
     #[test]
@@ -2791,7 +2964,12 @@ mod tests {
 
         let result = to_normalized(req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Message content too large"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Message content too large")
+        );
     }
 
     #[test]
@@ -2820,7 +2998,12 @@ mod tests {
 
         let result = to_normalized(req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("model field cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("model field cannot be empty")
+        );
     }
 
     #[test]
@@ -2849,7 +3032,12 @@ mod tests {
 
         let result = to_normalized(req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("max_tokens must be <= 100000"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("max_tokens must be <= 100000")
+        );
     }
 
     // Edge case tests
@@ -2939,7 +3127,7 @@ mod tests {
             messages: vec![OpenAIMessage {
                 role: "user".to_string(),
                 content: Some("Hello 世界 🌍 مرحبا".to_string()), // Unicode content
-                name: Some("用户_1".to_string()), // Unicode name
+                name: Some("用户_1".to_string()),                 // Unicode name
                 tool_calls: None,
                 tool_call_id: None,
             }],

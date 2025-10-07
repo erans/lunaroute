@@ -1,15 +1,28 @@
 //! Statistics calculations and helpers
 
 /// Calculate estimated cost based on token usage
-pub fn calculate_cost(input_tokens: i64, output_tokens: i64, thinking_tokens: i64, model: &str) -> f64 {
+pub fn calculate_cost(
+    input_tokens: i64,
+    output_tokens: i64,
+    thinking_tokens: i64,
+    model: &str,
+) -> f64 {
     // Pricing as of Jan 2025 (per million tokens)
     // Source: https://www.anthropic.com/pricing and https://openai.com/api/pricing/
     let (input_rate, output_rate, thinking_rate) = match model {
         // Anthropic Claude Models
-        m if m.contains("claude-sonnet-4") => (3.0 / 1_000_000.0, 15.0 / 1_000_000.0, 3.0 / 1_000_000.0),
-        m if m.contains("claude-3-5-sonnet") => (3.0 / 1_000_000.0, 15.0 / 1_000_000.0, 3.0 / 1_000_000.0),
-        m if m.contains("claude-opus-4") => (15.0 / 1_000_000.0, 75.0 / 1_000_000.0, 15.0 / 1_000_000.0),
-        m if m.contains("claude-opus") => (15.0 / 1_000_000.0, 75.0 / 1_000_000.0, 15.0 / 1_000_000.0),
+        m if m.contains("claude-sonnet-4") => {
+            (3.0 / 1_000_000.0, 15.0 / 1_000_000.0, 3.0 / 1_000_000.0)
+        }
+        m if m.contains("claude-3-5-sonnet") => {
+            (3.0 / 1_000_000.0, 15.0 / 1_000_000.0, 3.0 / 1_000_000.0)
+        }
+        m if m.contains("claude-opus-4") => {
+            (15.0 / 1_000_000.0, 75.0 / 1_000_000.0, 15.0 / 1_000_000.0)
+        }
+        m if m.contains("claude-opus") => {
+            (15.0 / 1_000_000.0, 75.0 / 1_000_000.0, 15.0 / 1_000_000.0)
+        }
         m if m.contains("claude-3-5-haiku") => (0.80 / 1_000_000.0, 4.0 / 1_000_000.0, 0.0),
         m if m.contains("claude-3-haiku") => (0.25 / 1_000_000.0, 1.25 / 1_000_000.0, 0.0),
         m if m.contains("claude-haiku") => (0.80 / 1_000_000.0, 4.0 / 1_000_000.0, 0.0), // Default to 3.5 pricing
@@ -58,8 +71,17 @@ mod tests {
     #[test]
     fn test_claude_sonnet_4_5_pricing() {
         // Claude Sonnet 4.5: $3.00 input, $15.00 output, $3.00 thinking per million
-        let cost = calculate_cost(1_000_000, 1_000_000, 1_000_000, "claude-sonnet-4-5-20250929");
-        assert!((cost - 21.0).abs() < 0.01, "Expected ~$21.00, got ${}", cost);
+        let cost = calculate_cost(
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            "claude-sonnet-4-5-20250929",
+        );
+        assert!(
+            (cost - 21.0).abs() < 0.01,
+            "Expected ~$21.00, got ${}",
+            cost
+        );
     }
 
     #[test]
@@ -74,7 +96,11 @@ mod tests {
         // Actual usage from database: 8,634,555 input, 12,100 output
         let cost = calculate_cost(8_634_555, 12_100, 0, "claude-3-5-haiku-20241022");
         // Expected: 8.635 * $0.80 + 0.0121 * $4.00 = $6.908 + $0.048 = $6.956
-        assert!((cost - 6.956).abs() < 0.01, "Expected ~$6.96, got ${}", cost);
+        assert!(
+            (cost - 6.956).abs() < 0.01,
+            "Expected ~$6.96, got ${}",
+            cost
+        );
     }
 
     #[test]
@@ -82,7 +108,11 @@ mod tests {
         // Actual usage from database: 27,579 input, 171,256 output
         let cost = calculate_cost(27_579, 171_256, 0, "claude-sonnet-4-5-20250929");
         // Expected: 0.028 * $3.00 + 0.171 * $15.00 = $0.083 + $2.569 = $2.652
-        assert!((cost - 2.652).abs() < 0.01, "Expected ~$2.65, got ${}", cost);
+        assert!(
+            (cost - 2.652).abs() < 0.01,
+            "Expected ~$2.65, got ${}",
+            cost
+        );
     }
 
     #[test]
@@ -96,6 +126,10 @@ mod tests {
     fn test_gpt_4o_pricing() {
         // GPT-4o: $2.50 input, $10.00 output per million
         let cost = calculate_cost(1_000_000, 1_000_000, 0, "gpt-4o");
-        assert!((cost - 12.50).abs() < 0.01, "Expected ~$12.50, got ${}", cost);
+        assert!(
+            (cost - 12.50).abs() < 0.01,
+            "Expected ~$12.50, got ${}",
+            cost
+        );
     }
 }

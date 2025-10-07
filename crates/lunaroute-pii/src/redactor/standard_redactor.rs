@@ -39,7 +39,10 @@ impl StandardRedactor {
             .map(|override_item| (override_item.pii_type, override_item.clone()))
             .collect();
 
-        let hmac_key = config.hmac_secret.as_ref().map(|s| derive_hmac_key(s.as_str()));
+        let hmac_key = config
+            .hmac_secret
+            .as_ref()
+            .map(|s| derive_hmac_key(s.as_str()));
 
         Self {
             config,
@@ -60,7 +63,10 @@ impl StandardRedactor {
             .map(|override_item| (override_item.pii_type, override_item.clone()))
             .collect();
 
-        let hmac_key = config.hmac_secret.as_ref().map(|s| derive_hmac_key(s.as_str()));
+        let hmac_key = config
+            .hmac_secret
+            .as_ref()
+            .map(|s| derive_hmac_key(s.as_str()));
 
         let custom_patterns_map: HashMap<String, CustomPattern> = custom_patterns
             .into_iter()
@@ -121,13 +127,14 @@ impl StandardRedactor {
             Some(CustomRedactionMode::Tokenize) => {
                 // Use HMAC tokenization
                 if let Some(key) = &self.hmac_key {
-                    let mut mac = HmacSha256::new_from_slice(key)
-                        .expect("HMAC can take key of any size");
+                    let mut mac =
+                        HmacSha256::new_from_slice(key).expect("HMAC can take key of any size");
                     mac.update(actual_text.as_bytes());
                     let result = mac.finalize();
 
                     use base64::Engine;
-                    let hash = base64::engine::general_purpose::STANDARD.encode(result.into_bytes());
+                    let hash =
+                        base64::engine::general_purpose::STANDARD.encode(result.into_bytes());
 
                     // Use first 16 chars of base64-encoded hash for readability
                     let short_hash = &hash[..16.min(hash.len())];
@@ -135,14 +142,16 @@ impl StandardRedactor {
                 } else {
                     // No HMAC key, fall back to mask
                     pattern
-                        .and_then(|p| p.placeholder.as_ref()).cloned()
+                        .and_then(|p| p.placeholder.as_ref())
+                        .cloned()
                         .unwrap_or_else(|| format!("[CUS:{}]", pattern_name))
                 }
             }
             Some(CustomRedactionMode::Mask) | None => {
                 // Use placeholder if provided, otherwise default to [CUS:name]
                 pattern
-                    .and_then(|p| p.placeholder.as_ref()).cloned()
+                    .and_then(|p| p.placeholder.as_ref())
+                    .cloned()
                     .unwrap_or_else(|| format!("[CUS:{}]", pattern_name))
             }
         }
@@ -179,14 +188,15 @@ impl StandardRedactor {
             RedactionMode::Tokenize => {
                 // Create a deterministic token using HMAC
                 if let Some(key) = &self.hmac_key {
-                    let mut mac = HmacSha256::new_from_slice(key)
-                        .expect("HMAC can take key of any size");
+                    let mut mac =
+                        HmacSha256::new_from_slice(key).expect("HMAC can take key of any size");
                     mac.update(detection.text.as_bytes());
                     let result = mac.finalize();
 
                     // Use base64 engine for encoding
                     use base64::Engine;
-                    let hash = base64::engine::general_purpose::STANDARD.encode(result.into_bytes());
+                    let hash =
+                        base64::engine::general_purpose::STANDARD.encode(result.into_bytes());
 
                     // Use first 16 chars of base64-encoded hash for readability
                     let short_hash = &hash[..16.min(hash.len())];
@@ -249,9 +259,11 @@ fn merge_overlapping_detections(detections: &[Detection]) -> Vec<Detection> {
     // Sort by start position, then by confidence (descending)
     let mut sorted = detections.to_vec();
     sorted.sort_by(|a, b| {
-        a.start
-            .cmp(&b.start)
-            .then_with(|| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal))
+        a.start.cmp(&b.start).then_with(|| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
 
     let mut merged = Vec::new();
@@ -386,12 +398,7 @@ mod tests {
 
         let redactor = StandardRedactor::new(config);
         let text = "Email: test@example.com";
-        let detections = vec![create_detection(
-            PIIType::Email,
-            7,
-            23,
-            "test@example.com",
-        )];
+        let detections = vec![create_detection(PIIType::Email, 7, 23, "test@example.com")];
 
         let redacted = redactor.redact(text, &detections);
 
@@ -480,12 +487,7 @@ mod tests {
 
         let redactor = StandardRedactor::new(config);
         let text = "Contact: test@example.com";
-        let detections = vec![create_detection(
-            PIIType::Email,
-            9,
-            25,
-            "test@example.com",
-        )];
+        let detections = vec![create_detection(PIIType::Email, 9, 25, "test@example.com")];
 
         let redacted = redactor.redact(text, &detections);
         assert_eq!(redacted, "Contact: <EMAIL_REDACTED>");
@@ -509,10 +511,7 @@ mod tests {
         ];
 
         let redacted = redactor.redact(text, &detections);
-        assert_eq!(
-            redacted,
-            "IP: [IP_ADDRESS], Email: [EMAIL], Phone: [PHONE]"
-        );
+        assert_eq!(redacted, "IP: [IP_ADDRESS], Email: [EMAIL], Phone: [PHONE]");
     }
 
     #[test]
@@ -537,12 +536,7 @@ mod tests {
 
         let redactor = StandardRedactor::new(config);
         let text = "Email: test@example.com";
-        let detections = vec![create_detection(
-            PIIType::Email,
-            7,
-            23,
-            "test@example.com",
-        )];
+        let detections = vec![create_detection(PIIType::Email, 7, 23, "test@example.com")];
 
         // Should fall back to masking
         let redacted = redactor.redact(text, &detections);
@@ -906,7 +900,8 @@ mod tests {
         let text = "DB: postgres://user:password@localhost:5432/db";
 
         // Use JSON format to avoid colon splitting issues
-        let json_text = r#"{"name":"connection_string","text":"postgres://user:password@localhost:5432/db"}"#;
+        let json_text =
+            r#"{"name":"connection_string","text":"postgres://user:password@localhost:5432/db"}"#;
         let detections = vec![create_detection(PIIType::Custom, 4, 46, json_text)];
 
         let redacted = redactor.redact(text, &detections);

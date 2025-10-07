@@ -8,10 +8,13 @@
 //! Note: This is a simplified implementation. For production use, consider
 //! using the full tracing-opentelemetry integration.
 
-use opentelemetry::{trace::{Span, Status}, KeyValue};
+use opentelemetry::{
+    KeyValue,
+    trace::{Span, Status},
+};
 use opentelemetry_sdk::{
-    trace::{RandomIdGenerator, Sampler, TracerProvider},
     Resource,
+    trace::{RandomIdGenerator, Sampler, TracerProvider},
 };
 
 /// Tracer configuration
@@ -151,7 +154,10 @@ impl Default for RequestSpanAttributes {
 
 /// Add token usage attributes to a span
 pub fn record_token_usage(span: &mut impl Span, prompt_tokens: u32, completion_tokens: u32) {
-    span.set_attribute(KeyValue::new("llm.usage.prompt_tokens", prompt_tokens as i64));
+    span.set_attribute(KeyValue::new(
+        "llm.usage.prompt_tokens",
+        prompt_tokens as i64,
+    ));
     span.set_attribute(KeyValue::new(
         "llm.usage.completion_tokens",
         completion_tokens as i64,
@@ -208,12 +214,14 @@ mod tests {
         assert_eq!(kvs.len(), 5);
 
         // Check that all attributes are present
-        assert!(kvs
-            .iter()
-            .any(|kv| kv.key.as_str() == "llm.model" && kv.value.as_str() == "gpt-5-mini"));
-        assert!(kvs
-            .iter()
-            .any(|kv| kv.key.as_str() == "llm.provider" && kv.value.as_str() == "openai"));
+        assert!(
+            kvs.iter()
+                .any(|kv| kv.key.as_str() == "llm.model" && kv.value.as_str() == "gpt-5-mini")
+        );
+        assert!(
+            kvs.iter()
+                .any(|kv| kv.key.as_str() == "llm.provider" && kv.value.as_str() == "openai")
+        );
     }
 
     #[test]

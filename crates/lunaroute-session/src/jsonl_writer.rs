@@ -53,13 +53,15 @@ use crate::events::SessionEvent;
 use crate::writer::{SessionWriter, WriterResult};
 use async_trait::async_trait;
 use chrono::Utc;
-use lunaroute_storage::encryption::{encrypt, derive_key_from_password, generate_salt, KeyDerivationParams};
 use lru::LruCache;
+use lunaroute_storage::encryption::{
+    KeyDerivationParams, derive_key_from_password, encrypt, generate_salt,
+};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::{Mutex, Notify};
@@ -242,7 +244,8 @@ impl JsonlWriter {
         // Derive encryption key if password is provided
         let encryption_key = config.encryption_password.as_ref().map(|password| {
             // Use persistent salt if not explicitly provided
-            let salt = config.encryption_salt
+            let salt = config
+                .encryption_salt
                 .unwrap_or_else(|| Self::load_or_generate_persistent_salt(&sessions_dir));
             let params = KeyDerivationParams::default();
             derive_key_from_password(password, &salt, &params)
@@ -308,10 +311,7 @@ impl JsonlWriter {
             }
             Err(e) => HealthStatus {
                 healthy: false,
-                error: Some(format!(
-                    "Sessions directory is not writable: {}",
-                    e
-                )),
+                error: Some(format!("Sessions directory is not writable: {}", e)),
             },
         }
     }
@@ -334,7 +334,10 @@ impl JsonlWriter {
     }
 
     /// Open file for appending (used when cache miss)
-    async fn open_session_file(&self, session_id: &str) -> WriterResult<BufWriter<tokio::fs::File>> {
+    async fn open_session_file(
+        &self,
+        session_id: &str,
+    ) -> WriterResult<BufWriter<tokio::fs::File>> {
         let path = self.get_session_file_path(session_id)?;
 
         // Create directory if needed
@@ -438,9 +441,8 @@ impl JsonlWriter {
     /// Optionally encrypt data before writing
     fn encrypt_if_enabled(&self, data: &[u8]) -> WriterResult<Vec<u8>> {
         if let Some(key) = &self.encryption_key {
-            Ok(encrypt(data, key).map_err(|e| {
-                std::io::Error::other(format!("Encryption failed: {}", e))
-            })?)
+            Ok(encrypt(data, key)
+                .map_err(|e| std::io::Error::other(format!("Encryption failed: {}", e)))?)
         } else {
             Ok(data.to_vec())
         }
@@ -463,7 +465,9 @@ impl JsonlWriter {
                 return Err(e.into());
             }
             // Track bytes written
-            self.metrics.bytes_written.fetch_add(data.len() as u64, Ordering::Relaxed);
+            self.metrics
+                .bytes_written
+                .fetch_add(data.len() as u64, Ordering::Relaxed);
         }
 
         Ok(())
@@ -521,7 +525,9 @@ impl SessionWriter for JsonlWriter {
         }
 
         // Track events written
-        self.metrics.events_written.fetch_add(events_count, Ordering::Relaxed);
+        self.metrics
+            .events_written
+            .fetch_add(events_count, Ordering::Relaxed);
 
         Ok(())
     }
@@ -734,10 +740,12 @@ mod tests {
         let sessions_date_dir = dir.path().join(today.to_string());
         // The directory might not even exist if no valid sessions were written
         if sessions_date_dir.exists() {
-            let entries: Vec<_> = std::fs::read_dir(&sessions_date_dir)
-                .unwrap()
-                .collect();
-            assert_eq!(entries.len(), 0, "No session files should be created for invalid IDs");
+            let entries: Vec<_> = std::fs::read_dir(&sessions_date_dir).unwrap().collect();
+            assert_eq!(
+                entries.len(),
+                0,
+                "No session files should be created for invalid IDs"
+            );
         }
     }
 
@@ -818,7 +826,10 @@ mod tests {
         writer.flush().await.unwrap(); // Flush buffers before reading
 
         let today = Utc::now().format("%Y-%m-%d");
-        let expected_path = dir.path().join(today.to_string()).join(format!("{}.jsonl", session_id));
+        let expected_path = dir
+            .path()
+            .join(today.to_string())
+            .join(format!("{}.jsonl", session_id));
         assert!(expected_path.exists());
 
         // Read and verify the content
@@ -840,8 +851,14 @@ mod tests {
 
         // streaming_stats is flattened at the top level of Completed event
         let streaming_stats = &completed["streaming_stats"];
-        assert!(!streaming_stats.is_null(), "streaming_stats should not be null");
-        assert!(streaming_stats.is_object(), "streaming_stats should be an object");
+        assert!(
+            !streaming_stats.is_null(),
+            "streaming_stats should not be null"
+        );
+        assert!(
+            streaming_stats.is_object(),
+            "streaming_stats should be an object"
+        );
         assert_eq!(streaming_stats["total_chunks"], 28);
         assert_eq!(streaming_stats["time_to_first_token_ms"], 125);
         assert_eq!(streaming_stats["streaming_duration_ms"], 3375);
@@ -941,7 +958,10 @@ mod tests {
         // Verify all files exist and have correct content
         let today = Utc::now().format("%Y-%m-%d");
         for session_id in ["session-1", "session-2", "session-3"] {
-            let path = dir.path().join(today.to_string()).join(format!("{}.jsonl", session_id));
+            let path = dir
+                .path()
+                .join(today.to_string())
+                .join(format!("{}.jsonl", session_id));
             assert!(path.exists(), "Session file should exist: {}", session_id);
 
             let content = tokio::fs::read_to_string(&path).await.unwrap();
@@ -979,12 +999,12 @@ mod tests {
                 listener: "openai".to_string(),
                 is_streaming: false,
                 metadata: SessionMetadata {
-                client_ip: None,
-                user_agent: None,
-                api_version: None,
-                request_headers: HashMap::new(),
-                session_tags: vec![],
-            },
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
             };
             writer.write_event(&event).await.unwrap();
         }
@@ -994,7 +1014,10 @@ mod tests {
 
         // Verify all events were written
         let today = Utc::now().format("%Y-%m-%d");
-        let path = dir.path().join(today.to_string()).join("buffered-session.jsonl");
+        let path = dir
+            .path()
+            .join(today.to_string())
+            .join("buffered-session.jsonl");
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 10, "All 10 events should be written");
@@ -1036,16 +1059,28 @@ mod tests {
 
         // Read the raw file - should be encrypted (not readable JSON)
         let today = Utc::now().format("%Y-%m-%d");
-        let path = dir.path().join(today.to_string()).join("encrypted-session.jsonl");
+        let path = dir
+            .path()
+            .join(today.to_string())
+            .join("encrypted-session.jsonl");
         assert!(path.exists());
 
         let raw_content = tokio::fs::read(&path).await.unwrap();
 
         // Raw content should NOT contain plaintext
         let raw_str = String::from_utf8_lossy(&raw_content);
-        assert!(!raw_str.contains("encrypted-session"), "Session ID should be encrypted");
-        assert!(!raw_str.contains("req-encrypted-1"), "Request ID should be encrypted");
-        assert!(!raw_str.contains("192.168.1.1"), "IP address should be encrypted");
+        assert!(
+            !raw_str.contains("encrypted-session"),
+            "Session ID should be encrypted"
+        );
+        assert!(
+            !raw_str.contains("req-encrypted-1"),
+            "Request ID should be encrypted"
+        );
+        assert!(
+            !raw_str.contains("192.168.1.1"),
+            "IP address should be encrypted"
+        );
         assert!(!raw_str.contains("sensitive"), "Tags should be encrypted");
 
         // File should contain binary data (encrypted)
@@ -1053,7 +1088,10 @@ mod tests {
 
         // Each line should start with 12 bytes of nonce (binary)
         // This is a basic check that encryption was applied
-        assert!(raw_content[0..12].iter().any(|&b| b != 0), "Should have non-zero nonce bytes");
+        assert!(
+            raw_content[0..12].iter().any(|&b| b != 0),
+            "Should have non-zero nonce bytes"
+        );
     }
 
     #[tokio::test]
@@ -1117,12 +1155,21 @@ mod tests {
 
         // Read the file - should be plaintext JSON
         let today = Utc::now().format("%Y-%m-%d");
-        let path = dir.path().join(today.to_string()).join("unencrypted-session.jsonl");
+        let path = dir
+            .path()
+            .join(today.to_string())
+            .join("unencrypted-session.jsonl");
         let content = tokio::fs::read_to_string(&path).await.unwrap();
 
         // Should contain readable JSON
-        assert!(content.contains("unencrypted-session"), "Should contain plaintext session ID");
-        assert!(content.contains("req-plain-1"), "Should contain plaintext request ID");
+        assert!(
+            content.contains("unencrypted-session"),
+            "Should contain plaintext session ID"
+        );
+        assert!(
+            content.contains("req-plain-1"),
+            "Should contain plaintext request ID"
+        );
 
         // Should be parseable as JSON
         let lines: Vec<&str> = content.lines().collect();
@@ -1199,7 +1246,10 @@ mod tests {
         let writer = JsonlWriter::new(dir.path().to_path_buf());
 
         let health = writer.health_check().await;
-        assert!(health.healthy, "Health check should pass for writable directory");
+        assert!(
+            health.healthy,
+            "Health check should pass for writable directory"
+        );
         assert_eq!(health.error, None, "Should have no error message");
     }
 
@@ -1241,7 +1291,10 @@ mod tests {
         perms.set_mode(0o755); // rwxr-xr-x (owner has write)
         fs::set_permissions(&sessions_dir, perms).unwrap();
 
-        assert!(!health.healthy, "Health check should fail for read-only directory");
+        assert!(
+            !health.healthy,
+            "Health check should fail for read-only directory"
+        );
         assert!(health.error.is_some(), "Should have error message");
         assert!(
             health.error.unwrap().contains("not writable"),

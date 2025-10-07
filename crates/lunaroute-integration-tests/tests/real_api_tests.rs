@@ -43,9 +43,9 @@ async fn test_openai_real_api_simple_completion() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
-            custom_headers: None,
-            request_body_config: None,
-            response_body_config: None,
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -152,9 +152,9 @@ async fn test_openai_with_system_message() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
-            custom_headers: None,
-            request_body_config: None,
-            response_body_config: None,
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -241,9 +241,9 @@ async fn test_openai_error_handling_invalid_model() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
-            custom_headers: None,
-            request_body_config: None,
-            response_body_config: None,
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -284,9 +284,9 @@ async fn test_both_providers_sequential() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
-            custom_headers: None,
-            request_body_config: None,
-            response_body_config: None,
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let openai_connector = OpenAIConnector::new(openai_config).unwrap();
 
@@ -360,16 +360,18 @@ async fn test_openai_streaming_basic() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
-            custom_headers: None,
-            request_body_config: None,
-            response_body_config: None,
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
     let request = NormalizedRequest {
         messages: vec![Message {
             role: Role::User,
-            content: MessageContent::Text("Count from 1 to 5, each number on a new line.".to_string()),
+            content: MessageContent::Text(
+                "Count from 1 to 5, each number on a new line.".to_string(),
+            ),
             name: None,
             tool_calls: vec![],
             tool_call_id: None,
@@ -410,7 +412,10 @@ async fn test_openai_streaming_basic() {
                 assert!(usage.total_tokens > 0);
             }
             lunaroute_core::normalized::NormalizedStreamEvent::End { finish_reason } => {
-                assert_eq!(finish_reason, lunaroute_core::normalized::FinishReason::Stop);
+                assert_eq!(
+                    finish_reason,
+                    lunaroute_core::normalized::FinishReason::Stop
+                );
             }
             _ => {}
         }
@@ -442,7 +447,9 @@ async fn test_anthropic_streaming_basic() {
     let request = NormalizedRequest {
         messages: vec![Message {
             role: Role::User,
-            content: MessageContent::Text("Count from 1 to 5, each number on a new line.".to_string()),
+            content: MessageContent::Text(
+                "Count from 1 to 5, each number on a new line.".to_string(),
+            ),
             name: None,
             tool_calls: vec![],
             tool_call_id: None,
@@ -483,7 +490,10 @@ async fn test_anthropic_streaming_basic() {
                 assert!(usage.total_tokens > 0);
             }
             lunaroute_core::normalized::NormalizedStreamEvent::End { finish_reason } => {
-                assert_eq!(finish_reason, lunaroute_core::normalized::FinishReason::Stop);
+                assert_eq!(
+                    finish_reason,
+                    lunaroute_core::normalized::FinishReason::Stop
+                );
             }
             _ => {}
         }
@@ -509,9 +519,9 @@ async fn test_openai_streaming_with_system_prompt() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
-            custom_headers: None,
-            request_body_config: None,
-            response_body_config: None,
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let connector = OpenAIConnector::new(config).unwrap();
 
@@ -523,7 +533,10 @@ async fn test_openai_streaming_with_system_prompt() {
             tool_calls: vec![],
             tool_call_id: None,
         }],
-        system: Some("You are a helpful math tutor. Always answer in exactly one word or number.".to_string()),
+        system: Some(
+            "You are a helpful math tutor. Always answer in exactly one word or number."
+                .to_string(),
+        ),
         model: "gpt-5-mini".to_string(),
         max_tokens: Some(10),
         temperature: None,
@@ -544,9 +557,10 @@ async fn test_openai_streaming_with_system_prompt() {
         let event = event_result.unwrap();
 
         if let lunaroute_core::normalized::NormalizedStreamEvent::Delta { delta, .. } = event
-            && let Some(chunk) = delta.content {
-                content.push_str(&chunk);
-            }
+            && let Some(chunk) = delta.content
+        {
+            content.push_str(&chunk);
+        }
     }
 
     // Response should be very short due to system prompt
@@ -577,7 +591,10 @@ async fn test_anthropic_streaming_with_system_prompt() {
             tool_calls: vec![],
             tool_call_id: None,
         }],
-        system: Some("You are a helpful math tutor. Always answer in exactly one word or number.".to_string()),
+        system: Some(
+            "You are a helpful math tutor. Always answer in exactly one word or number."
+                .to_string(),
+        ),
         model: "claude-sonnet-4-5".to_string(),
         max_tokens: Some(10),
         temperature: Some(0.0),
@@ -598,9 +615,10 @@ async fn test_anthropic_streaming_with_system_prompt() {
         let event = event_result.unwrap();
 
         if let lunaroute_core::normalized::NormalizedStreamEvent::Delta { delta, .. } = event
-            && let Some(chunk) = delta.content {
-                content.push_str(&chunk);
-            }
+            && let Some(chunk) = delta.content
+        {
+            content.push_str(&chunk);
+        }
     }
 
     // Response should be very short due to system prompt
@@ -635,9 +653,9 @@ async fn test_anthropic_request_routed_to_openai_real_api() {
         base_url: "https://api.openai.com/v1".to_string(),
         organization: None,
         client_config: Default::default(),
-            custom_headers: None,
-            request_body_config: None,
-            response_body_config: None,
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let openai_connector = OpenAIConnector::new(openai_config).unwrap();
 
@@ -672,7 +690,11 @@ async fn test_anthropic_request_routed_to_openai_real_api() {
         .unwrap();
 
     // Verify response status
-    assert_eq!(response.status(), StatusCode::OK, "Expected 200 OK response");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Expected 200 OK response"
+    );
 
     // Parse Anthropic response
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -680,14 +702,26 @@ async fn test_anthropic_request_routed_to_openai_real_api() {
         .unwrap();
     let anthropic_response: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
-    println!("Received Anthropic response: {}", serde_json::to_string_pretty(&anthropic_response).unwrap());
+    println!(
+        "Received Anthropic response: {}",
+        serde_json::to_string_pretty(&anthropic_response).unwrap()
+    );
 
     // Verify Anthropic response structure
-    assert_eq!(anthropic_response["type"], "message", "Response should have type=message");
-    assert_eq!(anthropic_response["role"], "assistant", "Response should have role=assistant");
+    assert_eq!(
+        anthropic_response["type"], "message",
+        "Response should have type=message"
+    );
+    assert_eq!(
+        anthropic_response["role"], "assistant",
+        "Response should have role=assistant"
+    );
 
     // Verify content is an array (Anthropic format)
-    assert!(anthropic_response["content"].is_array(), "Content should be array in Anthropic format");
+    assert!(
+        anthropic_response["content"].is_array(),
+        "Content should be array in Anthropic format"
+    );
 
     // Extract and display content
     let content_blocks = anthropic_response["content"].as_array().unwrap();
@@ -701,14 +735,28 @@ async fn test_anthropic_request_routed_to_openai_real_api() {
     }
 
     // Verify usage is present (Anthropic format)
-    assert!(anthropic_response["usage"].is_object(), "Should have usage object");
+    assert!(
+        anthropic_response["usage"].is_object(),
+        "Should have usage object"
+    );
     let usage = &anthropic_response["usage"];
-    assert!(usage["input_tokens"].as_u64().unwrap() > 0, "Should have input tokens");
-    assert!(usage["output_tokens"].as_u64().unwrap() > 0, "Should have output tokens");
+    assert!(
+        usage["input_tokens"].as_u64().unwrap() > 0,
+        "Should have input tokens"
+    );
+    assert!(
+        usage["output_tokens"].as_u64().unwrap() > 0,
+        "Should have output tokens"
+    );
 
     // Verify model field
-    assert!(anthropic_response["model"].as_str().unwrap().contains("gpt"),
-            "Model should contain 'gpt' (from OpenAI)");
+    assert!(
+        anthropic_response["model"]
+            .as_str()
+            .unwrap()
+            .contains("gpt"),
+        "Model should contain 'gpt' (from OpenAI)"
+    );
 
     println!("✅ Success: Anthropic request → OpenAI API → Anthropic response");
     println!("   Translation complete! The full flow works:");
@@ -717,7 +765,9 @@ async fn test_anthropic_request_routed_to_openai_real_api() {
     println!("   3. Called real OpenAI API (gpt-5-mini)");
     println!("   4. Received OpenAI response");
     println!("   5. Translated back to Anthropic format");
-    println!("   6. Response has correct Anthropic structure (type, role, content array, usage, etc.)");
+    println!(
+        "   6. Response has correct Anthropic structure (type, role, content array, usage, etc.)"
+    );
 }
 
 #[tokio::test]
@@ -779,7 +829,11 @@ async fn test_openai_request_routed_to_anthropic_real_api() {
         .unwrap();
 
     // Verify response status
-    assert_eq!(response.status(), StatusCode::OK, "Expected 200 OK response");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Expected 200 OK response"
+    );
 
     // Parse OpenAI response
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -787,13 +841,22 @@ async fn test_openai_request_routed_to_anthropic_real_api() {
         .unwrap();
     let openai_response: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
-    println!("Received OpenAI response: {}", serde_json::to_string_pretty(&openai_response).unwrap());
+    println!(
+        "Received OpenAI response: {}",
+        serde_json::to_string_pretty(&openai_response).unwrap()
+    );
 
     // Verify OpenAI response structure
-    assert_eq!(openai_response["object"], "chat.completion", "Response should have object=chat.completion");
+    assert_eq!(
+        openai_response["object"], "chat.completion",
+        "Response should have object=chat.completion"
+    );
 
     // Verify choices array (OpenAI format)
-    assert!(openai_response["choices"].is_array(), "Should have choices array in OpenAI format");
+    assert!(
+        openai_response["choices"].is_array(),
+        "Should have choices array in OpenAI format"
+    );
     let choices = openai_response["choices"].as_array().unwrap();
     assert!(!choices.is_empty(), "Choices array should not be empty");
 
@@ -802,7 +865,10 @@ async fn test_openai_request_routed_to_anthropic_real_api() {
     assert_eq!(first_choice["index"], 0, "First choice should have index 0");
 
     let message = &first_choice["message"];
-    assert_eq!(message["role"], "assistant", "Message should have role=assistant");
+    assert_eq!(
+        message["role"], "assistant",
+        "Message should have role=assistant"
+    );
 
     let content = message["content"].as_str().unwrap();
     println!("   📝 Response text: '{}'", content);
@@ -811,15 +877,32 @@ async fn test_openai_request_routed_to_anthropic_real_api() {
     println!("   🏁 Finish reason: {}", finish_reason);
 
     // Verify usage is present (OpenAI format)
-    assert!(openai_response["usage"].is_object(), "Should have usage object");
+    assert!(
+        openai_response["usage"].is_object(),
+        "Should have usage object"
+    );
     let usage = &openai_response["usage"];
-    assert!(usage["prompt_tokens"].as_u64().unwrap() > 0, "Should have prompt tokens");
-    assert!(usage["completion_tokens"].as_u64().unwrap() > 0, "Should have completion tokens");
-    assert!(usage["total_tokens"].as_u64().unwrap() > 0, "Should have total tokens");
+    assert!(
+        usage["prompt_tokens"].as_u64().unwrap() > 0,
+        "Should have prompt tokens"
+    );
+    assert!(
+        usage["completion_tokens"].as_u64().unwrap() > 0,
+        "Should have completion tokens"
+    );
+    assert!(
+        usage["total_tokens"].as_u64().unwrap() > 0,
+        "Should have total tokens"
+    );
 
     // Verify model field
-    assert!(openai_response["model"].as_str().unwrap().contains("claude"),
-            "Model should contain 'claude' (from Anthropic)");
+    assert!(
+        openai_response["model"]
+            .as_str()
+            .unwrap()
+            .contains("claude"),
+        "Model should contain 'claude' (from Anthropic)"
+    );
 
     println!("✅ Success: OpenAI request → Anthropic API → OpenAI response");
     println!("   Translation complete! The full flow works:");

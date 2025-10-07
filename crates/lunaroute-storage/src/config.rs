@@ -159,7 +159,9 @@ impl ConfigStore for FileConfigStore {
             .map_err(|e| StorageError::Config(format!("Watch error: {}", e)))?;
 
         // Store watcher to keep it alive (prevents memory leak from std::mem::forget)
-        let mut watcher_guard = self.watcher.lock()
+        let mut watcher_guard = self
+            .watcher
+            .lock()
             .map_err(|e| StorageError::Config(format!("Failed to acquire watcher lock: {}", e)))?;
         *watcher_guard = Some(watcher);
 
@@ -306,8 +308,11 @@ mod tests {
         assert!(store.validate().await.is_err());
 
         // Write valid JSON
-        std::fs::write(&config_path, br#"{"name": "test", "value": 42, "enabled": true}"#)
-            .unwrap();
+        std::fs::write(
+            &config_path,
+            br#"{"name": "test", "value": 42, "enabled": true}"#,
+        )
+        .unwrap();
 
         // Validation should succeed
         assert!(store.validate().await.is_ok());
@@ -410,10 +415,12 @@ mod tests {
 
         let result = store.save(&invalid_config).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Validation failed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Validation failed")
+        );
     }
 
     #[tokio::test]

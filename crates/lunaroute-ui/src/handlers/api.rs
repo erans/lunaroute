@@ -1,8 +1,11 @@
 //! JSON API handlers
 
-use axum::{extract::{Path, Query, State}, Json};
-use serde::Deserialize;
 use crate::{models::*, queries, AppState};
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
+use serde::Deserialize;
 
 /// Query parameters for stats
 #[derive(Debug, Deserialize)]
@@ -11,7 +14,9 @@ pub struct StatsQuery {
     hours: i64,
 }
 
-fn default_hours() -> i64 { 24 }
+fn default_hours() -> i64 {
+    24
+}
 
 /// Query parameters for time series
 #[derive(Debug, Deserialize)]
@@ -20,7 +25,9 @@ pub struct TimeSeriesQuery {
     days: i64,
 }
 
-fn default_days() -> i64 { 7 }
+fn default_days() -> i64 {
+    7
+}
 
 /// Query parameters for timeline pagination
 #[derive(Debug, Deserialize)]
@@ -31,8 +38,12 @@ pub struct TimelineQuery {
     limit: i64,
 }
 
-fn default_offset() -> i64 { 0 }
-fn default_limit() -> i64 { 20 }
+fn default_offset() -> i64 {
+    0
+}
+fn default_limit() -> i64 {
+    20
+}
 
 /// Query parameters for sessions list pagination
 #[derive(Debug, Deserialize)]
@@ -45,7 +56,9 @@ pub struct SessionsQuery {
     model: Option<String>,
 }
 
-fn default_sessions_limit() -> i64 { 50 }
+fn default_sessions_limit() -> i64 {
+    50
+}
 
 /// Overview statistics
 pub async fn overview_stats(
@@ -54,7 +67,7 @@ pub async fn overview_stats(
 ) -> Json<OverviewStats> {
     let stats = queries::get_overview_stats(&state.db, params.hours)
         .await
-        .unwrap_or_else(|_| OverviewStats {
+        .unwrap_or(OverviewStats {
             total_sessions: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
@@ -80,9 +93,7 @@ pub async fn token_stats(
 
 /// Tool usage statistics
 pub async fn tool_stats(State(state): State<AppState>) -> Json<Vec<ToolUsage>> {
-    let stats = queries::get_tool_usage(&state.db)
-        .await
-        .unwrap_or_default();
+    let stats = queries::get_tool_usage(&state.db).await.unwrap_or_default();
     Json(stats)
 }
 
@@ -90,7 +101,7 @@ pub async fn tool_stats(State(state): State<AppState>) -> Json<Vec<ToolUsage>> {
 pub async fn cost_stats(State(state): State<AppState>) -> Json<CostStats> {
     let stats = queries::get_cost_stats(&state.db)
         .await
-        .unwrap_or_else(|_| CostStats {
+        .unwrap_or(CostStats {
             today: 0.0,
             this_week: 0.0,
             this_month: 0.0,
@@ -111,14 +122,14 @@ pub async fn model_stats(State(state): State<AppState>) -> Json<Vec<ModelUsage>>
 /// Sessions list with pagination and filtering
 pub async fn sessions_list(
     Query(params): Query<SessionsQuery>,
-    State(state): State<AppState>
+    State(state): State<AppState>,
 ) -> Json<Vec<SessionSummary>> {
     let sessions = queries::get_sessions_paginated(
         &state.db,
         params.offset,
         params.limit,
         params.user_agent.as_deref(),
-        params.model.as_deref()
+        params.model.as_deref(),
     )
     .await
     .unwrap_or_default();
@@ -135,9 +146,7 @@ pub async fn user_agents_list(State(state): State<AppState>) -> Json<Vec<String>
 
 /// Get available models
 pub async fn models_list(State(state): State<AppState>) -> Json<Vec<String>> {
-    let models = queries::get_models(&state.db)
-        .await
-        .unwrap_or_default();
+    let models = queries::get_models(&state.db).await.unwrap_or_default();
     Json(models)
 }
 

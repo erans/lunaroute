@@ -187,22 +187,22 @@ impl RuleMatcher {
         match self {
             RuleMatcher::ModelPattern { pattern, compiled } => {
                 // Get or compile regex (cached for performance)
-                let regex_opt = compiled.get_or_init(|| {
-                    match Regex::new(pattern) {
-                        Ok(regex) => Some(regex),
-                        Err(e) => {
-                            tracing::warn!(
-                                "Invalid regex pattern '{}' in routing rule: {}",
-                                pattern,
-                                e
-                            );
-                            None
-                        }
+                let regex_opt = compiled.get_or_init(|| match Regex::new(pattern) {
+                    Ok(regex) => Some(regex),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Invalid regex pattern '{}' in routing rule: {}",
+                            pattern,
+                            e
+                        );
+                        None
                     }
                 });
 
                 // Match against model name if regex compiled successfully
-                regex_opt.as_ref().is_some_and(|regex| regex.is_match(&request.model))
+                regex_opt
+                    .as_ref()
+                    .is_some_and(|regex| regex.is_match(&request.model))
             }
             RuleMatcher::Listener { listener } => {
                 // Match listener type
@@ -269,8 +269,7 @@ impl RouteTable {
     pub fn add_rule(&mut self, rule: RoutingRule) {
         self.rules.push(rule);
         // Re-sort after adding
-        self.rules
-            .sort_by(|a, b| b.priority.cmp(&a.priority));
+        self.rules.sort_by(|a, b| b.priority.cmp(&a.priority));
     }
 
     /// Find a matching route for the given request and context
@@ -935,10 +934,7 @@ mod tests {
         monitor.register_provider("new_provider");
 
         // No requests yet
-        assert_eq!(
-            monitor.get_status("new_provider"),
-            HealthStatus::Unknown
-        );
+        assert_eq!(monitor.get_status("new_provider"), HealthStatus::Unknown);
         // Unknown is treated as healthy for routing purposes
         assert!(monitor.is_healthy("new_provider"));
     }

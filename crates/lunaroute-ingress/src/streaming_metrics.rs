@@ -68,10 +68,9 @@ impl StreamingMetricsTracker {
         model: &str,
         metrics: &Option<std::sync::Arc<lunaroute_observability::Metrics>>,
     ) -> Result<(), String> {
-        if let (Ok(mut last), Ok(mut latencies)) = (
-            self.last_chunk_time.lock(),
-            self.chunk_latencies.lock(),
-        ) {
+        if let (Ok(mut last), Ok(mut latencies)) =
+            (self.last_chunk_time.lock(), self.chunk_latencies.lock())
+        {
             let latency = now.duration_since(*last).as_millis() as u64;
 
             // Cap latency array to prevent OOM
@@ -173,15 +172,26 @@ impl StreamingMetricsTracker {
         before_provider: Instant,
     ) -> FinalizedStreamingMetrics {
         // Extract all values (handle poisoned mutexes gracefully)
-        let ttft_ms = self.ttft_time.lock()
+        let ttft_ms = self
+            .ttft_time
+            .lock()
             .ok()
             .and_then(|guard| *guard)
             .map(|ttft| ttft.duration_since(before_provider).as_millis() as u64)
             .unwrap_or(0);
 
         let total_chunks = self.chunk_count.lock().ok().map(|c| *c).unwrap_or(0);
-        let latencies = self.chunk_latencies.lock().ok().map(|l| l.clone()).unwrap_or_default();
-        let finish_reason = self.stream_finish_reason.lock().ok().and_then(|f| f.clone());
+        let latencies = self
+            .chunk_latencies
+            .lock()
+            .ok()
+            .map(|l| l.clone())
+            .unwrap_or_default();
+        let finish_reason = self
+            .stream_finish_reason
+            .lock()
+            .ok()
+            .and_then(|f| f.clone());
 
         // Calculate percentiles (safe index calculation to avoid out-of-bounds)
         let (p50, p95, p99, max, min, avg) = if !latencies.is_empty() {
@@ -197,8 +207,8 @@ impl StreamingMetricsTracker {
             let p50 = sorted[p50_idx];
             let p95 = sorted[p95_idx];
             let p99 = sorted[p99_idx];
-            let max = sorted[len - 1];  // Safe: len > 0
-            let min = sorted[0];        // Safe: len > 0
+            let max = sorted[len - 1]; // Safe: len > 0
+            let min = sorted[0]; // Safe: len > 0
             let avg = (sorted.iter().sum::<u64>() as f64) / (len as f64);
 
             (Some(p50), Some(p95), Some(p99), max, min, avg)

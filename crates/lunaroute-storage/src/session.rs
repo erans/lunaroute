@@ -1,7 +1,7 @@
 //! File-based session storage with compression
 
 use crate::atomic_writer::AtomicWriter;
-use crate::compression::{compress, decompress, CompressionAlgorithm};
+use crate::compression::{CompressionAlgorithm, compress, decompress};
 use crate::rolling_writer::RollingWriter;
 use crate::session_index::SessionIndex;
 use crate::traits::{
@@ -25,7 +25,9 @@ impl FileSessionStore {
     fn validate_session_id(id: &str) -> StorageResult<()> {
         // Check for empty or too long IDs
         if id.is_empty() {
-            return Err(StorageError::InvalidData("Session ID cannot be empty".into()));
+            return Err(StorageError::InvalidData(
+                "Session ID cannot be empty".into(),
+            ));
         }
 
         if id.len() > 255 {
@@ -44,7 +46,9 @@ impl FileSessionStore {
         }
 
         // Only allow alphanumeric, dash, underscore
-        let is_valid = id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_');
+        let is_valid = id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
         if !is_valid {
             return Err(StorageError::InvalidData(format!(
                 "Invalid session ID '{}': only alphanumeric, dash, and underscore allowed",
@@ -301,7 +305,8 @@ impl SessionStore for FileSessionStore {
         // Read stream events from all rolling files
         let stream_events_path = self.stream_events_path(session_id);
         let stream_events = if stream_events_path.with_extension("ndjson.0").exists()
-            || stream_events_path.exists() {
+            || stream_events_path.exists()
+        {
             RollingWriter::read_all(&stream_events_path)?
         } else {
             Vec::new()
@@ -378,7 +383,10 @@ mod tests {
         let store = FileSessionStore::new(temp_dir.path()).unwrap();
 
         let metadata = create_test_metadata("session_1");
-        store.create_session("session_1", metadata.clone()).await.unwrap();
+        store
+            .create_session("session_1", metadata.clone())
+            .await
+            .unwrap();
 
         let loaded = store.get_metadata("session_1").await.unwrap();
         assert_eq!(loaded.id, "session_1");
@@ -396,8 +404,14 @@ mod tests {
         let request_data = b"test request data";
         let response_data = b"test response data";
 
-        store.append_request("session_2", request_data).await.unwrap();
-        store.append_response("session_2", response_data).await.unwrap();
+        store
+            .append_request("session_2", request_data)
+            .await
+            .unwrap();
+        store
+            .append_response("session_2", response_data)
+            .await
+            .unwrap();
 
         let session = store.read_session("session_2").await.unwrap();
         assert_eq!(session.request, request_data);
@@ -415,9 +429,18 @@ mod tests {
         // Need a request for read_session to work
         store.append_request("session_3", b"request").await.unwrap();
 
-        store.append_stream_event("session_3", b"event1").await.unwrap();
-        store.append_stream_event("session_3", b"event2").await.unwrap();
-        store.append_stream_event("session_3", b"event3").await.unwrap();
+        store
+            .append_stream_event("session_3", b"event1")
+            .await
+            .unwrap();
+        store
+            .append_stream_event("session_3", b"event2")
+            .await
+            .unwrap();
+        store
+            .append_stream_event("session_3", b"event3")
+            .await
+            .unwrap();
 
         let session = store.read_session("session_3").await.unwrap();
         assert_eq!(session.stream_events.len(), 3);
@@ -433,8 +456,15 @@ mod tests {
         // Create multiple sessions
         for i in 1..=3 {
             let mut metadata = create_test_metadata(&format!("session_{}", i));
-            metadata.provider = if i == 1 { "openai".to_string() } else { "anthropic".to_string() };
-            store.create_session(&format!("session_{}", i), metadata).await.unwrap();
+            metadata.provider = if i == 1 {
+                "openai".to_string()
+            } else {
+                "anthropic".to_string()
+            };
+            store
+                .create_session(&format!("session_{}", i), metadata)
+                .await
+                .unwrap();
         }
 
         // Filter by provider
@@ -476,12 +506,18 @@ mod tests {
         // Create old session
         let mut old_metadata = create_test_metadata("old_session");
         old_metadata.created_at = now - 100000;
-        store.create_session("old_session", old_metadata).await.unwrap();
+        store
+            .create_session("old_session", old_metadata)
+            .await
+            .unwrap();
 
         // Create recent session
         let mut recent_metadata = create_test_metadata("recent_session");
         recent_metadata.created_at = now - 100;
-        store.create_session("recent_session", recent_metadata).await.unwrap();
+        store
+            .create_session("recent_session", recent_metadata)
+            .await
+            .unwrap();
 
         // Prune sessions older than 1000 seconds
         let retention = RetentionPolicy {
@@ -513,10 +549,16 @@ mod tests {
         for algo in algorithms {
             let store = FileSessionStore::with_compression(temp_dir.path(), algo).unwrap();
             let metadata = create_test_metadata("test_compression");
-            store.create_session("test_compression", metadata).await.unwrap();
+            store
+                .create_session("test_compression", metadata)
+                .await
+                .unwrap();
 
             let data = b"Test data for compression";
-            store.append_request("test_compression", data).await.unwrap();
+            store
+                .append_request("test_compression", data)
+                .await
+                .unwrap();
 
             let session = store.read_session("test_compression").await.unwrap();
             assert_eq!(session.request, data);

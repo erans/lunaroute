@@ -1,8 +1,8 @@
 //! Dashboard page handler
 
+use crate::AppState;
 use askama::Template;
 use axum::{extract::State, response::Html};
-use crate::AppState;
 
 #[derive(Template)]
 #[template(path = "dashboard.html")]

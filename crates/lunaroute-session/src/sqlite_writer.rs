@@ -1,7 +1,9 @@
 //! SQLite session writer implementation
 
 #[cfg(feature = "sqlite-writer")]
-use crate::events::{FinalSessionStats, SessionEvent, StreamingStats, TokenTotals, ToolUsageSummary};
+use crate::events::{
+    FinalSessionStats, SessionEvent, StreamingStats, TokenTotals, ToolUsageSummary,
+};
 #[cfg(feature = "sqlite-writer")]
 use crate::search::{SearchResults, SessionAggregates, SessionFilter, SessionRecord, SortOrder};
 #[cfg(feature = "sqlite-writer")]
@@ -9,9 +11,11 @@ use crate::writer::{SessionWriter, WriterError, WriterResult};
 #[cfg(feature = "sqlite-writer")]
 use async_trait::async_trait;
 #[cfg(feature = "sqlite-writer")]
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous};
-#[cfg(feature = "sqlite-writer")]
 use sqlx::Row;
+#[cfg(feature = "sqlite-writer")]
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
+};
 #[cfg(feature = "sqlite-writer")]
 use std::collections::HashMap;
 #[cfg(feature = "sqlite-writer")]
@@ -55,7 +59,9 @@ impl SqliteWriter {
     fn validate_session_id(session_id: &str) -> WriterResult<()> {
         // Check for empty or too long IDs
         if session_id.is_empty() {
-            return Err(WriterError::InvalidData("Session ID cannot be empty".into()));
+            return Err(WriterError::InvalidData(
+                "Session ID cannot be empty".into(),
+            ));
         }
 
         if session_id.len() > 255 {
@@ -208,10 +214,12 @@ impl SqliteWriter {
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
         // Index for time range queries (critical for performance)
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at DESC)")
-            .execute(pool)
-            .await
-            .map_err(|e| WriterError::Database(e.to_string()))?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at DESC)",
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| WriterError::Database(e.to_string()))?;
 
         // Index for user_agent queries
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_user_agent ON sessions(user_agent)")
@@ -256,20 +264,24 @@ impl SqliteWriter {
         .await
         .map_err(|e| WriterError::Database(e.to_string()))?;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_session_stats_session ON session_stats(session_id)")
-            .execute(pool)
-            .await
-            .map_err(|e| WriterError::Database(e.to_string()))?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_session_stats_session ON session_stats(session_id)",
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| WriterError::Database(e.to_string()))?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_session_stats_model ON session_stats(model_name, created_at DESC)")
             .execute(pool)
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_session_stats_user_agent ON session_stats(user_agent)")
-            .execute(pool)
-            .await
-            .map_err(|e| WriterError::Database(e.to_string()))?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_session_stats_user_agent ON session_stats(user_agent)",
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| WriterError::Database(e.to_string()))?;
 
         // Index for time-series queries per session
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_session_stats_session_time ON session_stats(session_id, created_at DESC)")
@@ -347,10 +359,12 @@ impl SqliteWriter {
         .map_err(|e| WriterError::Database(e.to_string()))?;
 
         // Stream metrics indexes
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_stream_metrics_session ON stream_metrics(session_id)")
-            .execute(pool)
-            .await
-            .map_err(|e| WriterError::Database(e.to_string()))?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_stream_metrics_session ON stream_metrics(session_id)",
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| WriterError::Database(e.to_string()))?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_stream_metrics_ttft ON stream_metrics(time_to_first_token_ms)")
             .execute(pool)
@@ -393,32 +407,59 @@ impl SqliteWriter {
             sqlx::query("ALTER TABLE sessions ADD COLUMN reasoning_tokens INTEGER DEFAULT 0")
                 .execute(pool)
                 .await
-                .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (reasoning_tokens): {}", e)))?;
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 1->2 failed (reasoning_tokens): {}",
+                        e
+                    ))
+                })?;
 
             sqlx::query("ALTER TABLE sessions ADD COLUMN cache_read_tokens INTEGER DEFAULT 0")
                 .execute(pool)
                 .await
-                .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (cache_read_tokens): {}", e)))?;
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 1->2 failed (cache_read_tokens): {}",
+                        e
+                    ))
+                })?;
 
             sqlx::query("ALTER TABLE sessions ADD COLUMN cache_creation_tokens INTEGER DEFAULT 0")
                 .execute(pool)
                 .await
-                .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (cache_creation_tokens): {}", e)))?;
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 1->2 failed (cache_creation_tokens): {}",
+                        e
+                    ))
+                })?;
 
             sqlx::query("ALTER TABLE sessions ADD COLUMN audio_input_tokens INTEGER DEFAULT 0")
                 .execute(pool)
                 .await
-                .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (audio_input_tokens): {}", e)))?;
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 1->2 failed (audio_input_tokens): {}",
+                        e
+                    ))
+                })?;
 
             sqlx::query("ALTER TABLE sessions ADD COLUMN audio_output_tokens INTEGER DEFAULT 0")
                 .execute(pool)
                 .await
-                .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (audio_output_tokens): {}", e)))?;
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 1->2 failed (audio_output_tokens): {}",
+                        e
+                    ))
+                })?;
 
             sqlx::query("UPDATE schema_version SET version = 2")
                 .execute(pool)
                 .await
-                .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (version update): {}", e)))?;
+                .map_err(|e| {
+                    WriterError::Database(format!("Migration 1->2 failed (version update): {}", e))
+                })?;
 
             current_version = 2;
         }
@@ -428,11 +469,16 @@ impl SqliteWriter {
         if current_version == 2 {
             // Check if sessions table still exists (might have been dropped in a previous failed migration)
             let sessions_exists: bool = sqlx::query_scalar(
-                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='sessions'"
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='sessions'",
             )
             .fetch_one(pool)
             .await
-            .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (check sessions exists): {}", e)))?;
+            .map_err(|e| {
+                WriterError::Database(format!(
+                    "Migration 2->3 failed (check sessions exists): {}",
+                    e
+                ))
+            })?;
 
             if !sessions_exists {
                 // Migration was partially completed, just rename sessions_new if it exists
@@ -447,7 +493,12 @@ impl SqliteWriter {
                     sqlx::query("ALTER TABLE sessions_new RENAME TO sessions")
                         .execute(pool)
                         .await
-                        .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (rename table): {}", e)))?;
+                        .map_err(|e| {
+                            WriterError::Database(format!(
+                                "Migration 2->3 failed (rename table): {}",
+                                e
+                            ))
+                        })?;
 
                     // Recreate indexes
                     sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC)")
@@ -470,7 +521,12 @@ impl SqliteWriter {
                 sqlx::query("UPDATE schema_version SET version = 3")
                     .execute(pool)
                     .await
-                    .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (version update): {}", e)))?;
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 2->3 failed (version update): {}",
+                            e
+                        ))
+                    })?;
 
                 #[allow(unused_assignments)]
                 {
@@ -484,7 +540,12 @@ impl SqliteWriter {
             sqlx::query("DROP TABLE IF EXISTS sessions_new")
                 .execute(pool)
                 .await
-                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (drop sessions_new): {}", e)))?;
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 2->3 failed (drop sessions_new): {}",
+                        e
+                    ))
+                })?;
 
             // Create new table with updated formula
             sqlx::query(
@@ -534,7 +595,9 @@ impl SqliteWriter {
             )
             .execute(pool)
             .await
-            .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (create new table): {}", e)))?;
+            .map_err(|e| {
+                WriterError::Database(format!("Migration 2->3 failed (create new table): {}", e))
+            })?;
 
             // Copy data from old table to new table
             sqlx::query(
@@ -552,25 +615,38 @@ impl SqliteWriter {
             )
             .execute(pool)
             .await
-            .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (copy data): {}", e)))?;
+            .map_err(|e| {
+                WriterError::Database(format!("Migration 2->3 failed (copy data): {}", e))
+            })?;
 
             // Drop old table
             sqlx::query("DROP TABLE sessions")
                 .execute(pool)
                 .await
-                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (drop old table): {}", e)))?;
+                .map_err(|e| {
+                    WriterError::Database(format!("Migration 2->3 failed (drop old table): {}", e))
+                })?;
 
             // Rename new table
             sqlx::query("ALTER TABLE sessions_new RENAME TO sessions")
                 .execute(pool)
                 .await
-                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (rename table): {}", e)))?;
+                .map_err(|e| {
+                    WriterError::Database(format!("Migration 2->3 failed (rename table): {}", e))
+                })?;
 
             // Recreate indexes
-            sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC)")
-                .execute(pool)
-                .await
-                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_created): {}", e)))?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC)",
+            )
+            .execute(pool)
+            .await
+            .map_err(|e| {
+                WriterError::Database(format!(
+                    "Migration 2->3 failed (idx_sessions_created): {}",
+                    e
+                ))
+            })?;
 
             sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_provider ON sessions(provider, created_at DESC)")
                 .execute(pool)
@@ -586,7 +662,9 @@ impl SqliteWriter {
             sqlx::query("UPDATE schema_version SET version = 3")
                 .execute(pool)
                 .await
-                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (version update): {}", e)))?;
+                .map_err(|e| {
+                    WriterError::Database(format!("Migration 2->3 failed (version update): {}", e))
+                })?;
 
             #[allow(unused_assignments)]
             {
@@ -692,10 +770,7 @@ impl SqliteWriter {
     }
 
     /// Get session aggregates for the given filter
-    pub async fn get_aggregates(
-        &self,
-        filter: &SessionFilter,
-    ) -> WriterResult<SessionAggregates> {
+    pub async fn get_aggregates(&self, filter: &SessionFilter) -> WriterResult<SessionAggregates> {
         filter.validate().map_err(WriterError::Database)?;
 
         let (where_clause, bind_values) = Self::build_where_clause(filter);
@@ -868,38 +943,69 @@ impl SqliteWriter {
         }
 
         if !filter.providers.is_empty() {
-            let placeholders = filter.providers.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let placeholders = filter
+                .providers
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
             conditions.push(format!("provider IN ({})", placeholders));
             bind_values.extend(filter.providers.clone());
         }
 
         if !filter.models.is_empty() {
-            let placeholders = filter.models.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            conditions.push(format!("(model_requested IN ({}) OR model_used IN ({}))", placeholders, placeholders));
+            let placeholders = filter
+                .models
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            conditions.push(format!(
+                "(model_requested IN ({}) OR model_used IN ({}))",
+                placeholders, placeholders
+            ));
             bind_values.extend(filter.models.clone());
             bind_values.extend(filter.models.clone());
         }
 
         if !filter.request_ids.is_empty() {
-            let placeholders = filter.request_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let placeholders = filter
+                .request_ids
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
             conditions.push(format!("request_id IN ({})", placeholders));
             bind_values.extend(filter.request_ids.clone());
         }
 
         if !filter.session_ids.is_empty() {
-            let placeholders = filter.session_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let placeholders = filter
+                .session_ids
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
             conditions.push(format!("session_id IN ({})", placeholders));
             bind_values.extend(filter.session_ids.clone());
         }
 
         if let Some(success) = filter.success {
             conditions.push("success = ?".to_string());
-            bind_values.push(if success { "1".to_string() } else { "0".to_string() });
+            bind_values.push(if success {
+                "1".to_string()
+            } else {
+                "0".to_string()
+            });
         }
 
         if let Some(is_streaming) = filter.is_streaming {
             conditions.push("is_streaming = ?".to_string());
-            bind_values.push(if is_streaming { "1".to_string() } else { "0".to_string() });
+            bind_values.push(if is_streaming {
+                "1".to_string()
+            } else {
+                "0".to_string()
+            });
         }
 
         if let Some(min_tokens) = filter.min_tokens {
@@ -923,19 +1029,31 @@ impl SqliteWriter {
         }
 
         if !filter.client_ips.is_empty() {
-            let placeholders = filter.client_ips.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let placeholders = filter
+                .client_ips
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
             conditions.push(format!("client_ip IN ({})", placeholders));
             bind_values.extend(filter.client_ips.clone());
         }
 
         if !filter.finish_reasons.is_empty() {
-            let placeholders = filter.finish_reasons.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let placeholders = filter
+                .finish_reasons
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
             conditions.push(format!("finish_reason IN ({})", placeholders));
             bind_values.extend(filter.finish_reasons.clone());
         }
 
         if let Some(ref text_search) = filter.text_search {
-            conditions.push("(request_text LIKE ? ESCAPE '\\' OR response_text LIKE ? ESCAPE '\\')".to_string());
+            conditions.push(
+                "(request_text LIKE ? ESCAPE '\\' OR response_text LIKE ? ESCAPE '\\')".to_string(),
+            );
             // Escape SQL LIKE metacharacters to prevent injection
             let escaped = text_search
                 .replace('\\', "\\\\")
@@ -1018,7 +1136,8 @@ impl SessionWriter for SqliteWriter {
                     time_to_first_token_ms,
                     ..
                 } => {
-                    let ttft = Self::safe_u64_to_i64(*time_to_first_token_ms, "time_to_first_token_ms")?;
+                    let ttft =
+                        Self::safe_u64_to_i64(*time_to_first_token_ms, "time_to_first_token_ms")?;
                     sqlx::query(
                         r#"
                         UPDATE sessions
@@ -1073,17 +1192,24 @@ impl SessionWriter for SqliteWriter {
                     let thinking_tokens = stats.tokens.thinking_tokens.map(Self::safe_u32_to_i64);
                     let reasoning_tokens = stats.tokens.reasoning_tokens.map(Self::safe_u32_to_i64);
                     let input_tokens = Self::safe_u32_to_i64(stats.tokens.input_tokens);
-                    let provider_latency = Self::safe_u64_to_i64(stats.provider_latency_ms, "provider_latency_ms")?;
+                    let provider_latency =
+                        Self::safe_u64_to_i64(stats.provider_latency_ms, "provider_latency_ms")?;
                     let chunk_count = stats.chunk_count.map(Self::safe_u32_to_i64);
-                    let streaming_duration = stats.streaming_duration_ms
+                    let streaming_duration = stats
+                        .streaming_duration_ms
                         .map(|d| Self::safe_u64_to_i64(d, "streaming_duration_ms"))
                         .transpose()?;
                     let cache_read = stats.tokens.cache_read_tokens.map(Self::safe_u32_to_i64);
-                    let cache_creation = stats.tokens.cache_creation_tokens.map(Self::safe_u32_to_i64);
+                    let cache_creation = stats
+                        .tokens
+                        .cache_creation_tokens
+                        .map(Self::safe_u32_to_i64);
                     let audio_input = stats.tokens.audio_input_tokens.map(Self::safe_u32_to_i64);
                     let audio_output = stats.tokens.audio_output_tokens.map(Self::safe_u32_to_i64);
-                    let response_size = Self::safe_usize_to_i64(stats.response_size_bytes, "response_size_bytes")?;
-                    let content_blocks = Self::safe_usize_to_i64(stats.content_blocks, "content_blocks")?;
+                    let response_size =
+                        Self::safe_usize_to_i64(stats.response_size_bytes, "response_size_bytes")?;
+                    let content_blocks =
+                        Self::safe_usize_to_i64(stats.content_blocks, "content_blocks")?;
 
                     sqlx::query(
                         r#"
@@ -1170,7 +1296,8 @@ impl SessionWriter for SqliteWriter {
 
                     // Insert tool calls
                     for tool in &stats.tool_calls {
-                        let exec_time = tool.execution_time_ms
+                        let exec_time = tool
+                            .execution_time_ms
                             .map(|t| Self::safe_u64_to_i64(t, "tool execution_time_ms"))
                             .transpose()?;
 
@@ -1278,15 +1405,32 @@ impl SqliteWriter {
         // Update session with completion data AND token totals from final_stats
         // Uses MAX() to avoid double-counting: for non-streaming sessions, ResponseRecorded already sets tokens
         // For streaming/passthrough mode, StatsUpdated events accumulate tokens, and this ensures final_stats value is used
-        let total_duration = Self::safe_u64_to_i64(final_stats.total_duration_ms, "total_duration_ms")?;
-        let input_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_input, "input_tokens")?;
-        let output_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_output, "output_tokens")?;
-        let thinking_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_thinking, "thinking_tokens")?;
-        let reasoning_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_reasoning, "reasoning_tokens")?;
-        let cache_read_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_cache_read, "cache_read_tokens")?;
-        let cache_creation_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_cache_creation, "cache_creation_tokens")?;
-        let audio_input_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_audio_input, "audio_input_tokens")?;
-        let audio_output_tokens = Self::safe_u64_to_i64(final_stats.total_tokens.total_audio_output, "audio_output_tokens")?;
+        let total_duration =
+            Self::safe_u64_to_i64(final_stats.total_duration_ms, "total_duration_ms")?;
+        let input_tokens =
+            Self::safe_u64_to_i64(final_stats.total_tokens.total_input, "input_tokens")?;
+        let output_tokens =
+            Self::safe_u64_to_i64(final_stats.total_tokens.total_output, "output_tokens")?;
+        let thinking_tokens =
+            Self::safe_u64_to_i64(final_stats.total_tokens.total_thinking, "thinking_tokens")?;
+        let reasoning_tokens =
+            Self::safe_u64_to_i64(final_stats.total_tokens.total_reasoning, "reasoning_tokens")?;
+        let cache_read_tokens = Self::safe_u64_to_i64(
+            final_stats.total_tokens.total_cache_read,
+            "cache_read_tokens",
+        )?;
+        let cache_creation_tokens = Self::safe_u64_to_i64(
+            final_stats.total_tokens.total_cache_creation,
+            "cache_creation_tokens",
+        )?;
+        let audio_input_tokens = Self::safe_u64_to_i64(
+            final_stats.total_tokens.total_audio_input,
+            "audio_input_tokens",
+        )?;
+        let audio_output_tokens = Self::safe_u64_to_i64(
+            final_stats.total_tokens.total_audio_output,
+            "audio_output_tokens",
+        )?;
 
         sqlx::query(
             r#"
@@ -1361,11 +1505,16 @@ impl SqliteWriter {
             let input_tokens = Self::safe_u64_to_i64(tokens.total_input, "input_tokens")?;
             let output_tokens = Self::safe_u64_to_i64(tokens.total_output, "output_tokens")?;
             let thinking_tokens = Self::safe_u64_to_i64(tokens.total_thinking, "thinking_tokens")?;
-            let reasoning_tokens = Self::safe_u64_to_i64(tokens.total_reasoning, "reasoning_tokens")?;
-            let cache_read_tokens = Self::safe_u64_to_i64(tokens.total_cache_read, "cache_read_tokens")?;
-            let cache_creation_tokens = Self::safe_u64_to_i64(tokens.total_cache_creation, "cache_creation_tokens")?;
-            let audio_input_tokens = Self::safe_u64_to_i64(tokens.total_audio_input, "audio_input_tokens")?;
-            let audio_output_tokens = Self::safe_u64_to_i64(tokens.total_audio_output, "audio_output_tokens")?;
+            let reasoning_tokens =
+                Self::safe_u64_to_i64(tokens.total_reasoning, "reasoning_tokens")?;
+            let cache_read_tokens =
+                Self::safe_u64_to_i64(tokens.total_cache_read, "cache_read_tokens")?;
+            let cache_creation_tokens =
+                Self::safe_u64_to_i64(tokens.total_cache_creation, "cache_creation_tokens")?;
+            let audio_input_tokens =
+                Self::safe_u64_to_i64(tokens.total_audio_input, "audio_input_tokens")?;
+            let audio_output_tokens =
+                Self::safe_u64_to_i64(tokens.total_audio_output, "audio_output_tokens")?;
 
             sqlx::query(
                 r#"
@@ -1427,7 +1576,10 @@ impl SqliteWriter {
         {
             for (tool_name, tool_stats) in &tool_summary.by_tool {
                 let call_count = Self::safe_u32_to_i64(tool_stats.call_count);
-                let avg_time = Self::safe_u64_to_i64(tool_stats.avg_execution_time_ms, "tool avg_execution_time_ms")?;
+                let avg_time = Self::safe_u64_to_i64(
+                    tool_stats.avg_execution_time_ms,
+                    "tool avg_execution_time_ms",
+                )?;
                 let error_count = Self::safe_u32_to_i64(tool_stats.error_count);
 
                 sqlx::query(
@@ -1460,9 +1612,18 @@ impl SqliteWriter {
 
         // Insert into session_stats if we have model information
         // This is used in passthrough mode to record per-request stats
-        tracing::debug!("handle_stats_updated: model_used={:?}, has_tokens={}", model_used, token_updates.is_some());
+        tracing::debug!(
+            "handle_stats_updated: model_used={:?}, has_tokens={}",
+            model_used,
+            token_updates.is_some()
+        );
         if let Some(model) = model_used {
-            tracing::debug!("Inserting into session_stats for session={}, request={}, model={}", session_id, request_id, model);
+            tracing::debug!(
+                "Inserting into session_stats for session={}, request={}, model={}",
+                session_id,
+                request_id,
+                model
+            );
             let input_tokens = if let Some(tokens) = token_updates {
                 Self::safe_u64_to_i64(tokens.total_input, "input_tokens")?
             } else {
@@ -1517,7 +1678,8 @@ impl SqliteWriter {
                 0
             };
 
-            let response_size = Self::safe_usize_to_i64(response_size_bytes, "response_size_bytes")?;
+            let response_size =
+                Self::safe_usize_to_i64(response_size_bytes, "response_size_bytes")?;
             let content_blocks_i64 = Self::safe_usize_to_i64(content_blocks, "content_blocks")?;
             let has_refusal_i64 = if has_refusal { 1i64 } else { 0i64 };
 
@@ -1529,7 +1691,9 @@ impl SqliteWriter {
             };
 
             // Check if we have tool calls
-            let has_tools = tool_call_updates.map(|t| t.total_tool_calls > 0).unwrap_or(false);
+            let has_tools = tool_call_updates
+                .map(|t| t.total_tool_calls > 0)
+                .unwrap_or(false);
             let has_tools_i64 = if has_tools { 1i64 } else { 0i64 };
 
             sqlx::query(
@@ -1591,7 +1755,10 @@ impl SqliteWriter {
         // Using ON CONFLICT to handle duplicates (update with latest values)
         for (tool_name, tool_stats) in &final_stats.tool_summary.by_tool {
             let call_count = Self::safe_u32_to_i64(tool_stats.call_count);
-            let avg_time = Self::safe_u64_to_i64(tool_stats.avg_execution_time_ms, "tool avg_execution_time_ms")?;
+            let avg_time = Self::safe_u64_to_i64(
+                tool_stats.avg_execution_time_ms,
+                "tool avg_execution_time_ms",
+            )?;
             let error_count = Self::safe_u32_to_i64(tool_stats.error_count);
 
             sqlx::query(
@@ -1631,14 +1798,31 @@ impl SqliteWriter {
         request_id: &str,
         streaming_stats: &StreamingStats,
     ) -> WriterResult<()> {
-        let ttft = Self::safe_u64_to_i64(streaming_stats.time_to_first_token_ms, "time_to_first_token_ms")?;
+        let ttft = Self::safe_u64_to_i64(
+            streaming_stats.time_to_first_token_ms,
+            "time_to_first_token_ms",
+        )?;
         let total_chunks = Self::safe_u32_to_i64(streaming_stats.total_chunks);
-        let duration = Self::safe_u64_to_i64(streaming_stats.streaming_duration_ms, "streaming_duration_ms")?;
-        let p50 = streaming_stats.p50_chunk_latency_ms.map(|v| Self::safe_u64_to_i64(v, "p50_chunk_latency")).transpose()?;
-        let p95 = streaming_stats.p95_chunk_latency_ms.map(|v| Self::safe_u64_to_i64(v, "p95_chunk_latency")).transpose()?;
-        let p99 = streaming_stats.p99_chunk_latency_ms.map(|v| Self::safe_u64_to_i64(v, "p99_chunk_latency")).transpose()?;
-        let max_latency = Self::safe_u64_to_i64(streaming_stats.max_chunk_latency_ms, "max_chunk_latency_ms")?;
-        let min_latency = Self::safe_u64_to_i64(streaming_stats.min_chunk_latency_ms, "min_chunk_latency_ms")?;
+        let duration = Self::safe_u64_to_i64(
+            streaming_stats.streaming_duration_ms,
+            "streaming_duration_ms",
+        )?;
+        let p50 = streaming_stats
+            .p50_chunk_latency_ms
+            .map(|v| Self::safe_u64_to_i64(v, "p50_chunk_latency"))
+            .transpose()?;
+        let p95 = streaming_stats
+            .p95_chunk_latency_ms
+            .map(|v| Self::safe_u64_to_i64(v, "p95_chunk_latency"))
+            .transpose()?;
+        let p99 = streaming_stats
+            .p99_chunk_latency_ms
+            .map(|v| Self::safe_u64_to_i64(v, "p99_chunk_latency"))
+            .transpose()?;
+        let max_latency =
+            Self::safe_u64_to_i64(streaming_stats.max_chunk_latency_ms, "max_chunk_latency_ms")?;
+        let min_latency =
+            Self::safe_u64_to_i64(streaming_stats.min_chunk_latency_ms, "min_chunk_latency_ms")?;
 
         sqlx::query(
             r#"
@@ -1681,7 +1865,7 @@ mod tests {
     use crate::events::*;
     use chrono::Utc;
     use std::collections::HashMap;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     #[test]
     fn test_validate_session_id_valid() {
@@ -1752,7 +1936,12 @@ mod tests {
 
         let result = writer.write_event(&event).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid session ID"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid session ID")
+        );
     }
 
     #[tokio::test]
@@ -1833,18 +2022,20 @@ mod tests {
         writer.write_batch(&events).await.unwrap();
 
         // Verify session was created
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE session_id = 'test-123'")
-            .fetch_one(&writer.pool)
-            .await
-            .unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE session_id = 'test-123'")
+                .fetch_one(&writer.pool)
+                .await
+                .unwrap();
 
         assert_eq!(count, 1);
 
         // Verify stats were recorded
-        let stats_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_stats WHERE session_id = 'test-123'")
-            .fetch_one(&writer.pool)
-            .await
-            .unwrap();
+        let stats_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM session_stats WHERE session_id = 'test-123'")
+                .fetch_one(&writer.pool)
+                .await
+                .unwrap();
 
         assert_eq!(stats_count, 1);
     }
@@ -1937,45 +2128,46 @@ mod tests {
         writer.write_batch(&events).await.unwrap();
 
         // Verify session was created with streaming flag
-        let is_streaming: bool = sqlx::query_scalar(
-            "SELECT is_streaming FROM sessions WHERE session_id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&writer.pool)
-        .await
-        .unwrap();
+        let is_streaming: bool =
+            sqlx::query_scalar("SELECT is_streaming FROM sessions WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&writer.pool)
+                .await
+                .unwrap();
         assert!(is_streaming);
 
         // Verify TTFT was recorded
-        let ttft: Option<i64> = sqlx::query_scalar(
-            "SELECT time_to_first_token_ms FROM sessions WHERE session_id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&writer.pool)
-        .await
-        .unwrap();
+        let ttft: Option<i64> =
+            sqlx::query_scalar("SELECT time_to_first_token_ms FROM sessions WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&writer.pool)
+                .await
+                .unwrap();
         assert_eq!(ttft, Some(150));
 
         // Verify stream_metrics table has the data
-        let stream_metrics_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM stream_metrics WHERE session_id = ?",
+        let stream_metrics_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM stream_metrics WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&writer.pool)
+                .await
+                .unwrap();
+        assert_eq!(stream_metrics_count, 1);
+
+        // Verify streaming stats details
+        let (total_chunks, streaming_duration, avg_latency, p95_latency): (
+            i64,
+            i64,
+            f64,
+            Option<i64>,
+        ) = sqlx::query_as(
+            "SELECT total_chunks, streaming_duration_ms, avg_chunk_latency_ms, p95_chunk_latency_ms
+                 FROM stream_metrics WHERE session_id = ?",
         )
         .bind(session_id)
         .fetch_one(&writer.pool)
         .await
         .unwrap();
-        assert_eq!(stream_metrics_count, 1);
-
-        // Verify streaming stats details
-        let (total_chunks, streaming_duration, avg_latency, p95_latency): (i64, i64, f64, Option<i64>) =
-            sqlx::query_as(
-                "SELECT total_chunks, streaming_duration_ms, avg_chunk_latency_ms, p95_chunk_latency_ms
-                 FROM stream_metrics WHERE session_id = ?",
-            )
-            .bind(session_id)
-            .fetch_one(&writer.pool)
-            .await
-            .unwrap();
 
         assert_eq!(total_chunks, 42);
         assert_eq!(streaming_duration, 4850);
@@ -1998,8 +2190,16 @@ mod tests {
                     session_id: format!("session-{}", i),
                     request_id: format!("req-{}", i),
                     timestamp: Utc::now() - chrono::Duration::minutes(i),
-                    model_requested: if i % 2 == 0 { "gpt-4".to_string() } else { "claude-3".to_string() },
-                    provider: if i % 2 == 0 { "openai".to_string() } else { "anthropic".to_string() },
+                    model_requested: if i % 2 == 0 {
+                        "gpt-4".to_string()
+                    } else {
+                        "claude-3".to_string()
+                    },
+                    provider: if i % 2 == 0 {
+                        "openai".to_string()
+                    } else {
+                        "anthropic".to_string()
+                    },
                     listener: "test".to_string(),
                     is_streaming: i % 3 == 0,
                     metadata: SessionMetadata {
@@ -2016,7 +2216,11 @@ mod tests {
                     timestamp: Utc::now(),
                     response_text: format!("Response {}", i),
                     response_json: serde_json::json!({}),
-                    model_used: if i % 2 == 0 { "gpt-4".to_string() } else { "claude-3".to_string() },
+                    model_used: if i % 2 == 0 {
+                        "gpt-4".to_string()
+                    } else {
+                        "claude-3".to_string()
+                    },
                     stats: ResponseStats {
                         provider_latency_ms: 100 + (i as u64 * 10),
                         post_processing_ms: 10.0,
@@ -2027,9 +2231,9 @@ mod tests {
                             thinking_tokens: None,
                             cache_read_tokens: None,
                             cache_creation_tokens: None,
-                        reasoning_tokens: None,
-                        audio_input_tokens: None,
-                        audio_output_tokens: None,
+                            reasoning_tokens: None,
+                            audio_input_tokens: None,
+                            audio_output_tokens: None,
                             total_tokens: 30 + (i as u32 * 5),
                             thinking_percentage: None,
                             tokens_per_second: Some(200.0),
@@ -2127,9 +2331,9 @@ mod tests {
                             thinking_tokens: None,
                             cache_read_tokens: None,
                             cache_creation_tokens: None,
-                        reasoning_tokens: None,
-                        audio_input_tokens: None,
-                        audio_output_tokens: None,
+                            reasoning_tokens: None,
+                            audio_input_tokens: None,
+                            audio_output_tokens: None,
                             total_tokens: 300,
                             thinking_percentage: None,
                             tokens_per_second: Some(200.0),
@@ -2148,7 +2352,11 @@ mod tests {
                     request_id: format!("agg-req-{}", i),
                     timestamp: Utc::now(),
                     success: i < 4, // First 4 successful, last one fails
-                    error: if i >= 4 { Some("Error".to_string()) } else { None },
+                    error: if i >= 4 {
+                        Some("Error".to_string())
+                    } else {
+                        None
+                    },
                     finish_reason: Some("end_turn".to_string()),
                     final_stats: Box::new(FinalSessionStats {
                         total_duration_ms: 1000 + (i * 100),
@@ -2160,11 +2368,11 @@ mod tests {
                             total_thinking: 0,
                             total_cached: 0,
                             grand_total: 300,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                            total_reasoning: 0,
+                            total_cache_read: 0,
+                            total_cache_creation: 0,
+                            total_audio_input: 0,
+                            total_audio_output: 0,
                             by_model: HashMap::new(),
                         },
                         tool_summary: ToolUsageSummary::default(),
@@ -2216,24 +2424,22 @@ mod tests {
         // Create sessions at different times
         for i in 0..5 {
             let timestamp = two_hours_ago + chrono::Duration::minutes(i * 30);
-            let events = vec![
-                SessionEvent::Started {
-                    session_id: format!("time-session-{}", i),
-                    request_id: format!("time-req-{}", i),
-                    timestamp,
-                    model_requested: "gpt-4".to_string(),
-                    provider: "openai".to_string(),
-                    listener: "test".to_string(),
-                    is_streaming: false,
-                    metadata: SessionMetadata {
-                        client_ip: None,
-                        user_agent: None,
-                        api_version: None,
-                        request_headers: HashMap::new(),
-                        session_tags: vec![],
-                    },
+            let events = vec![SessionEvent::Started {
+                session_id: format!("time-session-{}", i),
+                request_id: format!("time-req-{}", i),
+                timestamp,
+                model_requested: "gpt-4".to_string(),
+                provider: "openai".to_string(),
+                listener: "test".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
                 },
-            ];
+            }];
             writer.write_batch(&events).await.unwrap();
         }
 
@@ -2314,9 +2520,9 @@ mod tests {
                             thinking_tokens: None,
                             cache_read_tokens: None,
                             cache_creation_tokens: None,
-                        reasoning_tokens: None,
-                        audio_input_tokens: None,
-                        audio_output_tokens: None,
+                            reasoning_tokens: None,
+                            audio_input_tokens: None,
+                            audio_output_tokens: None,
                             total_tokens: 30,
                             thinking_percentage: None,
                             tokens_per_second: Some(200.0),
@@ -2404,9 +2610,9 @@ mod tests {
                             thinking_tokens: None,
                             cache_read_tokens: None,
                             cache_creation_tokens: None,
-                        reasoning_tokens: None,
-                        audio_input_tokens: None,
-                        audio_output_tokens: None,
+                            reasoning_tokens: None,
+                            audio_input_tokens: None,
+                            audio_output_tokens: None,
                             total_tokens: token_count as u32,
                             thinking_percentage: None,
                             tokens_per_second: Some(200.0),
@@ -2425,18 +2631,12 @@ mod tests {
         }
 
         // Filter for min_tokens >= 250
-        let filter = SessionFilter::builder()
-            .min_tokens(250)
-            .build()
-            .unwrap();
+        let filter = SessionFilter::builder().min_tokens(250).build().unwrap();
         let results = writer.search_sessions(&filter).await.unwrap();
         assert_eq!(results.total_count, 3); // 300, 400, 500
 
         // Filter for max_tokens <= 250
-        let filter = SessionFilter::builder()
-            .max_tokens(250)
-            .build()
-            .unwrap();
+        let filter = SessionFilter::builder().max_tokens(250).build().unwrap();
         let results = writer.search_sessions(&filter).await.unwrap();
         assert_eq!(results.total_count, 2); // 100, 200
 
@@ -2495,11 +2695,11 @@ mod tests {
                             total_thinking: 0,
                             total_cached: 0,
                             grand_total: 300,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                            total_reasoning: 0,
+                            total_cache_read: 0,
+                            total_cache_creation: 0,
+                            total_audio_input: 0,
+                            total_audio_output: 0,
                             by_model: HashMap::new(),
                         },
                         tool_summary: ToolUsageSummary::default(),
@@ -2599,11 +2799,11 @@ mod tests {
                             total_thinking: 0,
                             total_cached: 0,
                             grand_total: 300,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                            total_reasoning: 0,
+                            total_cache_read: 0,
+                            total_cache_creation: 0,
+                            total_audio_input: 0,
+                            total_audio_output: 0,
                             by_model: HashMap::new(),
                         },
                         tool_summary: ToolUsageSummary::default(),
@@ -2686,7 +2886,11 @@ mod tests {
                     request_id: format!("status-req-{}", i),
                     timestamp: Utc::now(),
                     success: is_success,
-                    error: if is_success { None } else { Some("Error".to_string()) },
+                    error: if is_success {
+                        None
+                    } else {
+                        Some("Error".to_string())
+                    },
                     finish_reason: Some("end_turn".to_string()),
                     final_stats: Box::new(FinalSessionStats {
                         total_duration_ms: 1000,
@@ -2698,11 +2902,11 @@ mod tests {
                             total_thinking: 0,
                             total_cached: 0,
                             grand_total: 300,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                            total_reasoning: 0,
+                            total_cache_read: 0,
+                            total_cache_creation: 0,
+                            total_audio_input: 0,
+                            total_audio_output: 0,
                             by_model: HashMap::new(),
                         },
                         tool_summary: ToolUsageSummary::default(),
@@ -2726,34 +2930,22 @@ mod tests {
         }
 
         // Filter for successful only
-        let filter = SessionFilter::builder()
-            .success(true)
-            .build()
-            .unwrap();
+        let filter = SessionFilter::builder().success(true).build().unwrap();
         let results = writer.search_sessions(&filter).await.unwrap();
         assert_eq!(results.total_count, 4);
 
         // Filter for failed only
-        let filter = SessionFilter::builder()
-            .success(false)
-            .build()
-            .unwrap();
+        let filter = SessionFilter::builder().success(false).build().unwrap();
         let results = writer.search_sessions(&filter).await.unwrap();
         assert_eq!(results.total_count, 2);
 
         // Filter for streaming only
-        let filter = SessionFilter::builder()
-            .streaming(true)
-            .build()
-            .unwrap();
+        let filter = SessionFilter::builder().streaming(true).build().unwrap();
         let results = writer.search_sessions(&filter).await.unwrap();
         assert_eq!(results.total_count, 3); // sessions 0, 2, 4
 
         // Filter for non-streaming only
-        let filter = SessionFilter::builder()
-            .streaming(false)
-            .build()
-            .unwrap();
+        let filter = SessionFilter::builder().streaming(false).build().unwrap();
         let results = writer.search_sessions(&filter).await.unwrap();
         assert_eq!(results.total_count, 3); // sessions 1, 3, 5
 
@@ -2815,9 +3007,9 @@ mod tests {
                             thinking_tokens: None,
                             cache_read_tokens: None,
                             cache_creation_tokens: None,
-                        reasoning_tokens: None,
-                        audio_input_tokens: None,
-                        audio_output_tokens: None,
+                            reasoning_tokens: None,
+                            audio_input_tokens: None,
+                            audio_output_tokens: None,
                             total_tokens: tokens * 2,
                             thinking_percentage: None,
                             tokens_per_second: Some(200.0),
@@ -2848,11 +3040,11 @@ mod tests {
                             total_thinking: 0,
                             total_cached: 0,
                             grand_total: (tokens * 2) as u64,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                            total_reasoning: 0,
+                            total_cache_read: 0,
+                            total_cache_creation: 0,
+                            total_audio_input: 0,
+                            total_audio_output: 0,
                             by_model: HashMap::new(),
                         },
                         tool_summary: ToolUsageSummary::default(),
@@ -2929,24 +3121,22 @@ mod tests {
 
         // Create 2 sessions
         for i in 0..2 {
-            let events = vec![
-                SessionEvent::Started {
-                    session_id: format!("edge-session-{}", i),
-                    request_id: format!("edge-req-{}", i),
-                    timestamp: Utc::now(),
-                    model_requested: "gpt-4".to_string(),
-                    provider: "openai".to_string(),
-                    listener: "test".to_string(),
-                    is_streaming: false,
-                    metadata: SessionMetadata {
-                        client_ip: None,
-                        user_agent: None,
-                        api_version: None,
-                        request_headers: HashMap::new(),
-                        session_tags: vec![],
-                    },
+            let events = vec![SessionEvent::Started {
+                session_id: format!("edge-session-{}", i),
+                request_id: format!("edge-req-{}", i),
+                timestamp: Utc::now(),
+                model_requested: "gpt-4".to_string(),
+                provider: "openai".to_string(),
+                listener: "test".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
                 },
-            ];
+            }];
             writer.write_batch(&events).await.unwrap();
         }
 
@@ -3048,9 +3238,9 @@ mod tests {
                             thinking_tokens: None,
                             cache_read_tokens: None,
                             cache_creation_tokens: None,
-                        reasoning_tokens: None,
-                        audio_input_tokens: None,
-                        audio_output_tokens: None,
+                            reasoning_tokens: None,
+                            audio_input_tokens: None,
+                            audio_output_tokens: None,
                             total_tokens: tokens * 2,
                             thinking_percentage: None,
                             tokens_per_second: Some(200.0),
@@ -3069,7 +3259,11 @@ mod tests {
                     request_id: format!("combined-req-{}", i),
                     timestamp: Utc::now(),
                     success: is_success,
-                    error: if is_success { None } else { Some("Error".to_string()) },
+                    error: if is_success {
+                        None
+                    } else {
+                        Some("Error".to_string())
+                    },
                     finish_reason: Some("end_turn".to_string()),
                     final_stats: Box::new(FinalSessionStats {
                         total_duration_ms: ((i + 1) * 500) as u64,
@@ -3081,11 +3275,11 @@ mod tests {
                             total_thinking: 0,
                             total_cached: 0,
                             grand_total: (tokens * 2) as u64,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                            total_reasoning: 0,
+                            total_cache_read: 0,
+                            total_cache_creation: 0,
+                            total_audio_input: 0,
+                            total_audio_output: 0,
                             by_model: HashMap::new(),
                         },
                         tool_summary: ToolUsageSummary::default(),
@@ -3204,7 +3398,11 @@ mod tests {
 
         assert_eq!(input, 150, "Streaming session input_tokens should be 150");
         assert_eq!(output, 350, "Streaming session output_tokens should be 350");
-        assert_eq!(thinking, Some(50), "Streaming session thinking_tokens should be 50");
+        assert_eq!(
+            thinking,
+            Some(50),
+            "Streaming session thinking_tokens should be 50"
+        );
     }
 
     /// Comprehensive test: Verify non-streaming session tokens are written to SQLite
@@ -3309,8 +3507,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(input, 75, "Non-streaming session input_tokens should be 75");
-        assert_eq!(output, 225, "Non-streaming session output_tokens should be 225");
-        assert_eq!(thinking, Some(25), "Non-streaming session thinking_tokens should be 25");
+        assert_eq!(
+            output, 225,
+            "Non-streaming session output_tokens should be 225"
+        );
+        assert_eq!(
+            thinking,
+            Some(25),
+            "Non-streaming session thinking_tokens should be 25"
+        );
     }
 
     /// Comprehensive test: Verify tool calls are written to SQLite for streaming sessions
@@ -3325,18 +3530,24 @@ mod tests {
         let session_id = "streaming-tools-test";
 
         let mut by_tool = HashMap::new();
-        by_tool.insert("Read".to_string(), ToolStats {
-            call_count: 3,
-            total_execution_time_ms: 150,
-            avg_execution_time_ms: 50,
-            error_count: 0,
-        });
-        by_tool.insert("Bash".to_string(), ToolStats {
-            call_count: 2,
-            total_execution_time_ms: 400,
-            avg_execution_time_ms: 200,
-            error_count: 1,
-        });
+        by_tool.insert(
+            "Read".to_string(),
+            ToolStats {
+                call_count: 3,
+                total_execution_time_ms: 150,
+                avg_execution_time_ms: 50,
+                error_count: 0,
+            },
+        );
+        by_tool.insert(
+            "Bash".to_string(),
+            ToolStats {
+                call_count: 2,
+                total_execution_time_ms: 400,
+                avg_execution_time_ms: 200,
+                error_count: 1,
+            },
+        );
 
         let events = vec![
             SessionEvent::Started {
@@ -3396,13 +3607,12 @@ mod tests {
         writer.write_batch(&events).await.unwrap();
 
         // Verify tool calls are written to tool_calls table
-        let tool_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM tool_calls WHERE session_id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&writer.pool)
-        .await
-        .unwrap();
+        let tool_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&writer.pool)
+                .await
+                .unwrap();
 
         assert_eq!(tool_count, 2, "Should have 2 tool call records");
 
@@ -3572,11 +3782,11 @@ mod tests {
                     total_thinking: 75,
                     total_cached: 0,
                     grand_total: 475,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                    total_reasoning: 0,
+                    total_cache_read: 0,
+                    total_cache_creation: 0,
+                    total_audio_input: 0,
+                    total_audio_output: 0,
                     by_model: HashMap::new(),
                 },
                 tool_summary: ToolUsageSummary {
@@ -3777,13 +3987,12 @@ mod tests {
         writer.write_batch(&events).await.unwrap();
 
         // Verify tokens are 0
-        let (input, output): (Option<i64>, Option<i64>) = sqlx::query_as(
-            "SELECT input_tokens, output_tokens FROM sessions WHERE session_id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&writer.pool)
-        .await
-        .unwrap();
+        let (input, output): (Option<i64>, Option<i64>) =
+            sqlx::query_as("SELECT input_tokens, output_tokens FROM sessions WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&writer.pool)
+                .await
+                .unwrap();
 
         assert_eq!(input, Some(0));
         assert_eq!(output, Some(0));
@@ -3799,11 +4008,11 @@ mod tests {
                 total_thinking: 200,
                 total_cached: 0,
                 grand_total: 2500,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                total_reasoning: 0,
+                total_cache_read: 0,
+                total_cache_creation: 0,
+                total_audio_input: 0,
+                total_audio_output: 0,
                 by_model: HashMap::new(),
             }),
             tool_call_updates: None,
@@ -3882,13 +4091,11 @@ mod tests {
         writer.write_batch(&events).await.unwrap();
 
         // Verify no tool calls
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM tool_calls WHERE session_id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&writer.pool)
-        .await
-        .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_one(&writer.pool)
+            .await
+            .unwrap();
 
         assert_eq!(count, 0);
 
@@ -3935,13 +4142,11 @@ mod tests {
         writer.write_event(&update_event).await.unwrap();
 
         // Verify tool calls are inserted
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM tool_calls WHERE session_id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&writer.pool)
-        .await
-        .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_one(&writer.pool)
+            .await
+            .unwrap();
 
         assert_eq!(count, 2);
 
@@ -4035,16 +4240,16 @@ mod tests {
             request_id: request_id.to_string(),
             timestamp: Utc::now(),
             token_updates: Some(TokenTotals {
-                total_input: 50,  // Lower than 100
+                total_input: 50,   // Lower than 100
                 total_output: 150, // Lower than 200
                 total_thinking: 0,
                 total_cached: 0,
                 grand_total: 200,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                total_reasoning: 0,
+                total_cache_read: 0,
+                total_cache_creation: 0,
+                total_audio_input: 0,
+                total_audio_output: 0,
                 by_model: HashMap::new(),
             }),
             tool_call_updates: None,
@@ -4058,13 +4263,12 @@ mod tests {
         writer.write_event(&update_event).await.unwrap();
 
         // Verify original higher values are kept (MAX logic)
-        let (input, output): (Option<i64>, Option<i64>) = sqlx::query_as(
-            "SELECT input_tokens, output_tokens FROM sessions WHERE session_id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&writer.pool)
-        .await
-        .unwrap();
+        let (input, output): (Option<i64>, Option<i64>) =
+            sqlx::query_as("SELECT input_tokens, output_tokens FROM sessions WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&writer.pool)
+                .await
+                .unwrap();
 
         assert_eq!(input, Some(100)); // Kept higher value
         assert_eq!(output, Some(200)); // Kept higher value
@@ -4075,16 +4279,16 @@ mod tests {
             request_id: request_id.to_string(),
             timestamp: Utc::now(),
             token_updates: Some(TokenTotals {
-                total_input: 150,  // Higher than 100
-                total_output: 250, // Higher than 200
+                total_input: 150,   // Higher than 100
+                total_output: 250,  // Higher than 200
                 total_thinking: 50, // Higher than 0
                 total_cached: 0,
                 grand_total: 450,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                total_reasoning: 0,
+                total_cache_read: 0,
+                total_cache_creation: 0,
+                total_audio_input: 0,
+                total_audio_output: 0,
                 by_model: HashMap::new(),
             }),
             tool_call_updates: None,
@@ -4150,11 +4354,11 @@ mod tests {
                     total_thinking: 0,
                     total_cached: 0,
                     grand_total: 150,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                    total_reasoning: 0,
+                    total_cache_read: 0,
+                    total_cache_creation: 0,
+                    total_audio_input: 0,
+                    total_audio_output: 0,
                     by_model: HashMap::new(),
                 }),
                 tool_call_updates: None,
@@ -4169,13 +4373,12 @@ mod tests {
         writer.write_batch(&events).await.unwrap();
 
         // Verify the user agent was stored (potentially truncated by application logic)
-        let stored_ua: Option<String> = sqlx::query_scalar(
-            "SELECT user_agent FROM sessions WHERE session_id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&writer.pool)
-        .await
-        .unwrap();
+        let stored_ua: Option<String> =
+            sqlx::query_scalar("SELECT user_agent FROM sessions WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&writer.pool)
+                .await
+                .unwrap();
 
         assert!(stored_ua.is_some());
         // Note: The truncation happens at ingress layer, not database layer
@@ -4220,11 +4423,11 @@ mod tests {
                     total_thinking: 0,
                     total_cached: 0,
                     grand_total: 150,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                    total_reasoning: 0,
+                    total_cache_read: 0,
+                    total_cache_creation: 0,
+                    total_audio_input: 0,
+                    total_audio_output: 0,
                     by_model: HashMap::new(),
                 }),
                 tool_call_updates: None,
@@ -4239,24 +4442,22 @@ mod tests {
         writer.write_batch(&events).await.unwrap();
 
         // Verify the special characters are preserved correctly
-        let stored_ua: Option<String> = sqlx::query_scalar(
-            "SELECT user_agent FROM sessions WHERE session_id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&writer.pool)
-        .await
-        .unwrap();
+        let stored_ua: Option<String> =
+            sqlx::query_scalar("SELECT user_agent FROM sessions WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&writer.pool)
+                .await
+                .unwrap();
 
         assert_eq!(stored_ua.as_deref(), Some(special_ua));
 
         // Also verify in session_stats
-        let stats_ua: Option<String> = sqlx::query_scalar(
-            "SELECT user_agent FROM session_stats WHERE session_id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&writer.pool)
-        .await
-        .unwrap();
+        let stats_ua: Option<String> =
+            sqlx::query_scalar("SELECT user_agent FROM session_stats WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&writer.pool)
+                .await
+                .unwrap();
 
         assert_eq!(stats_ua.as_deref(), Some(special_ua));
     }
@@ -4297,11 +4498,11 @@ mod tests {
                     total_thinking: 0,
                     total_cached: 0,
                     grand_total: 150,
-                        total_reasoning: 0,
-                        total_cache_read: 0,
-                        total_cache_creation: 0,
-                        total_audio_input: 0,
-                        total_audio_output: 0,
+                    total_reasoning: 0,
+                    total_cache_read: 0,
+                    total_cache_creation: 0,
+                    total_audio_input: 0,
+                    total_audio_output: 0,
                     by_model: HashMap::new(),
                 }),
                 tool_call_updates: None,
@@ -4316,13 +4517,12 @@ mod tests {
         writer.write_batch(&events).await.unwrap();
 
         // Verify NULL is stored correctly
-        let stored_ua: Option<String> = sqlx::query_scalar(
-            "SELECT user_agent FROM sessions WHERE session_id = ?",
-        )
-        .bind(session_id)
-        .fetch_one(&writer.pool)
-        .await
-        .unwrap();
+        let stored_ua: Option<String> =
+            sqlx::query_scalar("SELECT user_agent FROM sessions WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&writer.pool)
+                .await
+                .unwrap();
 
         assert_eq!(stored_ua, None);
     }

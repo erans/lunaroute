@@ -40,9 +40,7 @@ impl RegexPIIDetector {
 
         // Credit cards: various formats (Visa, MC, Amex, Discover)
         // Matches 13-19 digit sequences with optional spaces/dashes
-        let credit_card_regex = Arc::new(Regex::new(
-            r"\b(?:\d{4}[-\s]?){3}\d{4,7}\b",
-        )?);
+        let credit_card_regex = Arc::new(Regex::new(r"\b(?:\d{4}[-\s]?){3}\d{4,7}\b")?);
 
         // IP addresses: IPv4 and IPv6
         let ip_regex = Arc::new(Regex::new(
@@ -53,11 +51,7 @@ impl RegexPIIDetector {
         let mut custom_regexes = Vec::new();
         for pattern in &config.custom_patterns {
             let regex = Regex::new(&pattern.pattern)?;
-            custom_regexes.push((
-                pattern.name.clone(),
-                Arc::new(regex),
-                pattern.confidence,
-            ));
+            custom_regexes.push((pattern.name.clone(), Arc::new(regex), pattern.confidence));
         }
 
         Ok(Self {
@@ -91,11 +85,7 @@ impl RegexPIIDetector {
             .map(|(i, &d)| {
                 if i % 2 == 1 {
                     let doubled = d * 2;
-                    if doubled > 9 {
-                        doubled - 9
-                    } else {
-                        doubled
-                    }
+                    if doubled > 9 { doubled - 9 } else { doubled }
                 } else {
                     d
                 }
@@ -115,10 +105,7 @@ impl RegexPIIDetector {
 
         // Invalid SSN patterns
         // All zeros in any group
-        if digits.starts_with("000")
-            || digits[3..5] == *"00"
-            || digits[5..9] == *"0000"
-        {
+        if digits.starts_with("000") || digits[3..5] == *"00" || digits[5..9] == *"0000" {
             return false;
         }
 

@@ -6,11 +6,11 @@
 //! - `/metrics` - Prometheus metrics endpoint
 
 use axum::{
+    Json, Router,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
-    Json, Router,
 };
 use prometheus::TextEncoder;
 use serde::{Deserialize, Serialize};
@@ -193,17 +193,15 @@ mod tests {
         }
 
         fn get_provider_statuses(&self) -> Vec<ProviderStatus> {
-            vec![
-                ProviderStatus {
-                    name: "openai".to_string(),
-                    status: if self.ready {
-                        "healthy".to_string()
-                    } else {
-                        "unhealthy".to_string()
-                    },
-                    success_rate: Some(if self.ready { 0.95 } else { 0.0 }),
+            vec![ProviderStatus {
+                name: "openai".to_string(),
+                status: if self.ready {
+                    "healthy".to_string()
+                } else {
+                    "unhealthy".to_string()
                 },
-            ]
+                success_rate: Some(if self.ready { 0.95 } else { 0.0 }),
+            }]
         }
     }
 
@@ -214,7 +212,12 @@ mod tests {
         let app = health_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -229,7 +232,12 @@ mod tests {
         let app = health_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/readyz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -244,7 +252,12 @@ mod tests {
         let app = health_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/readyz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -258,7 +271,12 @@ mod tests {
         let app = health_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/readyz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 

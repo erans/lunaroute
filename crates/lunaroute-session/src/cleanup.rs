@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 /// Result type for cleanup operations
 pub type CleanupResult<T> = Result<T, CleanupError>;
@@ -176,9 +176,7 @@ pub fn file_age_days(path: &Path) -> CleanupResult<u32> {
 /// Compress a session file using zstd
 pub fn compress_session_file(path: &Path) -> CleanupResult<u64> {
     if !path.exists() {
-        return Err(CleanupError::InvalidPath(
-            "File does not exist".to_string(),
-        ));
+        return Err(CleanupError::InvalidPath("File does not exist".to_string()));
     }
 
     // Skip if already compressed
@@ -195,8 +193,8 @@ pub fn compress_session_file(path: &Path) -> CleanupResult<u64> {
     let original_size = contents.len() as u64;
 
     // Compress with zstd (level 3)
-    let compressed = zstd::encode_all(&contents[..], 3)
-        .map_err(|e| CleanupError::Compression(e.to_string()))?;
+    let compressed =
+        zstd::encode_all(&contents[..], 3).map_err(|e| CleanupError::Compression(e.to_string()))?;
 
     // Write compressed file
     let compressed_path = path.with_extension("jsonl.zst");
@@ -228,16 +226,17 @@ pub fn delete_session_file(path: &Path) -> CleanupResult<u64> {
 
     fs::remove_file(path)?;
 
-    tracing::info!("Deleted session file: {:?} ({} bytes)", path.file_name(), size);
+    tracing::info!(
+        "Deleted session file: {:?} ({} bytes)",
+        path.file_name(),
+        size
+    );
 
     Ok(size)
 }
 
 /// Execute cleanup based on retention policy
-pub fn execute_cleanup(
-    directory: &Path,
-    policy: &RetentionPolicy,
-) -> CleanupResult<CleanupStats> {
+pub fn execute_cleanup(directory: &Path, policy: &RetentionPolicy) -> CleanupResult<CleanupStats> {
     let start = std::time::Instant::now();
     let mut stats = CleanupStats::default();
 
@@ -271,7 +270,10 @@ pub fn execute_cleanup(
                 .ok_or_else(|| CleanupError::InvalidPath("Invalid directory name".to_string()))?;
 
             if !is_valid_date_directory(dir_name) {
-                tracing::warn!("Skipping invalid date directory during cleanup: {}", dir_name);
+                tracing::warn!(
+                    "Skipping invalid date directory during cleanup: {}",
+                    dir_name
+                );
                 continue;
             }
 
@@ -382,10 +384,7 @@ impl CleanupTask {
 /// Spawn a background cleanup task that runs periodically
 ///
 /// Returns a CleanupTask handle that can be used to shutdown the task gracefully.
-pub fn spawn_cleanup_task(
-    directory: PathBuf,
-    policy: Arc<RetentionPolicy>,
-) -> CleanupTask {
+pub fn spawn_cleanup_task(directory: PathBuf, policy: Arc<RetentionPolicy>) -> CleanupTask {
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     tokio::spawn(async move {
@@ -606,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_execute_cleanup_age_based_deletion() {
-        use filetime::{set_file_mtime, FileTime};
+        use filetime::{FileTime, set_file_mtime};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let temp_dir = TempDir::new().unwrap();
@@ -617,7 +616,10 @@ mod tests {
         let recent_session = create_test_session(temp_dir.path(), "2024-01-03", "recent", 1000);
 
         // Set file timestamps to simulate age
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let days_40_ago = FileTime::from_unix_time((now - (40 * 24 * 60 * 60)) as i64, 0);
         let days_20_ago = FileTime::from_unix_time((now - (20 * 24 * 60 * 60)) as i64, 0);
         let days_5_ago = FileTime::from_unix_time((now - (5 * 24 * 60 * 60)) as i64, 0);
@@ -645,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_execute_cleanup_age_based_compression() {
-        use filetime::{set_file_mtime, FileTime};
+        use filetime::{FileTime, set_file_mtime};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let temp_dir = TempDir::new().unwrap();
@@ -655,7 +657,10 @@ mod tests {
         let recent_session = create_test_session(temp_dir.path(), "2024-01-02", "recent", 10000);
 
         // Set file timestamps
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let days_10_ago = FileTime::from_unix_time((now - (10 * 24 * 60 * 60)) as i64, 0);
         let days_3_ago = FileTime::from_unix_time((now - (3 * 24 * 60 * 60)) as i64, 0);
 
@@ -681,7 +686,7 @@ mod tests {
 
     #[test]
     fn test_execute_cleanup_combined_policies() {
-        use filetime::{set_file_mtime, FileTime};
+        use filetime::{FileTime, set_file_mtime};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let temp_dir = TempDir::new().unwrap();
@@ -692,11 +697,30 @@ mod tests {
         let medium = create_test_session(temp_dir.path(), "2024-01-03", "medium", 10000);
         let recent = create_test_session(temp_dir.path(), "2024-01-04", "recent", 10000);
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        set_file_mtime(&very_old, FileTime::from_unix_time((now - (40 * 24 * 60 * 60)) as i64, 0)).unwrap();
-        set_file_mtime(&old, FileTime::from_unix_time((now - (25 * 24 * 60 * 60)) as i64, 0)).unwrap();
-        set_file_mtime(&medium, FileTime::from_unix_time((now - (10 * 24 * 60 * 60)) as i64, 0)).unwrap();
-        set_file_mtime(&recent, FileTime::from_unix_time((now - (2 * 24 * 60 * 60)) as i64, 0)).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        set_file_mtime(
+            &very_old,
+            FileTime::from_unix_time((now - (40 * 24 * 60 * 60)) as i64, 0),
+        )
+        .unwrap();
+        set_file_mtime(
+            &old,
+            FileTime::from_unix_time((now - (25 * 24 * 60 * 60)) as i64, 0),
+        )
+        .unwrap();
+        set_file_mtime(
+            &medium,
+            FileTime::from_unix_time((now - (10 * 24 * 60 * 60)) as i64, 0),
+        )
+        .unwrap();
+        set_file_mtime(
+            &recent,
+            FileTime::from_unix_time((now - (2 * 24 * 60 * 60)) as i64, 0),
+        )
+        .unwrap();
 
         // Combined policy: delete after 30 days, compress after 7 days
         let policy = RetentionPolicy {
@@ -739,7 +763,7 @@ mod tests {
 
     #[test]
     fn test_mixed_compressed_uncompressed_cleanup() {
-        use filetime::{set_file_mtime, FileTime};
+        use filetime::{FileTime, set_file_mtime};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let temp_dir = TempDir::new().unwrap();
@@ -753,7 +777,10 @@ mod tests {
         let old_compressed_path = old_compressed.with_extension("jsonl.zst");
 
         // Age both files
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let days_10_ago = FileTime::from_unix_time((now - (10 * 24 * 60 * 60)) as i64, 0);
         set_file_mtime(&old_uncompressed, days_10_ago).unwrap();
         set_file_mtime(&old_compressed_path, days_10_ago).unwrap();
@@ -884,7 +911,8 @@ mod tests {
         fs::create_dir_all(temp_dir.path().join("2024-99-99")).unwrap();
 
         // Add files in invalid directories
-        let mut file = File::create(temp_dir.path().join("invalid-dir").join("session.jsonl")).unwrap();
+        let mut file =
+            File::create(temp_dir.path().join("invalid-dir").join("session.jsonl")).unwrap();
         file.write_all(b"should not be processed").unwrap();
 
         let usage = calculate_disk_usage(temp_dir.path()).unwrap();

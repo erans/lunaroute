@@ -12,8 +12,8 @@ pub mod stats;
 
 pub use server::{UiConfig, UiServer};
 
-use std::sync::Arc;
 use sqlx::SqlitePool;
+use std::sync::Arc;
 
 /// Shared application state for the UI server
 #[derive(Clone)]

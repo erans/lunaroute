@@ -62,8 +62,8 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Routing strategy configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -357,9 +357,7 @@ mod tests {
     #[test]
     fn test_strategy_validation() {
         // Empty providers
-        let strategy = RoutingStrategy::RoundRobin {
-            providers: vec![],
-        };
+        let strategy = RoutingStrategy::RoundRobin { providers: vec![] };
         assert!(strategy.validate().is_err());
 
         // Valid round-robin
@@ -550,12 +548,10 @@ mod tests {
     fn test_weighted_zero_weight_handled() {
         // Although zero weights should be caught by validation,
         // test that the algorithm doesn't panic
-        let providers = vec![
-            WeightedProvider {
-                id: "p1".to_string(),
-                weight: 0,
-            },
-        ];
+        let providers = vec![WeightedProvider {
+            id: "p1".to_string(),
+            weight: 0,
+        }];
 
         let strategy = RoutingStrategy::WeightedRoundRobin { providers };
 
@@ -597,4 +593,3 @@ mod tests {
         // (though with wrapping, just verify no panics occurred)
     }
 }
-

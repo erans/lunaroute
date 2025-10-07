@@ -2,15 +2,17 @@
 
 use crate::types::{IngressError, IngressResult};
 use axum::{
+    Router,
     extract::{Json, State},
     response::{
-        sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
     },
     routing::post,
-    Router,
 };
 use futures::StreamExt;
+#[cfg(test)]
+use lunaroute_core::normalized::{Choice, Usage};
 use lunaroute_core::{
     normalized::{
         ContentPart, FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent,
@@ -18,8 +20,6 @@ use lunaroute_core::{
     },
     provider::Provider,
 };
-#[cfg(test)]
-use lunaroute_core::normalized::{Choice, Usage};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -33,16 +33,18 @@ const MAX_COLLECTED_EVENTS: usize = 10_000;
 fn validate_tool_schema(schema: &serde_json::Value, tool_name: &str) -> IngressResult<()> {
     // Ensure it's a valid JSON Schema object
     if !schema.is_object() {
-        return Err(IngressError::InvalidRequest(
-            format!("Tool '{}': input_schema must be a valid JSON Schema object", tool_name)
-        ));
+        return Err(IngressError::InvalidRequest(format!(
+            "Tool '{}': input_schema must be a valid JSON Schema object",
+            tool_name
+        )));
     }
 
     // Check for required "type" field (common JSON Schema requirement)
     if schema.get("type").is_none() {
-        return Err(IngressError::InvalidRequest(
-            format!("Tool '{}': schema must have 'type' field", tool_name)
-        ));
+        return Err(IngressError::InvalidRequest(format!(
+            "Tool '{}': schema must have 'type' field",
+            tool_name
+        )));
     }
 
     Ok(())
@@ -242,66 +244,74 @@ pub struct AnthropicUsageDelta {
 fn validate_request(req: &AnthropicMessagesRequest) -> IngressResult<()> {
     // Validate temperature (0.0 to 1.0 for Anthropic)
     if let Some(temp) = req.temperature
-        && !(0.0..=1.0).contains(&temp) {
-            return Err(IngressError::InvalidRequest(
-                format!("temperature must be between 0.0 and 1.0, got {}", temp)
-            ));
-        }
+        && !(0.0..=1.0).contains(&temp)
+    {
+        return Err(IngressError::InvalidRequest(format!(
+            "temperature must be between 0.0 and 1.0, got {}",
+            temp
+        )));
+    }
 
     // Validate top_p (0.0 to 1.0)
     if let Some(top_p) = req.top_p
-        && !(0.0..=1.0).contains(&top_p) {
-            return Err(IngressError::InvalidRequest(
-                format!("top_p must be between 0.0 and 1.0, got {}", top_p)
-            ));
-        }
+        && !(0.0..=1.0).contains(&top_p)
+    {
+        return Err(IngressError::InvalidRequest(format!(
+            "top_p must be between 0.0 and 1.0, got {}",
+            top_p
+        )));
+    }
 
     // Validate top_k (positive integer)
     if let Some(top_k) = req.top_k
-        && top_k == 0 {
-            return Err(IngressError::InvalidRequest(
-                "top_k must be greater than 0".to_string()
-            ));
-        }
+        && top_k == 0
+    {
+        return Err(IngressError::InvalidRequest(
+            "top_k must be greater than 0".to_string(),
+        ));
+    }
 
     // Validate max_tokens (required and positive for Anthropic)
     if let Some(max_tokens) = req.max_tokens {
         if max_tokens == 0 {
             return Err(IngressError::InvalidRequest(
-                "max_tokens must be greater than 0".to_string()
+                "max_tokens must be greater than 0".to_string(),
             ));
         }
         if max_tokens > 100000 {
-            return Err(IngressError::InvalidRequest(
-                format!("max_tokens must be <= 100000, got {}", max_tokens)
-            ));
+            return Err(IngressError::InvalidRequest(format!(
+                "max_tokens must be <= 100000, got {}",
+                max_tokens
+            )));
         }
     }
 
     // Validate model name is not empty and length
     if req.model.is_empty() {
         return Err(IngressError::InvalidRequest(
-            "model field cannot be empty".to_string()
+            "model field cannot be empty".to_string(),
         ));
     }
     if req.model.len() > 256 {
-        return Err(IngressError::InvalidRequest(
-            format!("model name too long: {} chars (max 256)", req.model.len())
-        ));
+        return Err(IngressError::InvalidRequest(format!(
+            "model name too long: {} chars (max 256)",
+            req.model.len()
+        )));
     }
 
     // Validate messages array is not empty
     if req.messages.is_empty() {
         return Err(IngressError::InvalidRequest(
-            "messages array cannot be empty".to_string()
+            "messages array cannot be empty".to_string(),
         ));
     }
 
     // Validate messages array length (max 100,000 per Anthropic spec)
     if req.messages.len() > 100_000 {
-        return Err(IngressError::InvalidRequest(
-            format!("messages array too large: {} messages (max 100,000)", req.messages.len())
-        ));
+        return Err(IngressError::InvalidRequest(format!(
+            "messages array too large: {} messages (max 100,000)",
+            req.messages.len()
+        )));
     }
 
     Ok(())
@@ -323,23 +333,26 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
                     return Err(IngressError::InvalidRequest(format!(
                         "Invalid role: {} (Anthropic only supports 'user' and 'assistant')",
                         msg.role
-                    )))
+                    )));
                 }
             };
 
-            let content = msg.content.unwrap_or(AnthropicMessageContent::Text(String::new()));
+            let content = msg
+                .content
+                .unwrap_or(AnthropicMessageContent::Text(String::new()));
 
             // Parse content and extract tool calls
             let (text_content, tool_calls, tool_call_id) = match content {
                 AnthropicMessageContent::Text(text) => {
                     // Validate message content length
                     if text.len() > 1_000_000 {
-                        return Err(IngressError::InvalidRequest(
-                            format!("Message content too large: {} bytes (max 1MB)", text.len())
-                        ));
+                        return Err(IngressError::InvalidRequest(format!(
+                            "Message content too large: {} bytes (max 1MB)",
+                            text.len()
+                        )));
                     }
                     (text, vec![], None)
-                },
+                }
                 AnthropicMessageContent::Blocks(blocks) => {
                     let mut text_parts = Vec::new();
                     let mut tool_calls_vec = Vec::new();
@@ -349,37 +362,38 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
                         match block {
                             AnthropicContentBlock::Text { text } => {
                                 text_parts.push(text);
-                            },
+                            }
                             AnthropicContentBlock::ToolUse { id, name, input } => {
-                                let arguments = serde_json::to_string(&input)
-                                    .map_err(|e| {
-                                        tracing::warn!("Failed to serialize tool input: {}", e);
-                                        IngressError::InvalidRequest(format!(
-                                            "Invalid tool input for '{}': {}", name, e
-                                        ))
-                                    })?;
+                                let arguments = serde_json::to_string(&input).map_err(|e| {
+                                    tracing::warn!("Failed to serialize tool input: {}", e);
+                                    IngressError::InvalidRequest(format!(
+                                        "Invalid tool input for '{}': {}",
+                                        name, e
+                                    ))
+                                })?;
 
                                 // Validate tool arguments size
                                 if arguments.len() > MAX_TOOL_ARGS_SIZE {
-                                    return Err(IngressError::InvalidRequest(
-                                        format!("Tool arguments too large for '{}': {} bytes (max 1MB)",
-                                                name, arguments.len())
-                                    ));
+                                    return Err(IngressError::InvalidRequest(format!(
+                                        "Tool arguments too large for '{}': {} bytes (max 1MB)",
+                                        name,
+                                        arguments.len()
+                                    )));
                                 }
 
                                 tool_calls_vec.push(ToolCall {
                                     id,
                                     tool_type: "function".to_string(),
-                                    function: FunctionCall {
-                                        name,
-                                        arguments,
-                                    },
+                                    function: FunctionCall { name, arguments },
                                 });
-                            },
-                            AnthropicContentBlock::ToolResult { tool_use_id, content } => {
+                            }
+                            AnthropicContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                            } => {
                                 tool_result_id = Some(tool_use_id);
                                 text_parts.push(content);
-                            },
+                            }
                         }
                     }
 
@@ -399,19 +413,22 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
 
     // Convert tools with validation
     let tools = if let Some(tools) = req.tools {
-        let result: Result<Vec<Tool>, IngressError> = tools.into_iter().map(|tool| {
-            // Validate tool input schema
-            validate_tool_schema(&tool.input_schema, &tool.name)?;
+        let result: Result<Vec<Tool>, IngressError> = tools
+            .into_iter()
+            .map(|tool| {
+                // Validate tool input schema
+                validate_tool_schema(&tool.input_schema, &tool.name)?;
 
-            Ok(Tool {
-                tool_type: "function".to_string(),
-                function: FunctionDefinition {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: tool.input_schema,
-                },
+                Ok(Tool {
+                    tool_type: "function".to_string(),
+                    function: FunctionDefinition {
+                        name: tool.name,
+                        description: tool.description,
+                        parameters: tool.input_schema,
+                    },
+                })
             })
-        }).collect();
+            .collect();
         result?
     } else {
         vec![]
@@ -612,7 +629,9 @@ fn stream_event_to_anthropic_events(
             let mut events = Vec::new();
 
             // Start tool use block if we have id and name
-            if let (Some(tool_id), Some(func)) = (id, function.as_ref().and_then(|f| f.name.clone())) {
+            if let (Some(tool_id), Some(func)) =
+                (id, function.as_ref().and_then(|f| f.name.clone()))
+            {
                 events.push(AnthropicStreamEvent::ContentBlockStart {
                     index: tool_call_index,
                     content_block: AnthropicContentBlockStart::ToolUse {
@@ -735,14 +754,12 @@ pub async fn messages(
 
                         anthropic_events
                             .into_iter()
-                            .map(|evt| {
-                                match Event::default().json_data(evt) {
-                                    Ok(event) => Ok::<_, IngressError>(event),
-                                    Err(e) => Err(IngressError::Internal(format!(
-                                        "Failed to create SSE event: {}",
-                                        e
-                                    ))),
-                                }
+                            .map(|evt| match Event::default().json_data(evt) {
+                                Ok(event) => Ok::<_, IngressError>(event),
+                                Err(e) => Err(IngressError::Internal(format!(
+                                    "Failed to create SSE event: {}",
+                                    e
+                                ))),
                             })
                             .collect::<Vec<_>>()
                     }
@@ -758,7 +775,7 @@ pub async fn messages(
                         match Event::default().json_data(error_event) {
                             Ok(event) => vec![Ok(event)],
                             Err(_) => vec![Err(IngressError::Internal(
-                                "Failed to create error SSE event".to_string()
+                                "Failed to create error SSE event".to_string(),
                             ))],
                         }
                     }
@@ -861,12 +878,21 @@ pub async fn messages_passthrough(
             }
 
             if session_part.len() > 255 {
-                tracing::warn!("Session ID too long: {} chars (max 255)", session_part.len());
+                tracing::warn!(
+                    "Session ID too long: {} chars (max 255)",
+                    session_part.len()
+                );
                 return None;
             }
 
-            if !session_part.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
-                tracing::warn!("Invalid session ID format (contains unsafe characters): {}", session_part);
+            if !session_part
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            {
+                tracing::warn!(
+                    "Invalid session ID format (contains unsafe characters): {}",
+                    session_part
+                );
                 return None;
             }
 
@@ -879,8 +905,16 @@ pub async fn messages_passthrough(
 
     // Headers that should NOT be forwarded (hop-by-hop headers per RFC 7230)
     let skip_headers = [
-        "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-        "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length"
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+        "content-length",
     ];
 
     for (name, value) in headers.iter() {
@@ -907,7 +941,8 @@ pub async fn messages_passthrough(
     );
 
     // Extract model before req is moved (for metrics and session recording)
-    let model = req.get("model")
+    let model = req
+        .get("model")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_string();
@@ -927,7 +962,9 @@ pub async fn messages_passthrough(
 
     // Use extracted session ID from metadata, or generate a new one if not available
     let recording_session_id = if state.session_recorder.is_some() {
-        session_id.clone().or_else(|| Some(uuid::Uuid::new_v4().to_string()))
+        session_id
+            .clone()
+            .or_else(|| Some(uuid::Uuid::new_v4().to_string()))
     } else {
         None
     };
@@ -939,9 +976,11 @@ pub async fn messages_passthrough(
     };
 
     // Start session recording if enabled (using async events)
-    if let (Some(recorder), Some(session_id), Some(request_id)) =
-        (&state.session_recorder, &recording_session_id, &recording_request_id)
-    {
+    if let (Some(recorder), Some(session_id), Some(request_id)) = (
+        &state.session_recorder,
+        &recording_session_id,
+        &recording_request_id,
+    ) {
         use lunaroute_session::{SessionEvent, events::SessionMetadata as V2Metadata};
 
         recorder.record_event(SessionEvent::Started {
@@ -965,7 +1004,8 @@ pub async fn messages_passthrough(
         use lunaroute_session::events::RequestStats;
 
         // Extract request text from messages (best effort for passthrough mode)
-        let request_text = req.get("messages")
+        let request_text = req
+            .get("messages")
             .and_then(|m| m.as_array())
             .and_then(|msgs| msgs.last())
             .and_then(|msg| msg.get("content"))
@@ -973,10 +1013,18 @@ pub async fn messages_passthrough(
             .unwrap_or("")
             .to_string();
 
-        let message_count = req.get("messages").and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
+        let message_count = req
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
         let has_system_prompt = req.get("system").is_some();
         let has_tools = req.get("tools").is_some();
-        let tool_count = req.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
+        let tool_count = req
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
 
         recorder.record_event(SessionEvent::RequestRecorded {
             session_id: session_id.clone(),
@@ -998,7 +1046,8 @@ pub async fn messages_passthrough(
 
     if is_streaming {
         // Handle streaming passthrough
-        let stream_response = state.connector
+        let stream_response = state
+            .connector
             .stream_passthrough(req, passthrough_headers)
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
@@ -1013,8 +1062,8 @@ pub async fn messages_passthrough(
         }
 
         // Track streaming metrics using shared module
-        use futures::StreamExt;
         use crate::streaming_metrics::StreamingMetricsTracker;
+        use futures::StreamExt;
 
         let tracker = StreamingMetricsTracker::new(before_provider);
         let tracker_ref = tracker.clone();
@@ -1207,7 +1256,8 @@ pub async fn messages_passthrough(
     }
 
     // Send directly to Anthropic API (non-streaming)
-    let response_result = state.connector
+    let response_result = state
+        .connector
         .send_passthrough(req, passthrough_headers)
         .await;
 
@@ -1215,9 +1265,11 @@ pub async fn messages_passthrough(
         Ok((bytes, headers)) => (bytes, headers),
         Err(e) => {
             // Record error in session if recording is enabled
-            if let (Some(recorder), Some(session_id), Some(request_id)) =
-                (&state.session_recorder, &recording_session_id, &recording_request_id)
-            {
+            if let (Some(recorder), Some(session_id), Some(request_id)) = (
+                &state.session_recorder,
+                &recording_session_id,
+                &recording_request_id,
+            ) {
                 use lunaroute_session::{SessionEvent, events::FinalSessionStats};
 
                 recorder.record_event(SessionEvent::Completed {
@@ -1269,9 +1321,11 @@ pub async fn messages_passthrough(
     }
 
     // Spawn async parsing task (zero latency for client)
-    if let (Some(recorder), Some(session_id), Some(request_id)) =
-        (state.session_recorder.clone(), recording_session_id.clone(), recording_request_id.clone())
-    {
+    if let (Some(recorder), Some(session_id), Some(request_id)) = (
+        state.session_recorder.clone(),
+        recording_session_id.clone(),
+        recording_request_id.clone(),
+    ) {
         let raw_bytes = raw_response_bytes.clone();
         let response_headers_clone = response_headers.clone();
         let user_agent_clone = user_agent.clone();
@@ -1280,159 +1334,188 @@ pub async fn messages_passthrough(
             // Catch and log any panics/errors in background parsing
             let session_id_for_error = session_id.clone();
             let parse_result = std::panic::AssertUnwindSafe(async move {
-            // Parse response asynchronously (doesn't block client)
-            // Use spawn_blocking for gzip decompression to avoid blocking tokio threads
-            let is_gzipped = response_headers_clone.get("content-encoding")
-                .map(|v| v.to_lowercase().contains("gzip"))
-                .unwrap_or(false);
+                // Parse response asynchronously (doesn't block client)
+                // Use spawn_blocking for gzip decompression to avoid blocking tokio threads
+                let is_gzipped = response_headers_clone
+                    .get("content-encoding")
+                    .map(|v| v.to_lowercase().contains("gzip"))
+                    .unwrap_or(false);
 
-            let bytes_for_parsing = if is_gzipped {
-                let raw_bytes_clone = raw_bytes.clone();
-                match tokio::task::spawn_blocking(move || {
-                    use flate2::read::GzDecoder;
-                    use std::io::Read;
+                let bytes_for_parsing = if is_gzipped {
+                    let raw_bytes_clone = raw_bytes.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        use flate2::read::GzDecoder;
+                        use std::io::Read;
 
-                    let mut decoder = GzDecoder::new(&raw_bytes_clone[..]);
-                    let mut decompressed = Vec::new();
-                    decoder.read_to_end(&mut decompressed).map(|_| decompressed)
-                }).await {
-                    Ok(Ok(decompressed)) => decompressed,
-                    Ok(Err(e)) => {
-                        tracing::warn!("Failed to decompress gzip response in async parser: {}", e);
-                        return;
-                    }
-                    Err(e) => {
-                        tracing::error!("Gzip decompression task failed: {}", e);
-                        return;
-                    }
-                }
-            } else {
-                raw_bytes.to_vec()
-            };
-
-            let response_json: serde_json::Value = match serde_json::from_slice(&bytes_for_parsing) {
-                Ok(json) => json,
-                Err(e) => {
-                    tracing::warn!("Failed to parse response JSON in async parser: {}", e);
-                    return;
-                }
-            };
-
-            // Extract tokens with cache details
-            let (input_tokens, output_tokens, thinking_tokens, _cache_creation, cache_read) =
-                if let Some(usage) = response_json.get("usage") {
-                    let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-
-                    // Extract thinking tokens (extended thinking, not cache!)
-                    let thinking = usage.get("thinking_tokens")
-                        .and_then(|v| v.as_u64())
-                        .or_else(|| usage.get("extended_thinking_tokens").and_then(|v| v.as_u64()))
-                        .unwrap_or(0);
-
-                    // Extract cache tokens separately
-                    let cache_create = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64());
-                    let cache_hit = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64());
-
-                    (input, output, thinking, cache_create, cache_hit)
-                } else {
-                    (0, 0, 0, None, None)
-                };
-
-            // Extract tool calls and count content blocks
-            let mut tool_calls_map = std::collections::HashMap::new();
-            let mut content_blocks = 0;
-            let mut has_refusal = false;
-            if let Some(content) = response_json.get("content").and_then(|c| c.as_array()) {
-                content_blocks = content.len();
-                for block in content {
-                    if let Some("tool_use") = block.get("type").and_then(|t| t.as_str())
-                        && let Some(tool_name) = block.get("name").and_then(|n| n.as_str())
+                        let mut decoder = GzDecoder::new(&raw_bytes_clone[..]);
+                        let mut decompressed = Vec::new();
+                        decoder.read_to_end(&mut decompressed).map(|_| decompressed)
+                    })
+                    .await
                     {
-                        *tool_calls_map.entry(tool_name.to_string()).or_insert(0u32) += 1;
+                        Ok(Ok(decompressed)) => decompressed,
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                "Failed to decompress gzip response in async parser: {}",
+                                e
+                            );
+                            return;
+                        }
+                        Err(e) => {
+                            tracing::error!("Gzip decompression task failed: {}", e);
+                            return;
+                        }
+                    }
+                } else {
+                    raw_bytes.to_vec()
+                };
+
+                let response_json: serde_json::Value =
+                    match serde_json::from_slice(&bytes_for_parsing) {
+                        Ok(json) => json,
+                        Err(e) => {
+                            tracing::warn!("Failed to parse response JSON in async parser: {}", e);
+                            return;
+                        }
+                    };
+
+                // Extract tokens with cache details
+                let (input_tokens, output_tokens, thinking_tokens, _cache_creation, cache_read) =
+                    if let Some(usage) = response_json.get("usage") {
+                        let input = usage
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let output = usage
+                            .get("output_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+
+                        // Extract thinking tokens (extended thinking, not cache!)
+                        let thinking = usage
+                            .get("thinking_tokens")
+                            .and_then(|v| v.as_u64())
+                            .or_else(|| {
+                                usage
+                                    .get("extended_thinking_tokens")
+                                    .and_then(|v| v.as_u64())
+                            })
+                            .unwrap_or(0);
+
+                        // Extract cache tokens separately
+                        let cache_create = usage
+                            .get("cache_creation_input_tokens")
+                            .and_then(|v| v.as_u64());
+                        let cache_hit = usage
+                            .get("cache_read_input_tokens")
+                            .and_then(|v| v.as_u64());
+
+                        (input, output, thinking, cache_create, cache_hit)
+                    } else {
+                        (0, 0, 0, None, None)
+                    };
+
+                // Extract tool calls and count content blocks
+                let mut tool_calls_map = std::collections::HashMap::new();
+                let mut content_blocks = 0;
+                let mut has_refusal = false;
+                if let Some(content) = response_json.get("content").and_then(|c| c.as_array()) {
+                    content_blocks = content.len();
+                    for block in content {
+                        if let Some("tool_use") = block.get("type").and_then(|t| t.as_str())
+                            && let Some(tool_name) = block.get("name").and_then(|n| n.as_str())
+                        {
+                            *tool_calls_map.entry(tool_name.to_string()).or_insert(0u32) += 1;
+                        }
                     }
                 }
-            }
 
-            // Check for refusal in stop_reason
-            if let Some(stop_reason) = response_json.get("stop_reason").and_then(|s| s.as_str()) {
-                has_refusal = stop_reason == "end_turn"; // Simplified - actual refusal detection may vary
-            }
+                // Check for refusal in stop_reason
+                if let Some(stop_reason) = response_json.get("stop_reason").and_then(|s| s.as_str())
+                {
+                    has_refusal = stop_reason == "end_turn"; // Simplified - actual refusal detection may vary
+                }
 
-            // Extract model
-            let model_used = response_json.get("model").and_then(|m| m.as_str()).map(|s| s.to_string());
+                // Extract model
+                let model_used = response_json
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string());
 
-            // Calculate response size
-            let response_size_bytes = bytes_for_parsing.len();
+                // Calculate response size
+                let response_size_bytes = bytes_for_parsing.len();
 
-            // Build updates if we have meaningful data
-            let has_tokens = input_tokens > 0 || output_tokens > 0;
-            let has_tools = !tool_calls_map.is_empty();
+                // Build updates if we have meaningful data
+                let has_tokens = input_tokens > 0 || output_tokens > 0;
+                let has_tools = !tool_calls_map.is_empty();
 
-            if has_tokens || has_tools || model_used.is_some() {
-                use lunaroute_session::events::{TokenTotals, ToolUsageSummary, ToolStats};
+                if has_tokens || has_tools || model_used.is_some() {
+                    use lunaroute_session::events::{TokenTotals, ToolStats, ToolUsageSummary};
 
-                let token_updates = if has_tokens {
-                    let cache_r = cache_read.unwrap_or(0);
-                    let cache_c = _cache_creation.unwrap_or(0);
-                    Some(TokenTotals {
-                        total_input: input_tokens,
-                        total_output: output_tokens,
-                        total_thinking: thinking_tokens,  // Anthropic extended thinking tokens
-                        total_reasoning: 0,  // Anthropic doesn't have reasoning tokens (that's OpenAI)
-                        total_cached: cache_r,  // Deprecated field, kept for backward compat
-                        total_cache_read: cache_r,  // Anthropic cache hits (90% discount)
-                        total_cache_creation: cache_c,  // Anthropic cache writes (25% markup)
-                        total_audio_input: 0,  // Anthropic doesn't have audio tokens yet
-                        total_audio_output: 0,
-                        grand_total: input_tokens + output_tokens + thinking_tokens,
-                        by_model: Default::default(),
-                    })
-                } else {
-                    None
-                };
+                    let token_updates = if has_tokens {
+                        let cache_r = cache_read.unwrap_or(0);
+                        let cache_c = _cache_creation.unwrap_or(0);
+                        Some(TokenTotals {
+                            total_input: input_tokens,
+                            total_output: output_tokens,
+                            total_thinking: thinking_tokens, // Anthropic extended thinking tokens
+                            total_reasoning: 0, // Anthropic doesn't have reasoning tokens (that's OpenAI)
+                            total_cached: cache_r, // Deprecated field, kept for backward compat
+                            total_cache_read: cache_r, // Anthropic cache hits (90% discount)
+                            total_cache_creation: cache_c, // Anthropic cache writes (25% markup)
+                            total_audio_input: 0, // Anthropic doesn't have audio tokens yet
+                            total_audio_output: 0,
+                            grand_total: input_tokens + output_tokens + thinking_tokens,
+                            by_model: Default::default(),
+                        })
+                    } else {
+                        None
+                    };
 
-                let tool_summary = if has_tools {
-                    let total_calls: u32 = tool_calls_map.values().sum();
-                    let mut by_tool = std::collections::HashMap::new();
-                    for (name, count) in tool_calls_map {
-                        by_tool.insert(name, ToolStats {
-                            call_count: count,
-                            total_execution_time_ms: 0,
-                            avg_execution_time_ms: 0,
-                            error_count: 0,
-                        });
-                    }
-                    Some(ToolUsageSummary {
-                        total_tool_calls: total_calls,
-                        unique_tool_count: by_tool.len() as u32,
-                        by_tool,
-                        total_tool_time_ms: 0,
-                        tool_error_count: 0,
-                    })
-                } else {
-                    None
-                };
+                    let tool_summary = if has_tools {
+                        let total_calls: u32 = tool_calls_map.values().sum();
+                        let mut by_tool = std::collections::HashMap::new();
+                        for (name, count) in tool_calls_map {
+                            by_tool.insert(
+                                name,
+                                ToolStats {
+                                    call_count: count,
+                                    total_execution_time_ms: 0,
+                                    avg_execution_time_ms: 0,
+                                    error_count: 0,
+                                },
+                            );
+                        }
+                        Some(ToolUsageSummary {
+                            total_tool_calls: total_calls,
+                            unique_tool_count: by_tool.len() as u32,
+                            by_tool,
+                            total_tool_time_ms: 0,
+                            tool_error_count: 0,
+                        })
+                    } else {
+                        None
+                    };
 
-                recorder.record_event(lunaroute_session::SessionEvent::StatsUpdated {
-                    session_id,
-                    request_id,
-                    timestamp: chrono::Utc::now(),
-                    token_updates,
-                    tool_call_updates: tool_summary,
-                    model_used,
-                    response_size_bytes,
-                    content_blocks,
-                    has_refusal,
-                    user_agent: user_agent_clone,
-                });
+                    recorder.record_event(lunaroute_session::SessionEvent::StatsUpdated {
+                        session_id,
+                        request_id,
+                        timestamp: chrono::Utc::now(),
+                        token_updates,
+                        tool_call_updates: tool_summary,
+                        model_used,
+                        response_size_bytes,
+                        content_blocks,
+                        has_refusal,
+                        user_agent: user_agent_clone,
+                    });
 
-                tracing::debug!(
-                    "Async parsed Anthropic non-streaming response: tokens={}, tools={}",
-                    if has_tokens { "yes" } else { "no" },
-                    if has_tools { "yes" } else { "no" }
-                );
-            }
+                    tracing::debug!(
+                        "Async parsed Anthropic non-streaming response: tokens={}, tools={}",
+                        if has_tokens { "yes" } else { "no" },
+                        if has_tools { "yes" } else { "no" }
+                    );
+                }
             });
 
             if let Err(e) = futures::FutureExt::catch_unwind(parse_result).await {
@@ -1478,15 +1561,18 @@ pub fn passthrough_router(
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use lunaroute_core::provider::ProviderCapabilities;
     use futures::stream;
+    use lunaroute_core::provider::ProviderCapabilities;
 
     // Mock provider for testing
     struct MockProvider;
 
     #[async_trait]
     impl Provider for MockProvider {
-        async fn send(&self, _request: NormalizedRequest) -> lunaroute_core::Result<NormalizedResponse> {
+        async fn send(
+            &self,
+            _request: NormalizedRequest,
+        ) -> lunaroute_core::Result<NormalizedResponse> {
             Ok(NormalizedResponse {
                 id: "test-123".to_string(),
                 model: "claude-3-opus".to_string(),
@@ -1514,7 +1600,16 @@ mod tests {
         async fn stream(
             &self,
             _request: NormalizedRequest,
-        ) -> lunaroute_core::Result<Box<dyn futures::Stream<Item = lunaroute_core::Result<lunaroute_core::normalized::NormalizedStreamEvent>> + Send + Unpin>> {
+        ) -> lunaroute_core::Result<
+            Box<
+                dyn futures::Stream<
+                        Item = lunaroute_core::Result<
+                            lunaroute_core::normalized::NormalizedStreamEvent,
+                        >,
+                    > + Send
+                    + Unpin,
+            >,
+        > {
             Ok(Box::new(stream::empty()))
         }
 
@@ -1531,13 +1626,13 @@ mod tests {
     fn test_to_normalized() {
         let req = AnthropicMessagesRequest {
             model: "claude-3-opus".to_string(),
-            messages: vec![
-                AnthropicMessage {
-                    role: "user".to_string(),
-                    content: Some(AnthropicMessageContent::Text("Hello!".to_string())),
-                },
-            ],
-            system: Some(AnthropicSystem::Text("You are a helpful assistant".to_string())),
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: Some(AnthropicMessageContent::Text("Hello!".to_string())),
+            }],
+            system: Some(AnthropicSystem::Text(
+                "You are a helpful assistant".to_string(),
+            )),
             max_tokens: Some(1024),
             temperature: Some(0.7),
             top_p: None,
@@ -1550,7 +1645,10 @@ mod tests {
         let normalized = to_normalized(req).unwrap();
         assert_eq!(normalized.model, "claude-3-opus");
         assert_eq!(normalized.messages.len(), 1);
-        assert_eq!(normalized.system, Some("You are a helpful assistant".to_string()));
+        assert_eq!(
+            normalized.system,
+            Some("You are a helpful assistant".to_string())
+        );
         assert_eq!(normalized.max_tokens, Some(1024));
     }
 
@@ -1691,7 +1789,12 @@ mod tests {
         // Validation should reject empty messages array
         let result = to_normalized(req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("messages array cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("messages array cannot be empty")
+        );
     }
 
     #[test]
@@ -1702,7 +1805,9 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(AnthropicMessageContent::Text("Hello!".to_string())),
             }],
-            system: Some(AnthropicSystem::Text("You are a helpful assistant".to_string())),
+            system: Some(AnthropicSystem::Text(
+                "You are a helpful assistant".to_string(),
+            )),
             max_tokens: Some(1024),
             temperature: Some(0.7),
             top_p: Some(0.9),
@@ -1713,7 +1818,10 @@ mod tests {
         };
 
         let normalized = to_normalized(req).unwrap();
-        assert_eq!(normalized.system, Some("You are a helpful assistant".to_string()));
+        assert_eq!(
+            normalized.system,
+            Some("You are a helpful assistant".to_string())
+        );
         assert_eq!(normalized.max_tokens, Some(1024));
         assert_eq!(normalized.temperature, Some(0.7));
         assert_eq!(normalized.top_p, Some(0.9));
@@ -1763,11 +1871,9 @@ mod tests {
                 index: 0,
                 message: Message {
                     role: Role::Assistant,
-                    content: MessageContent::Parts(vec![
-                        ContentPart::Text {
-                            text: "I see an image".to_string(),
-                        },
-                    ]),
+                    content: MessageContent::Parts(vec![ContentPart::Text {
+                        text: "I see an image".to_string(),
+                    }]),
                     name: None,
                     tool_calls: vec![],
                     tool_call_id: None,
@@ -1880,7 +1986,10 @@ mod tests {
             return None;
         }
 
-        if !session_part.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        if !session_part
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
             return None;
         }
 
@@ -1892,7 +2001,10 @@ mod tests {
         // Valid session ID with marker
         let user_id = "user_abc123_account_def456_session_550e8400-e29b-41d4-a716-446655440000";
         let session_id = extract_and_validate_session_id(user_id);
-        assert_eq!(session_id, Some("550e8400-e29b-41d4-a716-446655440000".to_string()));
+        assert_eq!(
+            session_id,
+            Some("550e8400-e29b-41d4-a716-446655440000".to_string())
+        );
     }
 
     #[test]

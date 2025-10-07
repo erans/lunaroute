@@ -2,8 +2,8 @@
 
 use crate::models::*;
 use crate::stats;
-use sqlx::{Row, SqlitePool};
 use anyhow::Result;
+use sqlx::{Row, SqlitePool};
 
 /// Get overview statistics
 pub async fn get_overview_stats(pool: &SqlitePool, hours: i64) -> Result<OverviewStats> {
@@ -38,7 +38,7 @@ pub async fn get_overview_stats(pool: &SqlitePool, hours: i64) -> Result<Overvie
         INNER JOIN sessions s ON ss.session_id = s.session_id
         WHERE s.started_at >= datetime('now', '-' || ? || ' hours')
             AND ss.model_name IS NOT NULL
-        "#
+        "#,
     )
     .bind(hours)
     .fetch_all(pool)
@@ -87,7 +87,7 @@ pub async fn get_token_time_series(pool: &SqlitePool, days: i64) -> Result<Vec<T
         WHERE s.started_at >= datetime('now', '-' || ? || ' days')
         GROUP BY DATE(s.started_at)
         ORDER BY date ASC
-        "#
+        "#,
     )
     .bind(days)
     .fetch_all(pool)
@@ -121,7 +121,7 @@ pub async fn get_tool_usage(pool: &SqlitePool) -> Result<Vec<ToolUsage>> {
         GROUP BY tool_name
         ORDER BY total_calls DESC
         LIMIT 20
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await?;
@@ -155,7 +155,7 @@ pub async fn get_cost_stats(pool: &SqlitePool) -> Result<CostStats> {
         FROM session_stats ss
         INNER JOIN sessions s ON ss.session_id = s.session_id
         WHERE ss.model_name IS NOT NULL
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await?;
@@ -182,34 +182,38 @@ pub async fn get_cost_stats(pool: &SqlitePool) -> Result<CostStats> {
         total_cost += cost;
 
         // Parse timestamp and categorize
-        if let Ok(started_at) = stat.try_get::<Option<String>, _>("started_at") {
-            if let Some(started_at) = started_at {
-                // SQLite timestamps are typically in UTC
-                // For simplicity, we'll use string comparison
-                // In production, you'd want proper timezone handling
-                let now = chrono::Utc::now();
-                let today_str = now.format("%Y-%m-%d").to_string();
-                let week_ago = (now - chrono::Duration::days(7)).format("%Y-%m-%d").to_string();
-                let month_ago = (now - chrono::Duration::days(30)).format("%Y-%m-%d").to_string();
+        if let Ok(Some(started_at)) = stat.try_get::<Option<String>, _>("started_at") {
+            // SQLite timestamps are typically in UTC
+            // For simplicity, we'll use string comparison
+            // In production, you'd want proper timezone handling
+            let now = chrono::Utc::now();
+            let today_str = now.format("%Y-%m-%d").to_string();
+            let week_ago = (now - chrono::Duration::days(7))
+                .format("%Y-%m-%d")
+                .to_string();
+            let month_ago = (now - chrono::Duration::days(30))
+                .format("%Y-%m-%d")
+                .to_string();
 
-                if started_at.starts_with(&today_str) {
-                    today_cost += cost;
-                    daily_costs[0] += cost;
-                }
+            if started_at.starts_with(&today_str) {
+                today_cost += cost;
+                daily_costs[0] += cost;
+            }
 
-                if started_at.as_str() >= week_ago.as_str() {
-                    week_cost += cost;
-                }
+            if started_at.as_str() >= week_ago.as_str() {
+                week_cost += cost;
+            }
 
-                if started_at.as_str() >= month_ago.as_str() {
-                    month_cost += cost;
+            if started_at.as_str() >= month_ago.as_str() {
+                month_cost += cost;
 
-                    // Calculate day index for daily tracking
-                    if let Ok(date) = chrono::NaiveDateTime::parse_from_str(&started_at, "%Y-%m-%d %H:%M:%S") {
-                        let days_ago = (now.naive_utc().date() - date.date()).num_days();
-                        if days_ago >= 0 && days_ago < 30 {
-                            daily_costs[days_ago as usize] += cost;
-                        }
+                // Calculate day index for daily tracking
+                if let Ok(date) =
+                    chrono::NaiveDateTime::parse_from_str(&started_at, "%Y-%m-%d %H:%M:%S")
+                {
+                    let days_ago = (now.naive_utc().date() - date.date()).num_days();
+                    if (0..30).contains(&days_ago) {
+                        daily_costs[days_ago as usize] += cost;
                     }
                 }
             }
@@ -246,7 +250,7 @@ pub async fn get_model_usage(pool: &SqlitePool) -> Result<Vec<ModelUsage>> {
         GROUP BY model_used
         ORDER BY count DESC
         LIMIT 15
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await?;
@@ -257,7 +261,11 @@ pub async fn get_model_usage(pool: &SqlitePool) -> Result<Vec<ModelUsage>> {
             let count = row.try_get::<i64, _>("count").unwrap_or(0);
             let percentage = (count as f64 / total_count) * 100.0;
             ModelUsage {
-                model_name: row.try_get::<Option<String>, _>("model").ok().flatten().unwrap_or_else(|| "unknown".to_string()),
+                model_name: row
+                    .try_get::<Option<String>, _>("model")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 request_count: count,
                 percentage,
             }
@@ -288,7 +296,7 @@ pub async fn get_recent_sessions(pool: &SqlitePool, limit: i64) -> Result<Vec<Se
         GROUP BY s.session_id
         ORDER BY s.started_at DESC
         LIMIT ?
-        "#
+        "#,
     )
     .bind(limit)
     .fetch_all(pool)
@@ -315,7 +323,11 @@ pub async fn get_recent_sessions(pool: &SqlitePool, limit: i64) -> Result<Vec<Se
 
             SessionSummary {
                 session_id: s.try_get("session_id").unwrap_or_default(),
-                started_at: s.try_get::<Option<String>, _>("started_at").ok().flatten().unwrap_or_else(|| "unknown".to_string()),
+                started_at: s
+                    .try_get::<Option<String>, _>("started_at")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 model: models.unwrap_or_else(|| "unknown".to_string()),
                 request_count: s.try_get("request_count").unwrap_or(0),
                 total_tokens: s.try_get("total_tokens").ok().flatten().unwrap_or(0),
@@ -335,7 +347,7 @@ pub async fn get_sessions_paginated(
     offset: i64,
     limit: i64,
     user_agent_filter: Option<&str>,
-    model_filter: Option<&str>
+    model_filter: Option<&str>,
 ) -> Result<Vec<SessionSummary>> {
     let mut query = String::from(
         r#"
@@ -353,7 +365,7 @@ pub async fn get_sessions_paginated(
             GROUP_CONCAT(DISTINCT ss.model_name) as all_models
         FROM sessions s
         LEFT JOIN session_stats ss ON s.session_id = ss.session_id
-        "#
+        "#,
     );
 
     let mut conditions = Vec::new();
@@ -371,7 +383,9 @@ pub async fn get_sessions_paginated(
     }
 
     if model_filter.is_some() {
-        conditions.push("s.session_id IN (SELECT DISTINCT session_id FROM session_stats WHERE model_name = ?)");
+        conditions.push(
+            "s.session_id IN (SELECT DISTINCT session_id FROM session_stats WHERE model_name = ?)",
+        );
     }
 
     if !conditions.is_empty() {
@@ -384,7 +398,7 @@ pub async fn get_sessions_paginated(
         GROUP BY s.session_id
         ORDER BY s.started_at DESC
         LIMIT ? OFFSET ?
-        "#
+        "#,
     );
 
     let mut sqlx_query = sqlx::query(&query);
@@ -403,11 +417,7 @@ pub async fn get_sessions_paginated(
         sqlx_query = sqlx_query.bind(model);
     }
 
-    let sessions = sqlx_query
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(pool)
-        .await?;
+    let sessions = sqlx_query.bind(limit).bind(offset).fetch_all(pool).await?;
 
     let summaries = sessions
         .into_iter()
@@ -430,7 +440,11 @@ pub async fn get_sessions_paginated(
 
             SessionSummary {
                 session_id: s.try_get("session_id").unwrap_or_default(),
-                started_at: s.try_get::<Option<String>, _>("started_at").ok().flatten().unwrap_or_else(|| "unknown".to_string()),
+                started_at: s
+                    .try_get::<Option<String>, _>("started_at")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 model: models.unwrap_or_else(|| "unknown".to_string()),
                 request_count: s.try_get("request_count").unwrap_or(0),
                 total_tokens: s.try_get("total_tokens").ok().flatten().unwrap_or(0),
@@ -452,14 +466,18 @@ pub async fn get_user_agents(pool: &SqlitePool) -> Result<Vec<String>> {
         FROM sessions
         WHERE user_agent IS NOT NULL
         ORDER BY user_agent ASC
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await?;
 
     let user_agents = rows
         .into_iter()
-        .filter_map(|row| row.try_get::<Option<String>, _>("user_agent").ok().flatten())
+        .filter_map(|row| {
+            row.try_get::<Option<String>, _>("user_agent")
+                .ok()
+                .flatten()
+        })
         .collect();
 
     Ok(user_agents)
@@ -473,14 +491,18 @@ pub async fn get_models(pool: &SqlitePool) -> Result<Vec<String>> {
         FROM session_stats
         WHERE model_name IS NOT NULL
         ORDER BY model_name ASC
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await?;
 
     let models = rows
         .into_iter()
-        .filter_map(|row| row.try_get::<Option<String>, _>("model_name").ok().flatten())
+        .filter_map(|row| {
+            row.try_get::<Option<String>, _>("model_name")
+                .ok()
+                .flatten()
+        })
         .collect();
 
     Ok(models)
@@ -523,7 +545,7 @@ pub async fn get_session_detail(pool: &SqlitePool, session_id: &str) -> Result<S
         LEFT JOIN session_stats ss ON s.session_id = ss.session_id
         WHERE s.session_id = ?
         GROUP BY s.session_id
-        "#
+        "#,
     )
     .bind(session_id)
     .fetch_optional(pool)
@@ -538,17 +560,16 @@ pub async fn get_session_detail(pool: &SqlitePool, session_id: &str) -> Result<S
         let output: i64 = s.try_get("output_tokens").ok().flatten().unwrap_or(0);
         let thinking: i64 = s.try_get("thinking_tokens").ok().flatten().unwrap_or(0);
 
-        let cost = stats::calculate_cost(
-            input,
-            output,
-            thinking,
-            model.as_deref().unwrap_or(""),
-        );
+        let cost = stats::calculate_cost(input, output, thinking, model.as_deref().unwrap_or(""));
 
         Ok(SessionDetail {
             session_id: s.try_get("session_id").unwrap_or_default(),
             request_id: s.try_get("request_id").ok().flatten(),
-            started_at: s.try_get::<Option<String>, _>("started_at").ok().flatten().unwrap_or_default(),
+            started_at: s
+                .try_get::<Option<String>, _>("started_at")
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
             completed_at: s.try_get("completed_at").ok().flatten(),
             provider: s.try_get("provider").unwrap_or_default(),
             listener: s.try_get("listener").unwrap_or_default(),
@@ -565,7 +586,11 @@ pub async fn get_session_detail(pool: &SqlitePool, session_id: &str) -> Result<S
             thinking_tokens: thinking,
             reasoning_tokens: s.try_get("reasoning_tokens").ok().flatten().unwrap_or(0),
             cache_read_tokens: s.try_get("cache_read_tokens").ok().flatten().unwrap_or(0),
-            cache_creation_tokens: s.try_get("cache_creation_tokens").ok().flatten().unwrap_or(0),
+            cache_creation_tokens: s
+                .try_get("cache_creation_tokens")
+                .ok()
+                .flatten()
+                .unwrap_or(0),
             total_tokens: s.try_get("total_tokens").ok().flatten().unwrap_or(0),
             is_streaming: s.try_get("is_streaming").ok().flatten().unwrap_or(false),
             chunk_count: s.try_get("chunk_count").ok().flatten(),
@@ -581,7 +606,12 @@ pub async fn get_session_detail(pool: &SqlitePool, session_id: &str) -> Result<S
 }
 
 /// Get session timeline events with pagination
-pub async fn get_session_timeline(pool: &SqlitePool, session_id: &str, offset: i64, limit: i64) -> Result<Vec<TimelineEvent>> {
+pub async fn get_session_timeline(
+    pool: &SqlitePool,
+    session_id: &str,
+    offset: i64,
+    limit: i64,
+) -> Result<Vec<TimelineEvent>> {
     // Get session stats entries for this session (each represents a request/response)
     let stats = sqlx::query(
         r#"
@@ -599,7 +629,7 @@ pub async fn get_session_timeline(pool: &SqlitePool, session_id: &str, offset: i
         WHERE session_id = ?
         ORDER BY created_at ASC
         LIMIT ? OFFSET ?
-        "#
+        "#,
     )
     .bind(session_id)
     .bind(limit)
@@ -651,7 +681,7 @@ pub async fn get_session_timeline(pool: &SqlitePool, session_id: &str, offset: i
         WHERE session_id = ?
         ORDER BY created_at ASC
         LIMIT ? OFFSET ?
-        "#
+        "#,
     )
     .bind(session_id)
     .bind(limit)
@@ -698,7 +728,7 @@ pub async fn get_sessions_by_hour(pool: &SqlitePool, hours: i64) -> Result<Vec<H
         WHERE started_at >= datetime('now', '-' || ? || ' hours')
         GROUP BY hour
         ORDER BY hour ASC
-        "#
+        "#,
     )
     .bind(hours)
     .fetch_all(pool)
@@ -730,7 +760,7 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: i64) -> Result<Spendin
         INNER JOIN sessions s ON ss.session_id = s.session_id
         WHERE s.started_at >= datetime('now', '-' || ? || ' hours')
             AND ss.model_name IS NOT NULL
-        "#
+        "#,
     )
     .bind(hours)
     .fetch_all(pool)
@@ -738,8 +768,10 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: i64) -> Result<Spendin
 
     // Calculate total cost and per-model breakdown
     let mut total_cost = 0.0;
-    let mut model_costs: std::collections::HashMap<String, (f64, std::collections::HashSet<String>)> =
-        std::collections::HashMap::new();
+    let mut model_costs: std::collections::HashMap<
+        String,
+        (f64, std::collections::HashSet<String>),
+    > = std::collections::HashMap::new();
 
     for stat in &stats_rows {
         let model: Option<String> = stat.try_get("model_name").ok();
@@ -758,7 +790,9 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: i64) -> Result<Spendin
         total_cost += cost;
 
         if let Some(model_name) = model {
-            let entry = model_costs.entry(model_name).or_insert((0.0, std::collections::HashSet::new()));
+            let entry = model_costs
+                .entry(model_name)
+                .or_insert((0.0, std::collections::HashSet::new()));
             entry.0 += cost;
             if let Some(sid) = session_id {
                 entry.1.insert(sid);
@@ -772,7 +806,7 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: i64) -> Result<Spendin
         SELECT COUNT(DISTINCT session_id) as count
         FROM sessions
         WHERE started_at >= datetime('now', '-' || ? || ' hours')
-        "#
+        "#,
     )
     .bind(hours)
     .fetch_one(pool)
@@ -806,7 +840,10 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: i64) -> Result<Spendin
 }
 
 /// Get tool usage statistics for a specific session
-pub async fn get_session_tool_stats(pool: &SqlitePool, session_id: &str) -> Result<SessionToolStats> {
+pub async fn get_session_tool_stats(
+    pool: &SqlitePool,
+    session_id: &str,
+) -> Result<SessionToolStats> {
     let rows = sqlx::query(
         r#"
         SELECT
@@ -816,15 +853,16 @@ pub async fn get_session_tool_stats(pool: &SqlitePool, session_id: &str) -> Resu
         WHERE session_id = ?
         GROUP BY tool_name
         ORDER BY total_calls DESC
-        "#
+        "#,
     )
     .bind(session_id)
     .fetch_all(pool)
     .await?;
 
-    let total_tool_calls: i64 = rows.iter().map(|row| {
-        row.try_get::<i64, _>("total_calls").unwrap_or(0)
-    }).sum();
+    let total_tool_calls: i64 = rows
+        .iter()
+        .map(|row| row.try_get::<i64, _>("total_calls").unwrap_or(0))
+        .sum();
 
     let by_tool: Vec<ToolBreakdown> = rows
         .into_iter()
@@ -851,7 +889,7 @@ pub async fn get_session_tool_stats(pool: &SqlitePool, session_id: &str) -> Resu
         SELECT COUNT(*) as count
         FROM session_stats
         WHERE session_id = ?
-        "#
+        "#,
     )
     .bind(session_id)
     .fetch_one(pool)

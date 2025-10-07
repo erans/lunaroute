@@ -158,9 +158,7 @@ impl Provider for StreamingMockProvider {
         >,
     > {
         let events = self.events.clone();
-        Ok(Box::new(stream::iter(
-            events.into_iter().map(Ok),
-        )))
+        Ok(Box::new(stream::iter(events.into_iter().map(Ok))))
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -240,7 +238,10 @@ async fn test_messages_success() {
     assert_eq!(json["model"], "claude-3-opus");
     assert_eq!(json["type"], "message");
     assert_eq!(json["role"], "assistant");
-    assert_eq!(json["content"][0]["text"], "Hello from Anthropic integration test!");
+    assert_eq!(
+        json["content"][0]["text"],
+        "Hello from Anthropic integration test!"
+    );
     assert_eq!(json["stop_reason"], "end_turn");
     assert_eq!(json["usage"]["input_tokens"], 10);
     assert_eq!(json["usage"]["output_tokens"], 5);
@@ -303,10 +304,12 @@ async fn test_messages_invalid_temperature() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert!(json["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("temperature must be between 0.0 and 1.0"));
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("temperature must be between 0.0 and 1.0")
+    );
 }
 
 #[tokio::test]
@@ -336,10 +339,12 @@ async fn test_messages_empty_messages() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert!(json["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("messages array cannot be empty"));
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("messages array cannot be empty")
+    );
 }
 
 #[tokio::test]
@@ -371,10 +376,12 @@ async fn test_messages_provider_error() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert!(json["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Mock provider error"));
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Mock provider error")
+    );
 }
 
 #[tokio::test]
@@ -463,9 +470,7 @@ async fn test_messages_streaming_content() {
     assert_eq!(first["message"]["model"], "claude-3-opus");
 
     // Verify we have content_block_start
-    let has_content_start = events
-        .iter()
-        .any(|e| e["type"] == "content_block_start");
+    let has_content_start = events.iter().any(|e| e["type"] == "content_block_start");
     assert!(has_content_start, "Should have content_block_start event");
 
     // Verify we have content_block_delta events
@@ -489,13 +494,17 @@ async fn test_messages_streaming_content() {
     // Verify accumulated content
     let mut accumulated = String::new();
     for event in &events {
-        if event["type"] == "content_block_delta" && event["delta"]["type"] == "text_delta"
+        if event["type"] == "content_block_delta"
+            && event["delta"]["type"] == "text_delta"
             && let Some(text) = event["delta"]["text"].as_str()
         {
             accumulated.push_str(text);
         }
     }
-    assert_eq!(accumulated, "Hello from Claude", "Content should be accumulated correctly");
+    assert_eq!(
+        accumulated, "Hello from Claude",
+        "Content should be accumulated correctly"
+    );
 }
 
 #[tokio::test]
@@ -528,10 +537,12 @@ async fn test_messages_invalid_role() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert!(json["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Invalid role"));
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid role")
+    );
 }
 
 #[tokio::test]

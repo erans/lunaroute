@@ -3,7 +3,7 @@
 //! This module provides integration between session recording and PII detection/redaction.
 
 use crate::config::PIIConfig;
-use lunaroute_core::{normalized::*, Result};
+use lunaroute_core::{Result, normalized::*};
 use lunaroute_pii::{
     CustomPattern, CustomRedactionMode, DetectorConfig, PIIDetector, PIIRedactor, RedactionMode,
     RedactorConfig, RegexPIIDetector, StandardRedactor,
@@ -91,8 +91,9 @@ impl SessionPIIRedactor {
             min_confidence: config.min_confidence,
         };
 
-        let detector = RegexPIIDetector::new(detector_config)
-            .map_err(|e| lunaroute_core::Error::Internal(format!("Failed to create PII detector: {}", e)))?;
+        let detector = RegexPIIDetector::new(detector_config).map_err(|e| {
+            lunaroute_core::Error::Internal(format!("Failed to create PII detector: {}", e))
+        })?;
 
         // Convert redaction mode string to enum
         let redaction_mode = match config.redaction_mode.as_str() {
@@ -142,7 +143,8 @@ impl SessionPIIRedactor {
         for message in &mut request.messages {
             for tool_call in &mut message.tool_calls {
                 // Redact from arguments (which is a JSON string) - use JSON-aware redaction
-                tool_call.function.arguments = self.redact_json_string(&tool_call.function.arguments);
+                tool_call.function.arguments =
+                    self.redact_json_string(&tool_call.function.arguments);
             }
 
             if let Some(tool_call_id) = &mut message.tool_call_id {
@@ -174,7 +176,8 @@ impl SessionPIIRedactor {
             // Redact from tool calls if present
             for tool_call in &mut choice.message.tool_calls {
                 // Use JSON-aware redaction for tool call arguments
-                tool_call.function.arguments = self.redact_json_string(&tool_call.function.arguments);
+                tool_call.function.arguments =
+                    self.redact_json_string(&tool_call.function.arguments);
             }
         }
     }

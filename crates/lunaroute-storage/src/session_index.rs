@@ -41,7 +41,12 @@ impl SessionIndex {
     }
 
     /// Add or update a session in the index
-    pub fn upsert(&self, session_id: &str, metadata: SessionMetadata, size_bytes: u64) -> StorageResult<()> {
+    pub fn upsert(
+        &self,
+        session_id: &str,
+        metadata: SessionMetadata,
+        size_bytes: u64,
+    ) -> StorageResult<()> {
         let mut index = self.index.write().unwrap();
         index.insert(
             session_id.to_string(),
@@ -118,8 +123,9 @@ impl SessionIndex {
     /// Persist the index to disk
     fn persist(&self) -> StorageResult<()> {
         let index = self.index.read().unwrap();
-        let content = serde_json::to_string_pretty(&*index)
-            .map_err(|e| StorageError::Serialization(format!("Failed to serialize index: {}", e)))?;
+        let content = serde_json::to_string_pretty(&*index).map_err(|e| {
+            StorageError::Serialization(format!("Failed to serialize index: {}", e))
+        })?;
 
         // Create parent directory if needed
         if let Some(parent) = self.path.parent() {
@@ -210,7 +216,9 @@ mod tests {
 
         for i in 1..=3 {
             let metadata = create_test_metadata(&format!("session_{}", i));
-            index.upsert(&format!("session_{}", i), metadata, 1024).unwrap();
+            index
+                .upsert(&format!("session_{}", i), metadata, 1024)
+                .unwrap();
         }
 
         let sessions = index.list_all();
@@ -283,7 +291,9 @@ mod tests {
 
         for i in 1..=3 {
             let metadata = create_test_metadata(&format!("session_{}", i));
-            index.upsert(&format!("session_{}", i), metadata, 1024).unwrap();
+            index
+                .upsert(&format!("session_{}", i), metadata, 1024)
+                .unwrap();
         }
 
         let ids = index.list_ids();

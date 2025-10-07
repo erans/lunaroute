@@ -17,20 +17,37 @@ static TEMPLATE_VAR_REGEX: Lazy<Regex> = Lazy::new(|| {
 });
 
 /// Regex for matching escaped variables $${variable}
-static ESCAPED_VAR_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\$\$\{([^}]+)\}").unwrap()
-});
+static ESCAPED_VAR_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\$\$\{([^}]+)\}").unwrap());
 
 /// Sensitive environment variable prefixes
 const SENSITIVE_PREFIXES: &[&str] = &[
-    "AWS_", "GITHUB_", "GITLAB_", "AZURE_", "GCP_", "DOCKER_",
-    "NPM_", "PYPI_", "CARGO_", "OPENAI_", "ANTHROPIC_",
+    "AWS_",
+    "GITHUB_",
+    "GITLAB_",
+    "AZURE_",
+    "GCP_",
+    "DOCKER_",
+    "NPM_",
+    "PYPI_",
+    "CARGO_",
+    "OPENAI_",
+    "ANTHROPIC_",
 ];
 
 /// Sensitive environment variable patterns (suffixes and substrings)
 const SENSITIVE_PATTERNS: &[&str] = &[
-    "_KEY", "_SECRET", "_PASSWORD", "_TOKEN", "_CREDS", "_AUTH",
-    "_PRIVATE", "_CERT", "_PEM", "_JWT", "_OAUTH", "_APIKEY",
+    "_KEY",
+    "_SECRET",
+    "_PASSWORD",
+    "_TOKEN",
+    "_CREDS",
+    "_AUTH",
+    "_PRIVATE",
+    "_CERT",
+    "_PEM",
+    "_JWT",
+    "_OAUTH",
+    "_APIKEY",
 ];
 
 /// Check if an environment variable name is potentially sensitive
@@ -38,17 +55,26 @@ fn is_sensitive_env_var(var_name: &str) -> bool {
     let upper = var_name.to_uppercase();
 
     // Check prefixes (e.g., AWS_, GITHUB_, etc.)
-    if SENSITIVE_PREFIXES.iter().any(|prefix| upper.starts_with(prefix)) {
+    if SENSITIVE_PREFIXES
+        .iter()
+        .any(|prefix| upper.starts_with(prefix))
+    {
         return true;
     }
 
     // Check patterns (suffixes and substrings)
-    if SENSITIVE_PATTERNS.iter().any(|pattern| upper.ends_with(pattern) || upper.contains(pattern)) {
+    if SENSITIVE_PATTERNS
+        .iter()
+        .any(|pattern| upper.ends_with(pattern) || upper.contains(pattern))
+    {
         return true;
     }
 
     // Check exact matches
-    matches!(upper.as_str(), "PASSWORD" | "SECRET" | "TOKEN" | "KEY" | "CREDENTIALS")
+    matches!(
+        upper.as_str(),
+        "PASSWORD" | "SECRET" | "TOKEN" | "KEY" | "CREDENTIALS"
+    )
 }
 
 /// Context for template variable substitution
@@ -124,7 +150,10 @@ impl TemplateContext {
     fn get_env_var(&mut self, var_name: &str) -> Option<String> {
         // Security: reject sensitive variable names using improved filtering
         if is_sensitive_env_var(var_name) {
-            tracing::warn!("Rejecting access to potentially sensitive environment variable: {}", var_name);
+            tracing::warn!(
+                "Rejecting access to potentially sensitive environment variable: {}",
+                var_name
+            );
             return None;
         }
 
@@ -186,7 +215,10 @@ pub fn substitute_string(template: &str, context: &mut TemplateContext) -> Strin
         let var_name = &caps[1];
         context.get_variable(var_name).unwrap_or_else(|| {
             // Keep original if variable not found, but log for debugging
-            tracing::debug!("Template variable not found, keeping as-is: ${{{}}}", var_name);
+            tracing::debug!(
+                "Template variable not found, keeping as-is: ${{{}}}",
+                var_name
+            );
             format!("${{{}}}", var_name)
         })
     });
@@ -204,13 +236,11 @@ pub fn substitute_value(value: &Value, context: &mut TemplateContext) -> Value {
         Value::Array(arr) => {
             Value::Array(arr.iter().map(|v| substitute_value(v, context)).collect())
         }
-        Value::Object(obj) => {
-            Value::Object(
-                obj.iter()
-                    .map(|(k, v)| (k.clone(), substitute_value(v, context)))
-                    .collect(),
-            )
-        }
+        Value::Object(obj) => Value::Object(
+            obj.iter()
+                .map(|(k, v)| (k.clone(), substitute_value(v, context)))
+                .collect(),
+        ),
         _ => value.clone(),
     }
 }
@@ -267,7 +297,11 @@ mod tests {
 
     #[test]
     fn test_substitute_optional_variable_absent() {
-        let mut ctx = TemplateContext::new("req-1".to_string(), "test".to_string(), "model-1".to_string());
+        let mut ctx = TemplateContext::new(
+            "req-1".to_string(),
+            "test".to_string(),
+            "model-1".to_string(),
+        );
         let result = substitute_string("Session: ${session_id}", &mut ctx);
         assert_eq!(result, "Session: ${session_id}"); // Kept as-is
     }
@@ -341,9 +375,18 @@ mod tests {
 
         let mut ctx = test_context();
 
-        assert_eq!(substitute_string("${env.API_KEY}", &mut ctx), "${env.API_KEY}");
-        assert_eq!(substitute_string("${env.MY_PASSWORD}", &mut ctx), "${env.MY_PASSWORD}");
-        assert_eq!(substitute_string("${env.AUTH_TOKEN}", &mut ctx), "${env.AUTH_TOKEN}");
+        assert_eq!(
+            substitute_string("${env.API_KEY}", &mut ctx),
+            "${env.API_KEY}"
+        );
+        assert_eq!(
+            substitute_string("${env.MY_PASSWORD}", &mut ctx),
+            "${env.MY_PASSWORD}"
+        );
+        assert_eq!(
+            substitute_string("${env.AUTH_TOKEN}", &mut ctx),
+            "${env.AUTH_TOKEN}"
+        );
 
         unsafe {
             std::env::remove_var("API_KEY");
@@ -402,15 +445,27 @@ mod tests {
     fn test_substitute_value_object() {
         let mut ctx = test_context();
         let mut obj = serde_json::Map::new();
-        obj.insert("provider".to_string(), Value::String("${provider}".to_string()));
-        obj.insert("request".to_string(), Value::String("${request_id}".to_string()));
+        obj.insert(
+            "provider".to_string(),
+            Value::String("${provider}".to_string()),
+        );
+        obj.insert(
+            "request".to_string(),
+            Value::String("${request_id}".to_string()),
+        );
 
         let value = Value::Object(obj);
         let result = substitute_value(&value, &mut ctx);
 
         let result_obj = result.as_object().unwrap();
-        assert_eq!(result_obj.get("provider").unwrap(), &Value::String("openai".to_string()));
-        assert_eq!(result_obj.get("request").unwrap(), &Value::String("req-123".to_string()));
+        assert_eq!(
+            result_obj.get("provider").unwrap(),
+            &Value::String("openai".to_string())
+        );
+        assert_eq!(
+            result_obj.get("request").unwrap(),
+            &Value::String("req-123".to_string())
+        );
     }
 
     #[test]
@@ -437,8 +492,14 @@ mod tests {
         let mut ctx = test_context();
 
         // Numbers, booleans, null should pass through unchanged
-        assert_eq!(substitute_value(&Value::Number(42.into()), &mut ctx), Value::Number(42.into()));
-        assert_eq!(substitute_value(&Value::Bool(true), &mut ctx), Value::Bool(true));
+        assert_eq!(
+            substitute_value(&Value::Number(42.into()), &mut ctx),
+            Value::Number(42.into())
+        );
+        assert_eq!(
+            substitute_value(&Value::Bool(true), &mut ctx),
+            Value::Bool(true)
+        );
         assert_eq!(substitute_value(&Value::Null, &mut ctx), Value::Null);
     }
 
@@ -459,11 +520,15 @@ mod tests {
 
     #[test]
     fn test_context_builder() {
-        let ctx = TemplateContext::new("req-1".to_string(), "anthropic".to_string(), "claude-3".to_string())
-            .with_session_id("sess-1".to_string())
-            .with_client_ip("10.0.0.1".to_string())
-            .with_user_agent("test/1.0".to_string())
-            .with_cached(false);
+        let ctx = TemplateContext::new(
+            "req-1".to_string(),
+            "anthropic".to_string(),
+            "claude-3".to_string(),
+        )
+        .with_session_id("sess-1".to_string())
+        .with_client_ip("10.0.0.1".to_string())
+        .with_user_agent("test/1.0".to_string())
+        .with_cached(false);
 
         assert_eq!(ctx.request_id, "req-1");
         assert_eq!(ctx.provider, "anthropic");
@@ -484,7 +549,10 @@ mod tests {
     #[test]
     fn test_special_characters_in_template() {
         let mut ctx = test_context();
-        let result = substitute_string("URL: https://api.com?id=${request_id}&model=${model}", &mut ctx);
+        let result = substitute_string(
+            "URL: https://api.com?id=${request_id}&model=${model}",
+            &mut ctx,
+        );
         assert_eq!(result, "URL: https://api.com?id=req-123&model=gpt-4");
     }
 }

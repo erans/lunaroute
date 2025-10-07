@@ -53,26 +53,26 @@ mod session_stats;
 
 use clap::{Parser, Subcommand};
 use config::{ApiDialect, ServerConfig};
+use futures::StreamExt;
 use lunaroute_core::provider::Provider;
+use lunaroute_core::{
+    error::Error as CoreError,
+    normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
+};
 use lunaroute_egress::{
     anthropic::{AnthropicConfig, AnthropicConnector},
     openai::{OpenAIConfig, OpenAIConnector, RequestBodyModConfig, ResponseBodyModConfig},
 };
 use lunaroute_ingress::{anthropic as anthropic_ingress, openai};
-use lunaroute_observability::{health_router, HealthState, Metrics};
-use lunaroute_routing::{Router, RouteTable, RoutingRule, RuleMatcher};
+use lunaroute_observability::{HealthState, Metrics, health_router};
+use lunaroute_routing::{RouteTable, Router, RoutingRule, RuleMatcher};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{debug, info, warn, Level};
+use tracing::{Level, debug, info, warn};
 use tracing_subscriber::FmtSubscriber;
-use lunaroute_core::{
-    normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
-    error::Error as CoreError,
-};
-use futures::StreamExt;
 
 const MOON: &str = r#"
          ___---___
@@ -102,11 +102,23 @@ struct Cli {
     command: Option<Commands>,
 
     /// Path to configuration file (YAML or TOML)
-    #[arg(short, long, value_name = "FILE", env = "LUNAROUTE_CONFIG", global = true)]
+    #[arg(
+        short,
+        long,
+        value_name = "FILE",
+        env = "LUNAROUTE_CONFIG",
+        global = true
+    )]
     config: Option<String>,
 
     /// API dialect to accept (openai or anthropic)
-    #[arg(short = 'd', long, value_name = "DIALECT", env = "LUNAROUTE_DIALECT", global = true)]
+    #[arg(
+        short = 'd',
+        long,
+        value_name = "DIALECT",
+        env = "LUNAROUTE_DIALECT",
+        global = true
+    )]
     dialect: Option<String>,
 }
 
@@ -150,7 +162,10 @@ struct LoggingProvider {
 
 impl LoggingProvider {
     fn new(inner: Arc<dyn Provider>, provider_name: String) -> Self {
-        Self { inner, provider_name }
+        Self {
+            inner,
+            provider_name,
+        }
     }
 }
 
@@ -162,7 +177,11 @@ impl Provider for LoggingProvider {
         info!("├─────────────────────────────────────────────────────────");
         info!("│ Model: {}", request.model);
         info!("│ Messages: {} messages", request.messages.len());
-        debug!("│ Full request:\n{}", serde_json::to_string_pretty(&request).unwrap_or_else(|e| format!("Serialization error: {}", e)));
+        debug!(
+            "│ Full request:\n{}",
+            serde_json::to_string_pretty(&request)
+                .unwrap_or_else(|e| format!("Serialization error: {}", e))
+        );
         info!("└─────────────────────────────────────────────────────────");
 
         let response = self.inner.send(request).await?;
@@ -177,10 +196,17 @@ impl Provider for LoggingProvider {
                 info!("│ Content: {}", text);
             }
         }
-        info!("│ Tokens: input={}, output={}, total={}",
-            response.usage.prompt_tokens, response.usage.completion_tokens,
-            response.usage.prompt_tokens + response.usage.completion_tokens);
-        debug!("│ Full response:\n{}", serde_json::to_string_pretty(&response).unwrap_or_else(|e| format!("Serialization error: {}", e)));
+        info!(
+            "│ Tokens: input={}, output={}, total={}",
+            response.usage.prompt_tokens,
+            response.usage.completion_tokens,
+            response.usage.prompt_tokens + response.usage.completion_tokens
+        );
+        debug!(
+            "│ Full response:\n{}",
+            serde_json::to_string_pretty(&response)
+                .unwrap_or_else(|e| format!("Serialization error: {}", e))
+        );
         info!("└─────────────────────────────────────────────────────────");
 
         Ok(response)
@@ -189,13 +215,20 @@ impl Provider for LoggingProvider {
     async fn stream(
         &self,
         request: NormalizedRequest,
-    ) -> Result<Box<dyn futures::Stream<Item = Result<NormalizedStreamEvent, CoreError>> + Send + Unpin>, CoreError> {
+    ) -> Result<
+        Box<dyn futures::Stream<Item = Result<NormalizedStreamEvent, CoreError>> + Send + Unpin>,
+        CoreError,
+    > {
         info!("┌─────────────────────────────────────────────────────────");
         info!("│ REQUEST to {} (streaming)", self.provider_name);
         info!("├─────────────────────────────────────────────────────────");
         info!("│ Model: {}", request.model);
         info!("│ Messages: {} messages", request.messages.len());
-        debug!("│ Full request:\n{}", serde_json::to_string_pretty(&request).unwrap_or_else(|e| format!("Serialization error: {}", e)));
+        debug!(
+            "│ Full request:\n{}",
+            serde_json::to_string_pretty(&request)
+                .unwrap_or_else(|e| format!("Serialization error: {}", e))
+        );
         info!("└─────────────────────────────────────────────────────────");
 
         let stream = self.inner.stream(request).await?;
@@ -228,9 +261,12 @@ impl Provider for LoggingProvider {
                         }
                     }
                     NormalizedStreamEvent::Usage { usage } => {
-                        info!("│ 📊 Usage: input={}, output={}, total={}",
-                            usage.prompt_tokens, usage.completion_tokens,
-                            usage.prompt_tokens + usage.completion_tokens);
+                        info!(
+                            "│ 📊 Usage: input={}, output={}, total={}",
+                            usage.prompt_tokens,
+                            usage.completion_tokens,
+                            usage.prompt_tokens + usage.completion_tokens
+                        );
                     }
                     NormalizedStreamEvent::End { finish_reason } => {
                         info!("│ 🏁 Stream ended: {:?}", finish_reason);
@@ -305,7 +341,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "openai" => config.api_dialect = ApiDialect::OpenAI,
             "anthropic" => config.api_dialect = ApiDialect::Anthropic,
             _ => {
-                return Err(format!("Invalid dialect '{}'. Use 'openai' or 'anthropic'", dialect_str).into());
+                return Err(format!(
+                    "Invalid dialect '{}'. Use 'openai' or 'anthropic'",
+                    dialect_str
+                )
+                .into());
             }
         }
     }
@@ -319,9 +359,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "error" => Level::ERROR,
         _ => Level::INFO,
     };
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(log_level)
-        .finish();
+    let subscriber = FmtSubscriber::builder().with_max_level(log_level).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
     // Print the moon
@@ -330,28 +368,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("🚀 Initializing LunaRoute Gateway with Intelligent Routing");
 
     // Setup async multi-writer session recording if enabled
-    let async_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>> = if config.session_recording.enabled {
-        match lunaroute_session::build_from_config(&config.session_recording).await? {
-            Some(multi_recorder) => {
-                if config.session_recording.is_jsonl_enabled() {
-                    info!("📝 JSONL session recording enabled: {:?}",
-                        config.session_recording.jsonl.as_ref().map(|c| &c.directory));
+    let async_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>> =
+        if config.session_recording.enabled {
+            match lunaroute_session::build_from_config(&config.session_recording).await? {
+                Some(multi_recorder) => {
+                    if config.session_recording.is_jsonl_enabled() {
+                        info!(
+                            "📝 JSONL session recording enabled: {:?}",
+                            config
+                                .session_recording
+                                .jsonl
+                                .as_ref()
+                                .map(|c| &c.directory)
+                        );
+                    }
+                    if config.session_recording.is_sqlite_enabled() {
+                        info!(
+                            "📝 SQLite session recording enabled: {:?}",
+                            config.session_recording.sqlite.as_ref().map(|c| &c.path)
+                        );
+                    }
+                    Some(Arc::new(multi_recorder))
                 }
-                if config.session_recording.is_sqlite_enabled() {
-                    info!("📝 SQLite session recording enabled: {:?}",
-                        config.session_recording.sqlite.as_ref().map(|c| &c.path));
+                None => {
+                    info!("📝 Session recording enabled but no writers configured");
+                    None
                 }
-                Some(Arc::new(multi_recorder))
             }
-            None => {
-                info!("📝 Session recording enabled but no writers configured");
-                None
-            }
-        }
-    } else {
-        info!("📝 Session recording disabled");
-        None
-    };
+        } else {
+            info!("📝 Session recording disabled");
+            None
+        };
 
     if config.logging.log_requests {
         info!("📋 Request/response logging enabled (stdout)");
@@ -416,7 +463,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Session recording is now handled via async multi-writer in passthrough mode
         let provider: Arc<dyn Provider> = if config.logging.log_requests {
             info!("  Request/response logging: enabled");
-            Arc::new(LoggingProvider::new(connector.clone(), "OpenAI".to_string()))
+            Arc::new(LoggingProvider::new(
+                connector.clone(),
+                "OpenAI".to_string(),
+            ))
         } else {
             connector
         };
@@ -456,7 +506,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         anthropic_connector = Some(connector.clone()); // Save for passthrough
         let provider: Arc<dyn Provider> = if config.logging.log_requests {
             info!("  Request/response logging: enabled");
-            Arc::new(LoggingProvider::new(connector.clone(), "Anthropic".to_string()))
+            Arc::new(LoggingProvider::new(
+                connector.clone(),
+                "Anthropic".to_string(),
+            ))
         } else {
             connector
         };
@@ -523,8 +576,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("📋 Created {} routing rules", rules.len());
     for rule in &rules {
-        info!("   - {:?}: {:?} → {:?} (fallbacks: {:?})",
-            rule.name, rule.matcher, rule.primary, rule.fallbacks);
+        info!(
+            "   - {:?}: {:?} → {:?} (fallbacks: {:?})",
+            rule.name, rule.matcher, rule.primary, rule.fallbacks
+        );
     }
 
     // Detect passthrough mode BEFORE creating router: dialect matches the only enabled provider
@@ -563,7 +618,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ));
     let stats_tracker_clone = stats_tracker.clone();
-    info!("📊 Session statistics tracking enabled (max {} sessions)", config.session_stats_max_sessions.unwrap_or(100));
+    info!(
+        "📊 Session statistics tracking enabled (max {} sessions)",
+        config.session_stats_max_sessions.unwrap_or(100)
+    );
 
     // Create ingress router based on selected dialect
     let api_router = match config.api_dialect {
@@ -620,7 +678,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         ApiDialect::Anthropic => {
             info!("   - Anthropic API: http://{}/v1/messages", addr);
-            info!("   💡 For Claude Code: export ANTHROPIC_BASE_URL=http://{}", addr);
+            info!(
+                "   💡 For Claude Code: export ANTHROPIC_BASE_URL=http://{}",
+                addr
+            );
         }
     }
     info!("   Observability:");
@@ -634,7 +695,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         shutdown_signal().await;
         // Only print stats if debug logging is enabled
-        if tracing::level_filters::LevelFilter::current() >= tracing::level_filters::LevelFilter::DEBUG {
+        if tracing::level_filters::LevelFilter::current()
+            >= tracing::level_filters::LevelFilter::DEBUG
+        {
             info!("Shutdown signal received, printing session statistics...");
             stats_tracker_for_shutdown.print_summary();
         }
@@ -664,7 +727,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Print stats one final time in case the shutdown handler didn't run
     // Only print if debug logging is enabled
-    if tracing::level_filters::LevelFilter::current() >= tracing::level_filters::LevelFilter::DEBUG {
+    if tracing::level_filters::LevelFilter::current() >= tracing::level_filters::LevelFilter::DEBUG
+    {
         info!("Server stopped, printing final session statistics...");
         stats_tracker.print_summary();
     }

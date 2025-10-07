@@ -77,9 +77,9 @@ async fn test_openai_400_error_with_recording() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
-            custom_headers: None,
-            request_body_config: None,
-            response_body_config: None,
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let connector = Arc::new(OpenAIConnector::new(config).unwrap());
 
@@ -177,9 +177,9 @@ async fn test_openai_500_error_with_recording() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
-            custom_headers: None,
-            request_body_config: None,
-            response_body_config: None,
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let connector = Arc::new(OpenAIConnector::new(config).unwrap());
 
@@ -457,16 +457,13 @@ async fn test_openai_streaming_error_with_recording() {
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(header("authorization", "Bearer test-api-key"))
-        .respond_with(
-            ResponseTemplate::new(400)
-                .set_body_json(json!({
-                    "error": {
-                        "message": "Invalid streaming request",
-                        "type": "invalid_request_error",
-                        "code": "invalid_stream_parameter"
-                    }
-                })),
-        )
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": {
+                "message": "Invalid streaming request",
+                "type": "invalid_request_error",
+                "code": "invalid_stream_parameter"
+            }
+        })))
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -481,9 +478,9 @@ async fn test_openai_streaming_error_with_recording() {
         base_url: mock_server.uri(),
         organization: None,
         client_config: Default::default(),
-            custom_headers: None,
-            request_body_config: None,
-            response_body_config: None,
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
     };
     let connector = Arc::new(OpenAIConnector::new(config).unwrap());
 

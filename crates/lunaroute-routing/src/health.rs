@@ -57,7 +57,9 @@ impl ProviderHealth {
                 Some(current.saturating_add(1))
             })
             .ok();
-        *self.last_success.write()
+        *self
+            .last_success
+            .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
     }
 
@@ -69,7 +71,9 @@ impl ProviderHealth {
                 Some(current.saturating_add(1))
             })
             .ok();
-        *self.last_failure.write()
+        *self
+            .last_failure
+            .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
     }
 
@@ -133,10 +137,10 @@ pub struct HealthMonitorConfig {
 impl Default for HealthMonitorConfig {
     fn default() -> Self {
         Self {
-            healthy_threshold: 0.95,      // 95% success rate = healthy
-            unhealthy_threshold: 0.75,    // Below 75% = unhealthy
+            healthy_threshold: 0.95,                 // 95% success rate = healthy
+            unhealthy_threshold: 0.75,               // Below 75% = unhealthy
             failure_window: Duration::from_secs(60), // 1 minute
-            min_requests: 10,             // Need at least 10 requests
+            min_requests: 10,                        // Need at least 10 requests
         }
     }
 }
@@ -210,7 +214,9 @@ impl HealthMonitor {
     /// Register a provider for health monitoring
     pub fn register_provider(&self, provider_id: impl Into<String>) {
         let provider_id = provider_id.into();
-        let mut providers = self.providers.write()
+        let mut providers = self
+            .providers
+            .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         providers
             .entry(provider_id.clone())
@@ -220,7 +226,9 @@ impl HealthMonitor {
 
     /// Record a successful request for a provider
     pub fn record_success(&self, provider_id: &str) {
-        let providers = self.providers.read()
+        let providers = self
+            .providers
+            .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(health) = providers.get(provider_id) {
             health.record_success();
@@ -229,7 +237,9 @@ impl HealthMonitor {
 
     /// Record a failed request for a provider
     pub fn record_failure(&self, provider_id: &str) {
-        let providers = self.providers.read()
+        let providers = self
+            .providers
+            .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(health) = providers.get(provider_id) {
             health.record_failure();
@@ -238,7 +248,9 @@ impl HealthMonitor {
 
     /// Get the health status of a provider
     pub fn get_status(&self, provider_id: &str) -> HealthStatus {
-        let providers = self.providers.read()
+        let providers = self
+            .providers
+            .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(health) = providers.get(provider_id) else {
             return HealthStatus::Unknown;
@@ -280,7 +292,9 @@ impl HealthMonitor {
 
     /// Get detailed metrics for a provider
     pub fn get_metrics(&self, provider_id: &str) -> Option<HealthMetrics> {
-        let providers = self.providers.read()
+        let providers = self
+            .providers
+            .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         providers.get(provider_id).map(|health| HealthMetrics {
             success_count: health.success_count(),
@@ -295,14 +309,18 @@ impl HealthMonitor {
 
     /// Get all provider IDs being monitored
     pub fn get_provider_ids(&self) -> Vec<String> {
-        let providers = self.providers.read()
+        let providers = self
+            .providers
+            .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         providers.keys().cloned().collect()
     }
 
     /// Reset metrics for a provider
     pub fn reset_provider(&self, provider_id: &str) {
-        let providers = self.providers.read()
+        let providers = self
+            .providers
+            .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(_health) = providers.get(provider_id) {
             // Need to get mutable access - this is a bit awkward with Arc
@@ -316,10 +334,15 @@ impl HealthMonitor {
 
     /// Remove a provider from monitoring
     pub fn unregister_provider(&self, provider_id: &str) {
-        let mut providers = self.providers.write()
+        let mut providers = self
+            .providers
+            .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if providers.remove(provider_id).is_some() {
-            tracing::debug!("Unregistered provider from health monitoring: {}", provider_id);
+            tracing::debug!(
+                "Unregistered provider from health monitoring: {}",
+                provider_id
+            );
         }
     }
 

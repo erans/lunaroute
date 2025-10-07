@@ -1,13 +1,16 @@
 //! OpenAI egress connector
 
-use crate::{client::{create_client, with_retry, HttpClientConfig}, EgressError, Result};
+use crate::{
+    EgressError, Result,
+    client::{HttpClientConfig, create_client, with_retry},
+};
 use async_trait::async_trait;
 use futures::Stream;
 use lunaroute_core::{
     normalized::{
-        ContentPart, Delta, FinishReason, FunctionCall, FunctionCallDelta,
-        Message, MessageContent, NormalizedRequest, NormalizedResponse,
-        NormalizedStreamEvent, Role, ToolCall, ToolChoice, Usage,
+        ContentPart, Delta, FinishReason, FunctionCall, FunctionCallDelta, Message, MessageContent,
+        NormalizedRequest, NormalizedResponse, NormalizedStreamEvent, Role, ToolCall, ToolChoice,
+        Usage,
     },
     provider::{Provider, ProviderCapabilities},
 };
@@ -114,7 +117,8 @@ impl OpenAIConnector {
         request_json: serde_json::Value,
         headers: std::collections::HashMap<String, String>,
     ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
-        self.send_passthrough_to_endpoint("chat/completions", request_json, headers).await
+        self.send_passthrough_to_endpoint("chat/completions", request_json, headers)
+            .await
     }
 
     /// Send with context for custom headers and body modifications
@@ -127,7 +131,8 @@ impl OpenAIConnector {
         session_id: Option<&str>,
     ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
         // Extract model from request for context (clone to own it)
-        let model = request_json.get("model")
+        let model = request_json
+            .get("model")
             .and_then(|m| m.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| "unknown".to_string());
@@ -139,8 +144,9 @@ impl OpenAIConnector {
         self.apply_custom_headers(&mut headers, request_id, &model, session_id);
 
         // Send the request
-        let (mut response_json, response_headers) =
-            self.send_passthrough_to_endpoint("chat/completions", request_json, headers).await?;
+        let (mut response_json, response_headers) = self
+            .send_passthrough_to_endpoint("chat/completions", request_json, headers)
+            .await?;
 
         // Apply response body modifications
         self.apply_response_body_modifications(&mut response_json, request_id, &model, session_id);
@@ -156,7 +162,10 @@ impl OpenAIConnector {
         request_json: serde_json::Value,
         headers: std::collections::HashMap<String, String>,
     ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
-        debug!("Sending passthrough request to OpenAI {} endpoint (JSON mode)", endpoint);
+        debug!(
+            "Sending passthrough request to OpenAI {} endpoint (JSON mode)",
+            endpoint
+        );
 
         let max_retries = self.config.client_config.max_retries;
         let result = with_retry(max_retries, || {
@@ -166,7 +175,8 @@ impl OpenAIConnector {
             let config = self.config.clone();
             let endpoint = endpoint.to_string();
             async move {
-                let mut request_builder = self.client
+                let mut request_builder = self
+                    .client
                     .post(format!("{}/{}", config.base_url, endpoint));
 
                 // In passthrough mode, forward ALL headers from client as-is
@@ -175,18 +185,18 @@ impl OpenAIConnector {
                 }
 
                 // Only use configured API key if client didn't provide auth
-                let client_has_auth = headers.iter().any(|(k, _)| k.to_lowercase() == "authorization");
+                let client_has_auth = headers
+                    .iter()
+                    .any(|(k, _)| k.to_lowercase() == "authorization");
                 if !client_has_auth && !config_api_key.is_empty() {
-                    request_builder = request_builder.header("Authorization", format!("Bearer {}", config_api_key));
+                    request_builder = request_builder
+                        .header("Authorization", format!("Bearer {}", config_api_key));
                 }
 
                 // Send raw JSON body without .json() to avoid modifying headers
                 let json_string = serde_json::to_string(&request_json)?;
 
-                let response = request_builder
-                    .body(json_string)
-                    .send()
-                    .await?;
+                let response = request_builder.body(json_string).send().await?;
 
                 debug!("┌─────────────────────────────────────────────────────────");
                 debug!("│ OpenAI Passthrough Response Headers");
@@ -215,7 +225,10 @@ impl OpenAIConnector {
         body: bytes::Bytes,
         headers: std::collections::HashMap<String, String>,
     ) -> Result<(serde_json::Value, std::collections::HashMap<String, String>)> {
-        debug!("Sending passthrough request to OpenAI {} endpoint (true passthrough - raw bytes)", endpoint);
+        debug!(
+            "Sending passthrough request to OpenAI {} endpoint (true passthrough - raw bytes)",
+            endpoint
+        );
 
         let max_retries = self.config.client_config.max_retries;
         let result = with_retry(max_retries, || {
@@ -225,7 +238,8 @@ impl OpenAIConnector {
             let config = self.config.clone();
             let endpoint = endpoint.to_string();
             async move {
-                let mut request_builder = self.client
+                let mut request_builder = self
+                    .client
                     .post(format!("{}/{}", config.base_url, endpoint));
 
                 // In passthrough mode, forward ALL headers from client as-is (except auth override)
@@ -237,17 +251,15 @@ impl OpenAIConnector {
                 // Note: header names are normalized to lowercase in the ingress layer
                 let client_has_auth = headers.contains_key("authorization");
                 if !client_has_auth && !config_api_key.is_empty() {
-                    request_builder = request_builder.header("Authorization", format!("Bearer {}", config_api_key));
+                    request_builder = request_builder
+                        .header("Authorization", format!("Bearer {}", config_api_key));
                 }
 
                 // In passthrough mode, do NOT apply organization header - use only client headers
                 // request_builder = request_builder.apply_organization_header(&config);
 
                 // Send raw body bytes without any parsing/re-serialization
-                let response = request_builder
-                    .body(body)
-                    .send()
-                    .await?;
+                let response = request_builder.body(body).send().await?;
 
                 // Log response headers at debug level
                 debug!("┌─────────────────────────────────────────────────────────");
@@ -304,12 +316,12 @@ impl OpenAIConnector {
             }
         }
 
-        let json_body = response
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| {
-                EgressError::ParseError(format!("Failed to parse OpenAI passthrough response: {}", e))
-            })?;
+        let json_body = response.json::<serde_json::Value>().await.map_err(|e| {
+            EgressError::ParseError(format!(
+                "Failed to parse OpenAI passthrough response: {}",
+                e
+            ))
+        })?;
 
         Ok((json_body, headers_map))
     }
@@ -322,7 +334,8 @@ impl OpenAIConnector {
         request_json: serde_json::Value,
         headers: std::collections::HashMap<String, String>,
     ) -> Result<reqwest::Response> {
-        self.stream_passthrough_to_endpoint("chat/completions", request_json, headers).await
+        self.stream_passthrough_to_endpoint("chat/completions", request_json, headers)
+            .await
     }
 
     /// Stream a raw JSON request to a specific OpenAI endpoint (passthrough mode)
@@ -332,7 +345,10 @@ impl OpenAIConnector {
         request_json: serde_json::Value,
         headers: std::collections::HashMap<String, String>,
     ) -> Result<reqwest::Response> {
-        debug!("Sending passthrough streaming request to OpenAI {} endpoint (JSON mode)", endpoint);
+        debug!(
+            "Sending passthrough streaming request to OpenAI {} endpoint (JSON mode)",
+            endpoint
+        );
 
         let mut request_builder = self
             .client
@@ -347,7 +363,8 @@ impl OpenAIConnector {
         // Note: header names are normalized to lowercase in the ingress layer
         let client_has_auth = headers.contains_key("authorization");
         if !client_has_auth && !self.config.api_key.is_empty() {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
         }
 
         // Send raw JSON body without .json() to avoid modifying headers
@@ -372,7 +389,10 @@ impl OpenAIConnector {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read error body".to_string());
             return Err(EgressError::ProviderError {
                 status_code: status,
                 message: body,
@@ -388,7 +408,10 @@ impl OpenAIConnector {
         endpoint: &str,
         headers: std::collections::HashMap<String, String>,
     ) -> Result<serde_json::Value> {
-        debug!("Sending GET passthrough request to OpenAI {} endpoint", endpoint);
+        debug!(
+            "Sending GET passthrough request to OpenAI {} endpoint",
+            endpoint
+        );
 
         let mut request_builder = self
             .client
@@ -403,7 +426,8 @@ impl OpenAIConnector {
         // Note: header names are normalized to lowercase in the ingress layer
         let client_has_auth = headers.contains_key("authorization");
         if !client_has_auth && !self.config.api_key.is_empty() {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
         }
 
         let response = request_builder.send().await?;
@@ -432,7 +456,10 @@ impl OpenAIConnector {
         body: bytes::Bytes,
         headers: std::collections::HashMap<String, String>,
     ) -> Result<reqwest::Response> {
-        debug!("Sending passthrough streaming request to OpenAI {} endpoint (true passthrough - raw bytes)", endpoint);
+        debug!(
+            "Sending passthrough streaming request to OpenAI {} endpoint (true passthrough - raw bytes)",
+            endpoint
+        );
 
         let mut request_builder = self
             .client
@@ -441,7 +468,10 @@ impl OpenAIConnector {
         // In passthrough mode, forward ALL headers from client as-is (except auth override)
         for (name, value) in &headers {
             if name.to_lowercase() == "authorization" {
-                debug!("Forwarding Authorization header to OpenAI (from client): {} chars", value.len());
+                debug!(
+                    "Forwarding Authorization header to OpenAI (from client): {} chars",
+                    value.len()
+                );
             }
             request_builder = request_builder.header(name, value);
         }
@@ -461,7 +491,8 @@ impl OpenAIConnector {
         let client_has_auth = headers.contains_key("authorization");
         if !client_has_auth && !self.config.api_key.is_empty() {
             debug!("No client auth - using configured API key");
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
         } else if client_has_auth {
             debug!("Using client's Authorization header (passthrough mode)");
         } else {
@@ -492,7 +523,10 @@ impl OpenAIConnector {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read error body".to_string());
             return Err(EgressError::ProviderError {
                 status_code: status,
                 message: body,
@@ -522,7 +556,8 @@ impl OpenAIConnector {
             }
 
             // Substitute and merge custom headers
-            let substituted = lunaroute_core::template::substitute_headers(custom_headers, &mut context);
+            let substituted =
+                lunaroute_core::template::substitute_headers(custom_headers, &mut context);
             headers.extend(substituted);
         }
     }
@@ -547,10 +582,7 @@ impl OpenAIConnector {
     }
 
     /// Apply request body modifications (defaults, overrides, prepend)
-    fn apply_request_body_modifications(
-        &self,
-        request_json: &mut serde_json::Value,
-    ) {
+    fn apply_request_body_modifications(&self, request_json: &mut serde_json::Value) {
         if let Some(body_config) = &self.config.request_body_config {
             // Apply defaults (only if field missing)
             if let Some(defaults) = &body_config.defaults {
@@ -636,12 +668,14 @@ impl Provider for OpenAIConnector {
         let openai_req = to_openai_request(request)?;
 
         // Check if we need custom headers or body modifications
-        let needs_modifications = self.config.custom_headers.is_some() || self.config.request_body_config.is_some();
+        let needs_modifications =
+            self.config.custom_headers.is_some() || self.config.request_body_config.is_some();
 
         if needs_modifications {
             // Path with modifications: serialize to JSON, modify, then send
-            let mut request_json = serde_json::to_value(&openai_req)
-                .map_err(|e| EgressError::ParseError(format!("Failed to serialize request: {}", e)))?;
+            let mut request_json = serde_json::to_value(&openai_req).map_err(|e| {
+                EgressError::ParseError(format!("Failed to serialize request: {}", e))
+            })?;
 
             // Apply request body modifications (defaults, overrides, prepend messages)
             self.apply_request_body_modifications(&mut request_json);
@@ -654,14 +688,12 @@ impl Provider for OpenAIConnector {
                 let request_id = uuid::Uuid::new_v4().to_string();
                 let model = openai_req.model.clone();
 
-                let mut template_ctx = TemplateContext::new(
-                    request_id,
-                    "openai".to_string(),
-                    model,
-                );
+                let mut template_ctx =
+                    TemplateContext::new(request_id, "openai".to_string(), model);
 
                 // Substitute templates in headers
-                headers_to_apply = lunaroute_core::template::substitute_headers(custom_headers, &mut template_ctx);
+                headers_to_apply =
+                    lunaroute_core::template::substitute_headers(custom_headers, &mut template_ctx);
             }
 
             // Log request headers at debug level
@@ -685,7 +717,8 @@ impl Provider for OpenAIConnector {
                 let request_json = request_json.clone();
                 let headers_to_apply = headers_to_apply.clone();
                 async move {
-                    let mut request_builder = self.client
+                    let mut request_builder = self
+                        .client
                         .post(format!("{}/chat/completions", self.config.base_url))
                         .header("Authorization", format!("Bearer {}", self.config.api_key))
                         .header("Content-Type", "application/json")
@@ -696,27 +729,24 @@ impl Provider for OpenAIConnector {
                         request_builder = request_builder.header(name, value);
                     }
 
-                    let response = request_builder
-                        .json(&request_json)
-                        .send()
-                        .await?;
+                    let response = request_builder.json(&request_json).send().await?;
 
-                // Log response headers at debug level
-                debug!("┌─────────────────────────────────────────────────────────");
-                debug!("│ OpenAI Response Headers");
-                debug!("├─────────────────────────────────────────────────────────");
-                debug!("│ Status: {}", response.status());
-                for (name, value) in response.headers() {
-                    if let Ok(val_str) = value.to_str() {
-                        debug!("│ {}: {}", name, val_str);
+                    // Log response headers at debug level
+                    debug!("┌─────────────────────────────────────────────────────────");
+                    debug!("│ OpenAI Response Headers");
+                    debug!("├─────────────────────────────────────────────────────────");
+                    debug!("│ Status: {}", response.status());
+                    for (name, value) in response.headers() {
+                        if let Ok(val_str) = value.to_str() {
+                            debug!("│ {}: {}", name, val_str);
+                        }
                     }
-                }
-                debug!("└─────────────────────────────────────────────────────────");
+                    debug!("└─────────────────────────────────────────────────────────");
 
-                response.handle_openai_response().await
-            }
-        })
-        .await?;
+                    response.handle_openai_response().await
+                }
+            })
+            .await?;
 
             let normalized = from_openai_response(result)?;
             Ok(normalized)
@@ -736,7 +766,8 @@ impl Provider for OpenAIConnector {
             let result = with_retry(max_retries, || {
                 let openai_req = openai_req.clone();
                 async move {
-                    let response = self.client
+                    let response = self
+                        .client
                         .post(format!("{}/chat/completions", self.config.base_url))
                         .header("Authorization", format!("Bearer {}", self.config.api_key))
                         .header("Content-Type", "application/json")
@@ -769,7 +800,9 @@ impl Provider for OpenAIConnector {
     async fn stream(
         &self,
         request: NormalizedRequest,
-    ) -> lunaroute_core::Result<Box<dyn Stream<Item = lunaroute_core::Result<NormalizedStreamEvent>> + Send + Unpin>> {
+    ) -> lunaroute_core::Result<
+        Box<dyn Stream<Item = lunaroute_core::Result<NormalizedStreamEvent>> + Send + Unpin>,
+    > {
         debug!("Sending streaming request to OpenAI");
 
         let mut openai_req = to_openai_request(request)?;
@@ -790,14 +823,11 @@ impl Provider for OpenAIConnector {
             let request_id = uuid::Uuid::new_v4().to_string();
             let model = openai_req.model.clone();
 
-            let mut template_ctx = TemplateContext::new(
-                request_id,
-                "openai".to_string(),
-                model,
-            );
+            let mut template_ctx = TemplateContext::new(request_id, "openai".to_string(), model);
 
             // Substitute templates in headers
-            headers_to_apply = lunaroute_core::template::substitute_headers(custom_headers, &mut template_ctx);
+            headers_to_apply =
+                lunaroute_core::template::substitute_headers(custom_headers, &mut template_ctx);
         }
 
         // Log request headers at debug level
@@ -848,7 +878,10 @@ impl Provider for OpenAIConnector {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read error body".to_string());
             return Err(EgressError::ProviderError {
                 status_code: status,
                 message: body,
@@ -926,7 +959,10 @@ struct OpenAIFunction {
 #[serde(untagged)]
 enum OpenAIToolChoice {
     String(String),
-    Object { r#type: String, function: OpenAIFunctionName },
+    Object {
+        r#type: String,
+        function: OpenAIFunctionName,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1047,11 +1083,7 @@ fn to_openai_request(req: NormalizedRequest) -> Result<OpenAIChatRequest> {
                         .collect::<Vec<_>>()
                         .join("\n");
 
-                    if text.is_empty() {
-                        None
-                    } else {
-                        Some(text)
-                    }
+                    if text.is_empty() { None } else { Some(text) }
                 }
             };
 
@@ -1112,7 +1144,9 @@ fn to_openai_request(req: NormalizedRequest) -> Result<OpenAIChatRequest> {
     });
 
     // GPT-5 models use max_completion_tokens instead of max_tokens
-    let is_gpt5 = req.model.starts_with("gpt-5") || req.model.starts_with("o1") || req.model.starts_with("o3");
+    let is_gpt5 = req.model.starts_with("gpt-5")
+        || req.model.starts_with("o1")
+        || req.model.starts_with("o3");
     let (max_tokens, max_completion_tokens) = if is_gpt5 {
         (None, req.max_tokens)
     } else {
@@ -1245,19 +1279,23 @@ fn create_openai_stream(
                                     "content_filter" => FinishReason::ContentFilter,
                                     _ => FinishReason::Stop,
                                 };
-                                return Some(Ok(NormalizedStreamEvent::End { finish_reason: reason }));
+                                return Some(Ok(NormalizedStreamEvent::End {
+                                    finish_reason: reason,
+                                }));
                             }
 
                             if let Some(ref content) = choice.delta.content {
                                 return Some(Ok(NormalizedStreamEvent::Delta {
                                     index: choice.index,
                                     delta: Delta {
-                                        role: choice.delta.role.as_ref().and_then(|r| match r.as_str() {
-                                            "assistant" => Some(Role::Assistant),
-                                            "user" => Some(Role::User),
-                                            "system" => Some(Role::System),
-                                            "tool" => Some(Role::Tool),
-                                            _ => None,
+                                        role: choice.delta.role.as_ref().and_then(|r| {
+                                            match r.as_str() {
+                                                "assistant" => Some(Role::Assistant),
+                                                "user" => Some(Role::User),
+                                                "system" => Some(Role::System),
+                                                "tool" => Some(Role::Tool),
+                                                _ => None,
+                                            }
                                         }),
                                         content: Some(content.clone()),
                                     },
@@ -1273,9 +1311,11 @@ fn create_openai_stream(
                                         index: choice.index,
                                         tool_call_index: tool_call.index,
                                         id: tool_call.id.clone(),
-                                        function: tool_call.function.as_ref().map(|f| FunctionCallDelta {
-                                            name: f.name.clone(),
-                                            arguments: f.arguments.clone(),
+                                        function: tool_call.function.as_ref().map(|f| {
+                                            FunctionCallDelta {
+                                                name: f.name.clone(),
+                                                arguments: f.arguments.clone(),
+                                            }
                                         }),
                                     }));
                                 }
@@ -1284,7 +1324,10 @@ fn create_openai_stream(
 
                         // Skip chunks that don't contain meaningful data (e.g., first chunk with just role)
                         // Log for debugging but don't emit an event
-                        tracing::debug!("Skipping OpenAI chunk with no actionable data: id={}", chunk.id);
+                        tracing::debug!(
+                            "Skipping OpenAI chunk with no actionable data: id={}",
+                            chunk.id
+                        );
                         None
                     }
                     Err(e) => Some(Err(lunaroute_core::Error::Provider(format!(
@@ -1293,7 +1336,10 @@ fn create_openai_stream(
                     )))),
                 }
             }
-            Err(e) => Some(Err(lunaroute_core::Error::Provider(format!("Stream error: {}", e)))),
+            Err(e) => Some(Err(lunaroute_core::Error::Provider(format!(
+                "Stream error: {}",
+                e
+            )))),
         })
         .filter_map(|opt| async move { opt });
 
@@ -1354,7 +1400,7 @@ impl OpenAIResponseHandler for reqwest::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lunaroute_core::normalized::{Tool, FunctionDefinition, FunctionCall};
+    use lunaroute_core::normalized::{FunctionCall, FunctionDefinition, Tool};
 
     #[test]
     fn test_openai_config_builder() {
@@ -1482,8 +1528,13 @@ mod tests {
 
         let openai_req = to_openai_request(normalized).unwrap();
         assert_eq!(openai_req.tools.as_ref().unwrap().len(), 1);
-        assert_eq!(openai_req.tools.as_ref().unwrap()[0].function.name, "get_weather");
-        assert!(matches!(openai_req.tool_choice, Some(OpenAIToolChoice::String(ref s)) if s == "auto"));
+        assert_eq!(
+            openai_req.tools.as_ref().unwrap()[0].function.name,
+            "get_weather"
+        );
+        assert!(
+            matches!(openai_req.tool_choice, Some(OpenAIToolChoice::String(ref s)) if s == "auto")
+        );
     }
 
     #[test]
@@ -1522,7 +1573,9 @@ mod tests {
             metadata: std::collections::HashMap::new(),
         };
         let openai = to_openai_request(req).unwrap();
-        assert!(matches!(openai.tool_choice, Some(OpenAIToolChoice::String(ref s)) if s == "required"));
+        assert!(
+            matches!(openai.tool_choice, Some(OpenAIToolChoice::String(ref s)) if s == "required")
+        );
 
         // Test None
         let req = NormalizedRequest {
@@ -1554,7 +1607,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
-            tool_choice: Some(ToolChoice::Specific { name: "my_func".to_string() }),
+            tool_choice: Some(ToolChoice::Specific {
+                name: "my_func".to_string(),
+            }),
             metadata: std::collections::HashMap::new(),
         };
         let openai = to_openai_request(req).unwrap();
@@ -1608,7 +1663,10 @@ mod tests {
         let openai_req = to_openai_request(normalized).unwrap();
         assert_eq!(openai_req.messages.len(), 2);
         assert!(openai_req.messages[1].tool_calls.is_some());
-        assert_eq!(openai_req.messages[1].tool_calls.as_ref().unwrap()[0].id, "call_123");
+        assert_eq!(
+            openai_req.messages[1].tool_calls.as_ref().unwrap()[0].id,
+            "call_123"
+        );
         // Content should be None when message has tool calls
         assert_eq!(openai_req.messages[1].content, None);
     }
@@ -1646,8 +1704,14 @@ mod tests {
 
         let normalized = from_openai_response(openai_resp).unwrap();
         assert_eq!(normalized.choices[0].message.tool_calls.len(), 1);
-        assert_eq!(normalized.choices[0].message.tool_calls[0].function.name, "get_weather");
-        assert_eq!(normalized.choices[0].finish_reason, Some(FinishReason::ToolCalls));
+        assert_eq!(
+            normalized.choices[0].message.tool_calls[0].function.name,
+            "get_weather"
+        );
+        assert_eq!(
+            normalized.choices[0].finish_reason,
+            Some(FinishReason::ToolCalls)
+        );
     }
 
     #[test]
@@ -1741,13 +1805,17 @@ mod tests {
             messages: vec![Message {
                 role: Role::User,
                 content: MessageContent::Parts(vec![
-                    ContentPart::Text { text: "First".to_string() },
+                    ContentPart::Text {
+                        text: "First".to_string(),
+                    },
                     ContentPart::Image {
                         source: ImageSource::Url {
                             url: "https://example.com/image.jpg".to_string(),
                         },
                     },
-                    ContentPart::Text { text: "Second".to_string() },
+                    ContentPart::Text {
+                        text: "Second".to_string(),
+                    },
                 ]),
                 name: None,
                 tool_calls: vec![],
@@ -1767,7 +1835,10 @@ mod tests {
 
         let openai_req = to_openai_request(normalized).unwrap();
         // Should extract text and join with newlines, ignoring images
-        assert_eq!(openai_req.messages[0].content, Some("First\nSecond".to_string()));
+        assert_eq!(
+            openai_req.messages[0].content,
+            Some("First\nSecond".to_string())
+        );
     }
 
     #[test]
@@ -1821,7 +1892,10 @@ mod tests {
         };
 
         let openai_req = to_openai_request(normalized).unwrap();
-        assert_eq!(openai_req.stop, Some(vec!["STOP".to_string(), "END".to_string()]));
+        assert_eq!(
+            openai_req.stop,
+            Some(vec!["STOP".to_string(), "END".to_string()])
+        );
     }
 
     #[test]

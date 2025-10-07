@@ -6,20 +6,20 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use lunaroute_core::{
+    Error, Result,
     normalized::{
-        Choice, FinishReason, Message, MessageContent, NormalizedRequest, NormalizedResponse,
-        Role, Usage,
+        Choice, FinishReason, Message, MessageContent, NormalizedRequest, NormalizedResponse, Role,
+        Usage,
     },
     provider::Provider,
-    Error, Result,
 };
 use lunaroute_ingress::openai;
-use lunaroute_observability::{health_router, HealthState, Metrics};
+use lunaroute_observability::{HealthState, Metrics, health_router};
 use lunaroute_routing::{RouteTable, Router, RoutingRule, RuleMatcher};
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tower::ServiceExt;
 
 // Mock provider that tracks calls
@@ -54,10 +54,7 @@ impl Provider for MockProvider {
                 index: 0,
                 message: Message {
                     role: Role::Assistant,
-                    content: MessageContent::Text(format!(
-                        "Response from {} provider",
-                        self.id
-                    )),
+                    content: MessageContent::Text(format!("Response from {} provider", self.id)),
                     name: None,
                     tool_calls: vec![],
                     tool_call_id: None,
@@ -77,8 +74,13 @@ impl Provider for MockProvider {
     async fn stream(
         &self,
         _request: NormalizedRequest,
-    ) -> Result<Box<dyn futures::Stream<Item = Result<lunaroute_core::normalized::NormalizedStreamEvent>> + Send + Unpin>>
-    {
+    ) -> Result<
+        Box<
+            dyn futures::Stream<Item = Result<lunaroute_core::normalized::NormalizedStreamEvent>>
+                + Send
+                + Unpin,
+        >,
+    > {
         Err(Error::Provider("Streaming not implemented".to_string()))
     }
 

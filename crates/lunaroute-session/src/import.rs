@@ -89,9 +89,13 @@ fn scan_directory_recursive<'a>(
             if metadata.is_dir() {
                 // Recursively scan subdirectories
                 if let Err(e) = scan_directory_recursive(&path, session_files).await {
-                    eprintln!("Warning: Failed to scan directory {}: {}", path.display(), e);
+                    eprintln!(
+                        "Warning: Failed to scan directory {}: {}",
+                        path.display(),
+                        e
+                    );
                 }
-            } else if path.extension().map_or(false, |ext| ext == "jsonl") {
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
                 // Process .jsonl files
                 match extract_session_metadata(&path).await {
                     Ok(metadata) => session_files.push(metadata),
@@ -108,9 +112,7 @@ fn scan_directory_recursive<'a>(
 
 /// Extract session_id and started_at from first event in JSONL file
 async fn extract_session_metadata(path: &Path) -> Result<SessionFile> {
-    let file = fs::File::open(path)
-        .await
-        .context("Failed to open file")?;
+    let file = fs::File::open(path).await.context("Failed to open file")?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
@@ -122,8 +124,8 @@ async fn extract_session_metadata(path: &Path) -> Result<SessionFile> {
         .context("File is empty")?;
 
     // Parse as SessionEvent
-    let event: SessionEvent = serde_json::from_str(&first_line)
-        .context("Failed to parse first event")?;
+    let event: SessionEvent =
+        serde_json::from_str(&first_line).context("Failed to parse first event")?;
 
     // Extract session_id and started_at
     let (session_id, started_at) = match event {
@@ -144,9 +146,7 @@ async fn extract_session_metadata(path: &Path) -> Result<SessionFile> {
 
 /// Read all events from a JSONL session file
 async fn read_session_events(path: &Path) -> Result<Vec<SessionEvent>> {
-    let file = fs::File::open(path)
-        .await
-        .context("Failed to open file")?;
+    let file = fs::File::open(path).await.context("Failed to open file")?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
@@ -178,13 +178,11 @@ async fn session_exists(db_path: &Path, session_id: &str) -> Result<bool> {
         .await
         .context("Failed to connect to database")?;
 
-    let exists: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM sessions WHERE session_id = ?"
-    )
-    .bind(session_id)
-    .fetch_one(&pool)
-    .await
-    .context("Failed to check if session exists")?;
+    let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM sessions WHERE session_id = ?")
+        .bind(session_id)
+        .fetch_one(&pool)
+        .await
+        .context("Failed to check if session exists")?;
 
     pool.close().await;
 
@@ -199,13 +197,11 @@ async fn import_session(
     config: &ImportConfig,
 ) -> Result<ImportResult> {
     // Check if session already exists
-    if config.skip_existing {
-        if session_exists(&config.db_path, &session_file.session_id).await? {
-            return Ok(ImportResult::Skipped {
-                session_id: session_file.session_id.clone(),
-                reason: "already exists".to_string(),
-            });
-        }
+    if config.skip_existing && session_exists(&config.db_path, &session_file.session_id).await? {
+        return Ok(ImportResult::Skipped {
+            session_id: session_file.session_id.clone(),
+            reason: "already exists".to_string(),
+        });
     }
 
     // Read all events from file
@@ -234,7 +230,10 @@ async fn import_session(
 /// Import all sessions from JSONL files into SQLite database
 #[cfg(feature = "sqlite-writer")]
 pub async fn import_sessions(config: ImportConfig) -> Result<Vec<ImportResult>> {
-    println!("Scanning sessions directory: {}", config.sessions_dir.display());
+    println!(
+        "Scanning sessions directory: {}",
+        config.sessions_dir.display()
+    );
 
     // Scan and sort session files
     let session_files = scan_sessions(&config.sessions_dir).await?;

@@ -3,8 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionRecordingConfig {
     /// Enable session recording
     #[serde(default)]
@@ -34,7 +33,6 @@ pub struct SessionRecordingConfig {
     #[serde(default = "default_max_user_agent_length")]
     pub max_user_agent_length: usize,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonlConfig {
@@ -83,9 +81,9 @@ pub struct RetentionPolicy {
 impl Default for RetentionPolicy {
     fn default() -> Self {
         Self {
-            max_age_days: Some(30),        // Default: 30 days
-            max_total_size_gb: Some(10),   // Default: 10 GB
-            compress_after_days: Some(7),   // Default: compress after 7 days
+            max_age_days: Some(30),       // Default: 30 days
+            max_total_size_gb: Some(10),  // Default: 10 GB
+            compress_after_days: Some(7), // Default: compress after 7 days
             cleanup_interval_minutes: default_cleanup_interval_minutes(),
         }
     }
@@ -123,9 +121,7 @@ impl RetentionPolicy {
             if let Some(compress_after) = self.compress_after_days
                 && compress_after >= max_age
             {
-                return Err(
-                    "compress_after_days must be less than max_age_days".to_string()
-                );
+                return Err("compress_after_days must be less than max_age_days".to_string());
             }
         }
 
@@ -490,8 +486,26 @@ mod tests {
         config.expand_paths();
 
         // Both paths should be expanded
-        assert!(!config.jsonl.as_ref().unwrap().directory.to_str().unwrap().starts_with('~'));
-        assert!(!config.sqlite.as_ref().unwrap().path.to_str().unwrap().starts_with('~'));
+        assert!(
+            !config
+                .jsonl
+                .as_ref()
+                .unwrap()
+                .directory
+                .to_str()
+                .unwrap()
+                .starts_with('~')
+        );
+        assert!(
+            !config
+                .sqlite
+                .as_ref()
+                .unwrap()
+                .path
+                .to_str()
+                .unwrap()
+                .starts_with('~')
+        );
     }
 
     #[test]
@@ -716,7 +730,10 @@ mod tests {
         assert_eq!(config.detect_email, deserialized.detect_email);
         assert_eq!(config.min_confidence, deserialized.min_confidence);
         assert_eq!(config.redaction_mode, deserialized.redaction_mode);
-        assert_eq!(config.custom_patterns.len(), deserialized.custom_patterns.len());
+        assert_eq!(
+            config.custom_patterns.len(),
+            deserialized.custom_patterns.len()
+        );
     }
 
     #[test]

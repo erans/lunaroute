@@ -179,7 +179,8 @@ impl ServerConfig {
         let path = path.as_ref();
         let contents = std::fs::read_to_string(path)?;
 
-        let mut config: ServerConfig = if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+        let mut config: ServerConfig = if path.extension().and_then(|s| s.to_str()) == Some("toml")
+        {
             toml::from_str(&contents)?
         } else {
             // Default to YAML
@@ -199,7 +200,10 @@ impl ServerConfig {
             match val.to_lowercase().as_str() {
                 "openai" => self.api_dialect = ApiDialect::OpenAI,
                 "anthropic" => self.api_dialect = ApiDialect::Anthropic,
-                _ => eprintln!("Warning: Invalid LUNAROUTE_DIALECT '{}', using default", val),
+                _ => eprintln!(
+                    "Warning: Invalid LUNAROUTE_DIALECT '{}', using default",
+                    val
+                ),
             }
         }
 

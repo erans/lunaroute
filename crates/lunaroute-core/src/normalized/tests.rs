@@ -219,11 +219,7 @@ fn test_tool_call_delta() {
     let deserialized: NormalizedStreamEvent = serde_json::from_str(&json).unwrap();
 
     match deserialized {
-        NormalizedStreamEvent::ToolCallDelta {
-            id,
-            function,
-            ..
-        } => {
+        NormalizedStreamEvent::ToolCallDelta { id, function, .. } => {
             assert_eq!(id, Some("call_123".to_string()));
             assert!(function.is_some());
         }
@@ -258,10 +254,7 @@ fn test_role_serialization() {
     }
 
     // Test specific serialization format
-    assert_eq!(
-        serde_json::to_string(&Role::User).unwrap(),
-        r#""user""#
-    );
+    assert_eq!(serde_json::to_string(&Role::User).unwrap(), r#""user""#);
 }
 
 #[test]
@@ -311,7 +304,10 @@ fn test_usage_tracking() {
         total_tokens: 150,
     };
 
-    assert_eq!(usage.total_tokens, usage.prompt_tokens + usage.completion_tokens);
+    assert_eq!(
+        usage.total_tokens,
+        usage.prompt_tokens + usage.completion_tokens
+    );
 
     let json = serde_json::to_string(&usage).unwrap();
     let deserialized: Usage = serde_json::from_str(&json).unwrap();

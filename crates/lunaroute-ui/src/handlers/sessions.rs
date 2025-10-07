@@ -1,8 +1,11 @@
 //! Session list and detail handlers
 
-use askama::Template;
-use axum::{extract::{Path, State}, response::Html};
 use crate::AppState;
+use askama::Template;
+use axum::{
+    extract::{Path, State},
+    response::Html,
+};
 
 #[derive(Template)]
 #[template(path = "sessions_list.html")]

@@ -21,7 +21,10 @@ pub async fn serve_app_js() -> Response {
     let js = include_str!("../static/js/app.js");
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
         js,
     )
         .into_response()
@@ -32,7 +35,10 @@ pub async fn serve_charts_js() -> Response {
     let js = include_str!("../static/js/charts.js");
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
         js,
     )
         .into_response()

@@ -2,8 +2,8 @@
 
 use crate::traits::{StorageError, StorageResult};
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit, OsRng},
 };
 use argon2::{Argon2, ParamsBuilder, Version};
 use rand::RngCore;
@@ -44,11 +44,7 @@ pub fn derive_key_from_password(
         .map_err(|e| StorageError::InvalidData(format!("Invalid Argon2 params: {}", e)))?;
 
     // Use Argon2id (most secure variant)
-    let argon2 = Argon2::new(
-        argon2::Algorithm::Argon2id,
-        Version::V0x13,
-        argon2_params,
-    );
+    let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, argon2_params);
 
     let mut key = [0u8; 32];
 
@@ -287,7 +283,7 @@ mod tests {
 
         // Lighter params for faster testing
         let params = KeyDerivationParams {
-            memory_size: 4096,   // 4 MB
+            memory_size: 4096, // 4 MB
             iterations: 2,
             parallelism: 1,
         };

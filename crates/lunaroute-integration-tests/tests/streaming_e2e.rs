@@ -7,19 +7,19 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use futures::StreamExt;
 use lunaroute_core::{
+    Error, Result,
     normalized::{
-        Choice, Delta, FinishReason, Message, MessageContent, NormalizedRequest, NormalizedResponse,
-        NormalizedStreamEvent, Role, Usage,
+        Choice, Delta, FinishReason, Message, MessageContent, NormalizedRequest,
+        NormalizedResponse, NormalizedStreamEvent, Role, Usage,
     },
     provider::Provider,
-    Error, Result,
 };
 use lunaroute_ingress::openai;
 use lunaroute_routing::{RouteTable, Router, RoutingRule, RuleMatcher};
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tower::ServiceExt;
 
 // Streaming test provider
@@ -466,10 +466,7 @@ async fn test_e2e_streaming_non_streaming_provider_error() {
     }
 
     let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
-    providers.insert(
-        "non-streaming".to_string(),
-        Arc::new(NonStreamingProvider),
-    );
+    providers.insert("non-streaming".to_string(), Arc::new(NonStreamingProvider));
 
     let rules = vec![RoutingRule {
         priority: 10,

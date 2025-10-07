@@ -2,10 +2,7 @@
 
 use crate::handlers;
 use crate::AppState;
-use axum::{
-    routing::get,
-    Router,
-};
+use axum::{routing::get, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::net::SocketAddr;
@@ -41,11 +38,21 @@ pub struct UiConfig {
     pub delete_enabled: bool,
 }
 
-fn default_enabled() -> bool { true }
-fn default_host() -> String { "127.0.0.1".to_string() }
-fn default_port() -> u16 { 8082 }
-fn default_refresh_interval() -> u64 { 5 }
-fn default_export_enabled() -> bool { true }
+fn default_enabled() -> bool {
+    true
+}
+fn default_host() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_port() -> u16 {
+    8082
+}
+fn default_refresh_interval() -> u64 {
+    5
+}
+fn default_export_enabled() -> bool {
+    true
+}
 
 impl Default for UiConfig {
     fn default() -> Self {
@@ -86,12 +93,19 @@ impl UiServer {
             .route("/sessions/:id", get(handlers::sessions::session_detail))
             .route("/analytics", get(handlers::analytics::analytics))
             .route("/settings", get(handlers::settings::settings))
-
             // Static assets (embedded in binary)
-            .route("/static/css/style.css", get(handlers::static_files::serve_css))
-            .route("/static/js/app.js", get(handlers::static_files::serve_app_js))
-            .route("/static/js/charts.js", get(handlers::static_files::serve_charts_js))
-
+            .route(
+                "/static/css/style.css",
+                get(handlers::static_files::serve_css),
+            )
+            .route(
+                "/static/js/app.js",
+                get(handlers::static_files::serve_app_js),
+            )
+            .route(
+                "/static/js/charts.js",
+                get(handlers::static_files::serve_charts_js),
+            )
             // JSON API endpoints
             .route("/api/stats/overview", get(handlers::api::overview_stats))
             .route("/api/stats/tokens", get(handlers::api::token_stats))
@@ -103,11 +117,16 @@ impl UiServer {
             .route("/api/sessions", get(handlers::api::sessions_list))
             .route("/api/sessions/recent", get(handlers::api::recent_sessions))
             .route("/api/sessions/:id", get(handlers::api::session_detail))
-            .route("/api/sessions/:id/timeline", get(handlers::api::session_timeline))
-            .route("/api/sessions/:id/tools", get(handlers::api::session_tool_stats))
+            .route(
+                "/api/sessions/:id/timeline",
+                get(handlers::api::session_timeline),
+            )
+            .route(
+                "/api/sessions/:id/tools",
+                get(handlers::api::session_tool_stats),
+            )
             .route("/api/user-agents", get(handlers::api::user_agents_list))
             .route("/api/models", get(handlers::api::models_list))
-
             .layer(TraceLayer::new_for_http())
             .with_state(state)
     }

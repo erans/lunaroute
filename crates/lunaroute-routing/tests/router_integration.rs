@@ -3,19 +3,19 @@
 //! These tests verify Router behavior in more realistic scenarios than unit tests.
 
 use lunaroute_core::{
+    Error, Result,
     normalized::{
         Choice, FinishReason, Message, MessageContent, NormalizedRequest, NormalizedResponse,
         NormalizedStreamEvent, Role, Usage,
     },
     provider::Provider,
-    Error, Result,
 };
 use lunaroute_routing::{
     CircuitBreakerConfig, HealthMonitorConfig, RouteTable, Router, RoutingRule, RuleMatcher,
 };
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 // Test provider that can be configured to succeed or fail
@@ -375,7 +375,10 @@ async fn test_model_based_routing() {
 
     let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
     providers.insert("openai".to_string(), Arc::new(openai_provider.clone()));
-    providers.insert("anthropic".to_string(), Arc::new(anthropic_provider.clone()));
+    providers.insert(
+        "anthropic".to_string(),
+        Arc::new(anthropic_provider.clone()),
+    );
 
     let rules = vec![
         RoutingRule {

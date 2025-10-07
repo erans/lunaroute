@@ -15,7 +15,7 @@ use tokio::time::sleep;
 /// 3. The pool doesn't accumulate dead connections
 #[tokio::test]
 async fn test_connection_pool_reuse() {
-    use lunaroute_egress::client::{create_client, HttpClientConfig};
+    use lunaroute_egress::client::{HttpClientConfig, create_client};
 
     let config = HttpClientConfig::default();
     let client = create_client(&config).unwrap();
@@ -52,7 +52,7 @@ async fn test_connection_pool_reuse() {
 #[tokio::test]
 #[ignore]
 async fn test_connection_pool_idle_timeout() {
-    use lunaroute_egress::client::{create_client, HttpClientConfig};
+    use lunaroute_egress::client::{HttpClientConfig, create_client};
 
     let config = HttpClientConfig::default();
     let client = create_client(&config).unwrap();
@@ -88,7 +88,7 @@ async fn test_connection_pool_idle_timeout() {
 /// or fail fast with connection error (not hang forever)
 #[tokio::test]
 async fn test_server_closes_idle_connection() {
-    use lunaroute_egress::client::{create_client, HttpClientConfig};
+    use lunaroute_egress::client::{HttpClientConfig, create_client};
 
     let config = HttpClientConfig::default();
     let client = create_client(&config).unwrap();
@@ -148,15 +148,13 @@ async fn start_mock_server_with_short_timeout() -> MockServer {
 }
 
 async fn start_mock_server_with_timeout(_idle_timeout: Duration) -> MockServer {
-    use axum::{routing::get, Router};
+    use axum::{Router, routing::get};
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
     let app = Router::new().route("/test/:id", get(|| async { "OK" }));
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
@@ -185,7 +183,7 @@ async fn start_mock_server_with_timeout(_idle_timeout: Duration) -> MockServer {
 /// 3. No deadlocks or stuck requests under load
 #[tokio::test]
 async fn test_concurrent_requests() {
-    use lunaroute_egress::client::{create_client, HttpClientConfig};
+    use lunaroute_egress::client::{HttpClientConfig, create_client};
 
     let config = HttpClientConfig::default();
     let client = Arc::new(create_client(&config).unwrap());
@@ -201,11 +199,7 @@ async fn test_concurrent_requests() {
 
         let handle = tokio::spawn(async move {
             let response = client.get(&format!("{}/test/{}", url, i)).send().await;
-            assert!(
-                response.is_ok(),
-                "Concurrent request {} should succeed",
-                i
-            );
+            assert!(response.is_ok(), "Concurrent request {} should succeed", i);
         });
 
         handles.push(handle);
