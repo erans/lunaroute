@@ -175,7 +175,7 @@ mod tests {
         assert_eq!(config.pool_idle_timeout_secs, 90); // Expire before server closes
         assert_eq!(config.tcp_keepalive_secs, 60); // Keep long requests alive
         assert_eq!(config.max_retries, 3);
-        assert_eq!(config.enable_pool_metrics, true);
+        assert!(config.enable_pool_metrics);
         assert!(config.user_agent.starts_with("LunaRoute/"));
     }
 
@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(config.pool_idle_timeout_secs, 60);
         assert_eq!(config.tcp_keepalive_secs, 30);
         assert_eq!(config.max_retries, 5);
-        assert_eq!(config.enable_pool_metrics, false);
+        assert!(!config.enable_pool_metrics);
         assert_eq!(config.user_agent, "CustomAgent/1.0");
     }
 

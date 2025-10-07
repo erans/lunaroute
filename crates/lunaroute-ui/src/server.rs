@@ -90,7 +90,7 @@ impl UiServer {
             // HTML pages
             .route("/", get(handlers::dashboard::dashboard))
             .route("/sessions", get(handlers::sessions::sessions_list))
-            .route("/sessions/:id", get(handlers::sessions::session_detail))
+            .route("/sessions/{id}", get(handlers::sessions::session_detail))
             .route("/analytics", get(handlers::analytics::analytics))
             .route("/settings", get(handlers::settings::settings))
             // Static assets (embedded in binary)
@@ -116,13 +116,13 @@ impl UiServer {
             .route("/api/stats/spending", get(handlers::api::spending_stats))
             .route("/api/sessions", get(handlers::api::sessions_list))
             .route("/api/sessions/recent", get(handlers::api::recent_sessions))
-            .route("/api/sessions/:id", get(handlers::api::session_detail))
+            .route("/api/sessions/{id}", get(handlers::api::session_detail))
             .route(
-                "/api/sessions/:id/timeline",
+                "/api/sessions/{id}/timeline",
                 get(handlers::api::session_timeline),
             )
             .route(
-                "/api/sessions/:id/tools",
+                "/api/sessions/{id}/tools",
                 get(handlers::api::session_tool_stats),
             )
             .route("/api/user-agents", get(handlers::api::user_agents_list))

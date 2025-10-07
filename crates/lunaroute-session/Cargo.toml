@@ -23,7 +23,7 @@ uuid = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
 zstd = { workspace = true }
-lru = "0.12"
+lru = "0.16"
 rand = { workspace = true }
 hex = "0.4"
 dirs = { workspace = true }

@@ -556,10 +556,18 @@ mod tests {
         let gathered = metrics.registry().gather();
         let total_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_requests_total")
+            .find(|m| m.name() == "lunaroute_requests_total")
             .expect("requests_total metric not found");
 
-        assert_eq!(total_metric.get_metric()[0].get_counter().get_value(), 1.0);
+        assert_eq!(
+            total_metric.metric[0]
+                .counter
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
+            1.0
+        );
     }
 
     #[test]
@@ -570,11 +578,16 @@ mod tests {
         let gathered = metrics.registry().gather();
         let failure_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_requests_failure_total")
+            .find(|m| m.name() == "lunaroute_requests_failure_total")
             .expect("requests_failure_total metric not found");
 
         assert_eq!(
-            failure_metric.get_metric()[0].get_counter().get_value(),
+            failure_metric.metric[0]
+                .counter
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
             1.0
         );
     }
@@ -587,11 +600,16 @@ mod tests {
         let gathered = metrics.registry().gather();
         let prompt_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_tokens_prompt_total")
+            .find(|m| m.name() == "lunaroute_tokens_prompt_total")
             .expect("tokens_prompt_total metric not found");
 
         assert_eq!(
-            prompt_metric.get_metric()[0].get_counter().get_value(),
+            prompt_metric.metric[0]
+                .counter
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
             100.0
         );
     }
@@ -604,11 +622,16 @@ mod tests {
         let gathered = metrics.registry().gather();
         let fallback_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_fallback_triggered_total")
+            .find(|m| m.name() == "lunaroute_fallback_triggered_total")
             .expect("fallback_triggered_total metric not found");
 
         assert_eq!(
-            fallback_metric.get_metric()[0].get_counter().get_value(),
+            fallback_metric.metric[0]
+                .counter
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
             1.0
         );
     }
@@ -621,10 +644,18 @@ mod tests {
         let gathered = metrics.registry().gather();
         let state_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_circuit_breaker_state")
+            .find(|m| m.name() == "lunaroute_circuit_breaker_state")
             .expect("circuit_breaker_state metric not found");
 
-        assert_eq!(state_metric.get_metric()[0].get_gauge().get_value(), 1.0);
+        assert_eq!(
+            state_metric.metric[0]
+                .gauge
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
+            1.0
+        );
     }
 
     #[test]
@@ -635,17 +666,28 @@ mod tests {
         let gathered = metrics.registry().gather();
         let health_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_provider_health_status")
+            .find(|m| m.name() == "lunaroute_provider_health_status")
             .expect("provider_health_status metric not found");
 
-        assert_eq!(health_metric.get_metric()[0].get_gauge().get_value(), 1.0);
+        assert_eq!(
+            health_metric.metric[0]
+                .gauge
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
+            1.0
+        );
 
         let rate_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_provider_success_rate")
+            .find(|m| m.name() == "lunaroute_provider_success_rate")
             .expect("provider_success_rate metric not found");
 
-        assert_eq!(rate_metric.get_metric()[0].get_gauge().get_value(), 0.95);
+        assert_eq!(
+            rate_metric.metric[0].gauge.as_ref().unwrap().value.unwrap(),
+            0.95
+        );
     }
 
     #[test]
@@ -671,24 +713,24 @@ mod tests {
         let gathered = metrics.registry().gather();
         let tool_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_tool_calls_total")
+            .find(|m| m.name() == "lunaroute_tool_calls_total")
             .expect("tool_calls_total metric not found");
 
         // Should have 2 label sets (Read and Write)
-        assert_eq!(tool_metric.get_metric().len(), 2);
+        assert_eq!(tool_metric.metric.len(), 2);
 
         // Find the Read metric and verify count
         let read_metric = tool_metric
-            .get_metric()
+            .metric
             .iter()
             .find(|m| {
-                m.get_label()
+                m.label
                     .iter()
-                    .any(|l| l.get_name() == "tool_name" && l.get_value() == "Read")
+                    .any(|l| l.name() == "tool_name" && l.value() == "Read")
             })
             .expect("Read tool metric not found");
 
-        assert_eq!(read_metric.get_counter().get_value(), 2.0);
+        assert_eq!(read_metric.counter.as_ref().unwrap().value.unwrap(), 2.0);
     }
 
     #[test]
@@ -700,11 +742,11 @@ mod tests {
         let gathered = metrics.registry().gather();
         let post_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_post_processing_duration_seconds")
+            .find(|m| m.name() == "lunaroute_post_processing_duration_seconds")
             .expect("post_processing_duration_seconds metric not found");
 
-        let histogram = post_metric.get_metric()[0].get_histogram();
-        assert_eq!(histogram.get_sample_count(), 2);
+        let histogram = post_metric.metric[0].histogram.as_ref().unwrap();
+        assert_eq!(histogram.sample_count.unwrap(), 2);
     }
 
     #[test]
@@ -717,10 +759,10 @@ mod tests {
         let gathered = metrics.registry().gather();
         let overhead_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_proxy_overhead_seconds")
+            .find(|m| m.name() == "lunaroute_proxy_overhead_seconds")
             .expect("proxy_overhead_seconds metric not found");
 
-        let histogram = overhead_metric.get_metric()[0].get_histogram();
-        assert_eq!(histogram.get_sample_count(), 3);
+        let histogram = overhead_metric.metric[0].histogram.as_ref().unwrap();
+        assert_eq!(histogram.sample_count.unwrap(), 3);
     }
 }
