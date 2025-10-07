@@ -255,52 +255,52 @@ fn merge_http_client_env(provider: &mut ProviderSettings, prefix: &str) {
 
     if let Some(http_client) = &mut provider.http_client {
         // LUNAROUTE_<PREFIX>_TIMEOUT_SECS
-        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_TIMEOUT_SECS", prefix)) {
-            if let Ok(timeout) = val.parse::<u64>() {
-                http_client.timeout_secs = Some(timeout);
-            }
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_TIMEOUT_SECS", prefix))
+            && let Ok(timeout) = val.parse::<u64>()
+        {
+            http_client.timeout_secs = Some(timeout);
         }
 
         // LUNAROUTE_<PREFIX>_CONNECT_TIMEOUT_SECS
-        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_CONNECT_TIMEOUT_SECS", prefix)) {
-            if let Ok(timeout) = val.parse::<u64>() {
-                http_client.connect_timeout_secs = Some(timeout);
-            }
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_CONNECT_TIMEOUT_SECS", prefix))
+            && let Ok(timeout) = val.parse::<u64>()
+        {
+            http_client.connect_timeout_secs = Some(timeout);
         }
 
         // LUNAROUTE_<PREFIX>_POOL_MAX_IDLE
-        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_POOL_MAX_IDLE", prefix)) {
-            if let Ok(max_idle) = val.parse::<usize>() {
-                http_client.pool_max_idle_per_host = Some(max_idle);
-            }
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_POOL_MAX_IDLE", prefix))
+            && let Ok(max_idle) = val.parse::<usize>()
+        {
+            http_client.pool_max_idle_per_host = Some(max_idle);
         }
 
         // LUNAROUTE_<PREFIX>_POOL_IDLE_TIMEOUT_SECS
-        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_POOL_IDLE_TIMEOUT_SECS", prefix)) {
-            if let Ok(timeout) = val.parse::<u64>() {
-                http_client.pool_idle_timeout_secs = Some(timeout);
-            }
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_POOL_IDLE_TIMEOUT_SECS", prefix))
+            && let Ok(timeout) = val.parse::<u64>()
+        {
+            http_client.pool_idle_timeout_secs = Some(timeout);
         }
 
         // LUNAROUTE_<PREFIX>_TCP_KEEPALIVE_SECS
-        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_TCP_KEEPALIVE_SECS", prefix)) {
-            if let Ok(keepalive) = val.parse::<u64>() {
-                http_client.tcp_keepalive_secs = Some(keepalive);
-            }
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_TCP_KEEPALIVE_SECS", prefix))
+            && let Ok(keepalive) = val.parse::<u64>()
+        {
+            http_client.tcp_keepalive_secs = Some(keepalive);
         }
 
         // LUNAROUTE_<PREFIX>_MAX_RETRIES
-        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_MAX_RETRIES", prefix)) {
-            if let Ok(retries) = val.parse::<u32>() {
-                http_client.max_retries = Some(retries);
-            }
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_MAX_RETRIES", prefix))
+            && let Ok(retries) = val.parse::<u32>()
+        {
+            http_client.max_retries = Some(retries);
         }
 
         // LUNAROUTE_<PREFIX>_ENABLE_POOL_METRICS
-        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_ENABLE_POOL_METRICS", prefix)) {
-            if let Ok(enabled) = val.parse::<bool>() {
-                http_client.enable_pool_metrics = Some(enabled);
-            }
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_ENABLE_POOL_METRICS", prefix))
+            && let Ok(enabled) = val.parse::<bool>()
+        {
+            http_client.enable_pool_metrics = Some(enabled);
         }
     }
 }
@@ -477,4 +477,385 @@ fn default_false() -> bool {
 
 fn default_metadata_namespace() -> String {
     "lunaroute".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::env;
+
+    #[test]
+    fn test_http_client_settings_to_config_with_defaults() {
+        let settings = HttpClientSettings {
+            timeout_secs: None,
+            connect_timeout_secs: None,
+            pool_max_idle_per_host: None,
+            pool_idle_timeout_secs: None,
+            tcp_keepalive_secs: None,
+            max_retries: None,
+            enable_pool_metrics: None,
+        };
+
+        let config = settings.to_http_client_config();
+
+        // Should match egress crate defaults
+        assert_eq!(config.timeout_secs, 600);
+        assert_eq!(config.connect_timeout_secs, 10);
+        assert_eq!(config.pool_max_idle_per_host, 32);
+        assert_eq!(config.pool_idle_timeout_secs, 90);
+        assert_eq!(config.tcp_keepalive_secs, 60);
+        assert_eq!(config.max_retries, 3);
+        assert!(config.enable_pool_metrics);
+    }
+
+    #[test]
+    fn test_http_client_settings_to_config_with_custom_values() {
+        let settings = HttpClientSettings {
+            timeout_secs: Some(300),
+            connect_timeout_secs: Some(5),
+            pool_max_idle_per_host: Some(64),
+            pool_idle_timeout_secs: Some(120),
+            tcp_keepalive_secs: Some(30),
+            max_retries: Some(5),
+            enable_pool_metrics: Some(false),
+        };
+
+        let config = settings.to_http_client_config();
+
+        assert_eq!(config.timeout_secs, 300);
+        assert_eq!(config.connect_timeout_secs, 5);
+        assert_eq!(config.pool_max_idle_per_host, 64);
+        assert_eq!(config.pool_idle_timeout_secs, 120);
+        assert_eq!(config.tcp_keepalive_secs, 30);
+        assert_eq!(config.max_retries, 5);
+        assert!(!config.enable_pool_metrics);
+    }
+
+    #[test]
+    fn test_http_client_settings_partial_override() {
+        let settings = HttpClientSettings {
+            timeout_secs: Some(300),
+            connect_timeout_secs: None, // Use default
+            pool_max_idle_per_host: Some(64),
+            pool_idle_timeout_secs: None, // Use default
+            tcp_keepalive_secs: None,     // Use default
+            max_retries: None,            // Use default
+            enable_pool_metrics: None,    // Use default
+        };
+
+        let config = settings.to_http_client_config();
+
+        assert_eq!(config.timeout_secs, 300); // Custom
+        assert_eq!(config.connect_timeout_secs, 10); // Default
+        assert_eq!(config.pool_max_idle_per_host, 64); // Custom
+        assert_eq!(config.pool_idle_timeout_secs, 90); // Default
+    }
+
+    #[test]
+    #[serial]
+    fn test_merge_http_client_env_all_variables() {
+        // Setup environment variables
+        unsafe {
+            env::set_var("LUNAROUTE_OPENAI_TIMEOUT_SECS", "300");
+            env::set_var("LUNAROUTE_OPENAI_CONNECT_TIMEOUT_SECS", "5");
+            env::set_var("LUNAROUTE_OPENAI_POOL_MAX_IDLE", "64");
+            env::set_var("LUNAROUTE_OPENAI_POOL_IDLE_TIMEOUT_SECS", "120");
+            env::set_var("LUNAROUTE_OPENAI_TCP_KEEPALIVE_SECS", "30");
+            env::set_var("LUNAROUTE_OPENAI_MAX_RETRIES", "5");
+            env::set_var("LUNAROUTE_OPENAI_ENABLE_POOL_METRICS", "false");
+        }
+
+        let mut provider = ProviderSettings {
+            api_key: Some("test-key".to_string()),
+            base_url: None,
+            enabled: true,
+            http_client: None,
+            request_headers: None,
+            request_body: None,
+            response_body: None,
+        };
+
+        merge_http_client_env(&mut provider, "OPENAI");
+
+        let http_client = provider.http_client.unwrap();
+        assert_eq!(http_client.timeout_secs, Some(300));
+        assert_eq!(http_client.connect_timeout_secs, Some(5));
+        assert_eq!(http_client.pool_max_idle_per_host, Some(64));
+        assert_eq!(http_client.pool_idle_timeout_secs, Some(120));
+        assert_eq!(http_client.tcp_keepalive_secs, Some(30));
+        assert_eq!(http_client.max_retries, Some(5));
+        assert_eq!(http_client.enable_pool_metrics, Some(false));
+
+        // Cleanup
+        unsafe {
+            env::remove_var("LUNAROUTE_OPENAI_TIMEOUT_SECS");
+            env::remove_var("LUNAROUTE_OPENAI_CONNECT_TIMEOUT_SECS");
+            env::remove_var("LUNAROUTE_OPENAI_POOL_MAX_IDLE");
+            env::remove_var("LUNAROUTE_OPENAI_POOL_IDLE_TIMEOUT_SECS");
+            env::remove_var("LUNAROUTE_OPENAI_TCP_KEEPALIVE_SECS");
+            env::remove_var("LUNAROUTE_OPENAI_MAX_RETRIES");
+            env::remove_var("LUNAROUTE_OPENAI_ENABLE_POOL_METRICS");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_merge_http_client_env_invalid_values_ignored() {
+        // Setup environment variables with invalid values
+        unsafe {
+            env::set_var("LUNAROUTE_ANTHROPIC_TIMEOUT_SECS", "not-a-number");
+            env::set_var("LUNAROUTE_ANTHROPIC_POOL_MAX_IDLE", "invalid");
+            env::set_var("LUNAROUTE_ANTHROPIC_ENABLE_POOL_METRICS", "maybe");
+        }
+
+        let mut provider = ProviderSettings {
+            api_key: Some("test-key".to_string()),
+            base_url: None,
+            enabled: true,
+            http_client: None,
+            request_headers: None,
+            request_body: None,
+            response_body: None,
+        };
+
+        merge_http_client_env(&mut provider, "ANTHROPIC");
+
+        // http_client should be created but fields should be None (invalid values ignored)
+        let http_client = provider.http_client.unwrap();
+        assert_eq!(http_client.timeout_secs, None);
+        assert_eq!(http_client.pool_max_idle_per_host, None);
+        assert_eq!(http_client.enable_pool_metrics, None);
+
+        // Cleanup
+        unsafe {
+            env::remove_var("LUNAROUTE_ANTHROPIC_TIMEOUT_SECS");
+            env::remove_var("LUNAROUTE_ANTHROPIC_POOL_MAX_IDLE");
+            env::remove_var("LUNAROUTE_ANTHROPIC_ENABLE_POOL_METRICS");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_merge_http_client_env_partial_variables() {
+        // Setup only some environment variables
+        unsafe {
+            env::set_var("LUNAROUTE_OPENAI_TIMEOUT_SECS", "300");
+            env::set_var("LUNAROUTE_OPENAI_POOL_MAX_IDLE", "64");
+        }
+        // Other variables not set
+
+        let mut provider = ProviderSettings {
+            api_key: Some("test-key".to_string()),
+            base_url: None,
+            enabled: true,
+            http_client: None,
+            request_headers: None,
+            request_body: None,
+            response_body: None,
+        };
+
+        merge_http_client_env(&mut provider, "OPENAI");
+
+        let http_client = provider.http_client.unwrap();
+        assert_eq!(http_client.timeout_secs, Some(300));
+        assert_eq!(http_client.pool_max_idle_per_host, Some(64));
+        assert_eq!(http_client.connect_timeout_secs, None); // Not set
+        assert_eq!(http_client.tcp_keepalive_secs, None); // Not set
+
+        // Cleanup
+        unsafe {
+            env::remove_var("LUNAROUTE_OPENAI_TIMEOUT_SECS");
+            env::remove_var("LUNAROUTE_OPENAI_POOL_MAX_IDLE");
+        }
+    }
+
+    #[test]
+    fn test_yaml_deserialization_with_http_client() {
+        let yaml = r#"
+host: "0.0.0.0"
+port: 8081
+providers:
+  openai:
+    enabled: true
+    api_key: "test-key"
+    http_client:
+      timeout_secs: 300
+      pool_max_idle_per_host: 64
+      pool_idle_timeout_secs: 120
+"#;
+
+        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.port, 8081);
+
+        let openai = config.providers.openai.as_ref().unwrap();
+        assert!(openai.enabled);
+        assert_eq!(openai.api_key, Some("test-key".to_string()));
+
+        let http_client = openai.http_client.as_ref().unwrap();
+        assert_eq!(http_client.timeout_secs, Some(300));
+        assert_eq!(http_client.pool_max_idle_per_host, Some(64));
+        assert_eq!(http_client.pool_idle_timeout_secs, Some(120));
+        assert_eq!(http_client.tcp_keepalive_secs, None); // Not specified
+    }
+
+    #[test]
+    fn test_yaml_deserialization_without_http_client() {
+        let yaml = r#"
+host: "127.0.0.1"
+port: 8081
+providers:
+  openai:
+    enabled: true
+    api_key: "test-key"
+"#;
+
+        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+
+        let openai = config.providers.openai.as_ref().unwrap();
+        assert!(openai.http_client.is_none()); // http_client section not provided
+    }
+
+    #[test]
+    #[serial]
+    fn test_server_config_merge_env_http_client() {
+        // Setup environment
+        unsafe {
+            env::set_var("OPENAI_API_KEY", "test-api-key");
+            env::set_var("LUNAROUTE_OPENAI_TIMEOUT_SECS", "300");
+            env::set_var("LUNAROUTE_OPENAI_POOL_MAX_IDLE", "64");
+        }
+
+        let mut config = ServerConfig::default();
+        config.merge_env();
+
+        // Should have OpenAI provider configured
+        let openai = config.providers.openai.as_ref().unwrap();
+        assert_eq!(openai.api_key, Some("test-api-key".to_string()));
+
+        // Should have http_client settings from env vars
+        let http_client = openai.http_client.as_ref().unwrap();
+        assert_eq!(http_client.timeout_secs, Some(300));
+        assert_eq!(http_client.pool_max_idle_per_host, Some(64));
+
+        // Cleanup
+        unsafe {
+            env::remove_var("OPENAI_API_KEY");
+            env::remove_var("LUNAROUTE_OPENAI_TIMEOUT_SECS");
+            env::remove_var("LUNAROUTE_OPENAI_POOL_MAX_IDLE");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_configuration_precedence_yaml_then_env() {
+        // Start with YAML config
+        let yaml = r#"
+providers:
+  openai:
+    enabled: true
+    api_key: "yaml-key"
+    http_client:
+      timeout_secs: 200
+      pool_max_idle_per_host: 32
+"#;
+
+        let mut config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+
+        // Set env var that should override YAML
+        unsafe {
+            env::set_var("LUNAROUTE_OPENAI_TIMEOUT_SECS", "300");
+            env::set_var("LUNAROUTE_OPENAI_POOL_MAX_IDLE", "64");
+        }
+
+        config.merge_env();
+
+        let openai = config.providers.openai.as_ref().unwrap();
+        let http_client = openai.http_client.as_ref().unwrap();
+
+        // Env var should override YAML value
+        assert_eq!(http_client.timeout_secs, Some(300));
+        assert_eq!(http_client.pool_max_idle_per_host, Some(64));
+
+        // Cleanup
+        unsafe {
+            env::remove_var("LUNAROUTE_OPENAI_TIMEOUT_SECS");
+            env::remove_var("LUNAROUTE_OPENAI_POOL_MAX_IDLE");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_merge_http_client_env_creates_http_client_if_missing() {
+        let mut provider = ProviderSettings {
+            api_key: Some("test-key".to_string()),
+            base_url: None,
+            enabled: true,
+            http_client: None, // Start with None
+            request_headers: None,
+            request_body: None,
+            response_body: None,
+        };
+
+        unsafe {
+            env::set_var("LUNAROUTE_OPENAI_TIMEOUT_SECS", "300");
+        }
+
+        merge_http_client_env(&mut provider, "OPENAI");
+
+        // Should create http_client if it didn't exist
+        assert!(provider.http_client.is_some());
+        let http_client = provider.http_client.unwrap();
+        assert_eq!(http_client.timeout_secs, Some(300));
+
+        // Cleanup
+        unsafe {
+            env::remove_var("LUNAROUTE_OPENAI_TIMEOUT_SECS");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_merge_http_client_env_preserves_existing_values() {
+        let mut provider = ProviderSettings {
+            api_key: Some("test-key".to_string()),
+            base_url: None,
+            enabled: true,
+            http_client: Some(HttpClientSettings {
+                timeout_secs: Some(200),
+                connect_timeout_secs: Some(5),
+                pool_max_idle_per_host: None,
+                pool_idle_timeout_secs: None,
+                tcp_keepalive_secs: None,
+                max_retries: None,
+                enable_pool_metrics: None,
+            }),
+            request_headers: None,
+            request_body: None,
+            response_body: None,
+        };
+
+        // Set only one env var
+        unsafe {
+            env::set_var("LUNAROUTE_OPENAI_POOL_MAX_IDLE", "64");
+        }
+
+        merge_http_client_env(&mut provider, "OPENAI");
+
+        let http_client = provider.http_client.unwrap();
+
+        // Original values preserved
+        assert_eq!(http_client.timeout_secs, Some(200));
+        assert_eq!(http_client.connect_timeout_secs, Some(5));
+
+        // New value added
+        assert_eq!(http_client.pool_max_idle_per_host, Some(64));
+
+        // Cleanup
+        unsafe {
+            env::remove_var("LUNAROUTE_OPENAI_POOL_MAX_IDLE");
+        }
+    }
 }
