@@ -10,6 +10,9 @@ pub mod anthropic;
 pub mod client;
 pub mod openai;
 
+// Re-export commonly used types
+pub use client::HttpClientConfig;
+
 /// Egress-specific errors
 #[derive(Debug, Error)]
 pub enum EgressError {

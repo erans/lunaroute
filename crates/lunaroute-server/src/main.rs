@@ -429,8 +429,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .clone()
             .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
-        let mut provider_config = OpenAIConfig::new(api_key.clone());
-        provider_config.base_url = base_url;
+        // Use http_client config from YAML if provided, otherwise use defaults
+        let client_config = openai_config
+            .http_client
+            .as_ref()
+            .map(|c| c.to_http_client_config())
+            .unwrap_or_default();
+
+        let mut provider_config = OpenAIConfig {
+            api_key: api_key.clone(),
+            base_url,
+            organization: None,
+            client_config,
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
+        };
 
         // Wire custom headers and body modifications
         if let Some(headers_config) = &openai_config.request_headers {
@@ -492,11 +506,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .clone()
             .unwrap_or_else(|| "https://api.anthropic.com".to_string());
 
+        // Use http_client config from YAML if provided, otherwise use defaults
+        let client_config = anthropic_config
+            .http_client
+            .as_ref()
+            .map(|c| c.to_http_client_config())
+            .unwrap_or_default();
+
         let provider_config = AnthropicConfig {
             api_key: api_key.clone(),
             base_url,
             api_version: "2023-06-01".to_string(),
-            client_config: Default::default(),
+            client_config,
         };
         let conn = AnthropicConnector::new(provider_config)?;
 

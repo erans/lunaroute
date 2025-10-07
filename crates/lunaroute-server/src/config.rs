@@ -58,6 +58,10 @@ pub struct ProviderSettings {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
+    /// HTTP client configuration for connection pooling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_client: Option<HttpClientSettings>,
+
     /// Custom headers to inject into requests sent to this provider
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_headers: Option<HeadersConfig>,
@@ -69,6 +73,66 @@ pub struct ProviderSettings {
     /// Response body modifications (metadata injection, extension fields)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_body: Option<ResponseBodyModConfig>,
+}
+
+/// HTTP client configuration settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpClientSettings {
+    /// Request timeout in seconds (default: 600 for OpenAI, 600 for Anthropic)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+
+    /// Connection timeout in seconds (default: 10)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect_timeout_secs: Option<u64>,
+
+    /// Maximum number of idle connections per host (default: 32)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool_max_idle_per_host: Option<usize>,
+
+    /// Pool idle timeout in seconds (default: 90)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool_idle_timeout_secs: Option<u64>,
+
+    /// TCP keepalive interval in seconds (default: 60)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tcp_keepalive_secs: Option<u64>,
+
+    /// Maximum number of retries for transient errors (default: 3)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+
+    /// Enable connection pool metrics (default: true)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_pool_metrics: Option<bool>,
+}
+
+impl HttpClientSettings {
+    /// Convert to egress crate's HttpClientConfig, using defaults for unspecified fields
+    pub fn to_http_client_config(&self) -> lunaroute_egress::HttpClientConfig {
+        let defaults = lunaroute_egress::HttpClientConfig::default();
+
+        lunaroute_egress::HttpClientConfig {
+            timeout_secs: self.timeout_secs.unwrap_or(defaults.timeout_secs),
+            connect_timeout_secs: self
+                .connect_timeout_secs
+                .unwrap_or(defaults.connect_timeout_secs),
+            pool_max_idle_per_host: self
+                .pool_max_idle_per_host
+                .unwrap_or(defaults.pool_max_idle_per_host),
+            pool_idle_timeout_secs: self
+                .pool_idle_timeout_secs
+                .unwrap_or(defaults.pool_idle_timeout_secs),
+            tcp_keepalive_secs: self
+                .tcp_keepalive_secs
+                .unwrap_or(defaults.tcp_keepalive_secs),
+            max_retries: self.max_retries.unwrap_or(defaults.max_retries),
+            enable_pool_metrics: self
+                .enable_pool_metrics
+                .unwrap_or(defaults.enable_pool_metrics),
+            user_agent: defaults.user_agent,
+        }
+    }
 }
 
 /// Configuration for custom HTTP headers
@@ -174,6 +238,73 @@ impl Default for LoggingConfig {
     }
 }
 
+/// Helper function to merge HTTP client environment variables into provider settings
+fn merge_http_client_env(provider: &mut ProviderSettings, prefix: &str) {
+    // Ensure http_client exists
+    if provider.http_client.is_none() {
+        provider.http_client = Some(HttpClientSettings {
+            timeout_secs: None,
+            connect_timeout_secs: None,
+            pool_max_idle_per_host: None,
+            pool_idle_timeout_secs: None,
+            tcp_keepalive_secs: None,
+            max_retries: None,
+            enable_pool_metrics: None,
+        });
+    }
+
+    if let Some(http_client) = &mut provider.http_client {
+        // LUNAROUTE_<PREFIX>_TIMEOUT_SECS
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_TIMEOUT_SECS", prefix)) {
+            if let Ok(timeout) = val.parse::<u64>() {
+                http_client.timeout_secs = Some(timeout);
+            }
+        }
+
+        // LUNAROUTE_<PREFIX>_CONNECT_TIMEOUT_SECS
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_CONNECT_TIMEOUT_SECS", prefix)) {
+            if let Ok(timeout) = val.parse::<u64>() {
+                http_client.connect_timeout_secs = Some(timeout);
+            }
+        }
+
+        // LUNAROUTE_<PREFIX>_POOL_MAX_IDLE
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_POOL_MAX_IDLE", prefix)) {
+            if let Ok(max_idle) = val.parse::<usize>() {
+                http_client.pool_max_idle_per_host = Some(max_idle);
+            }
+        }
+
+        // LUNAROUTE_<PREFIX>_POOL_IDLE_TIMEOUT_SECS
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_POOL_IDLE_TIMEOUT_SECS", prefix)) {
+            if let Ok(timeout) = val.parse::<u64>() {
+                http_client.pool_idle_timeout_secs = Some(timeout);
+            }
+        }
+
+        // LUNAROUTE_<PREFIX>_TCP_KEEPALIVE_SECS
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_TCP_KEEPALIVE_SECS", prefix)) {
+            if let Ok(keepalive) = val.parse::<u64>() {
+                http_client.tcp_keepalive_secs = Some(keepalive);
+            }
+        }
+
+        // LUNAROUTE_<PREFIX>_MAX_RETRIES
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_MAX_RETRIES", prefix)) {
+            if let Ok(retries) = val.parse::<u32>() {
+                http_client.max_retries = Some(retries);
+            }
+        }
+
+        // LUNAROUTE_<PREFIX>_ENABLE_POOL_METRICS
+        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_ENABLE_POOL_METRICS", prefix)) {
+            if let Ok(enabled) = val.parse::<bool>() {
+                http_client.enable_pool_metrics = Some(enabled);
+            }
+        }
+    }
+}
+
 impl ServerConfig {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, Box<dyn std::error::Error>> {
         let path = path.as_ref();
@@ -213,6 +344,7 @@ impl ServerConfig {
                 api_key: None,
                 base_url: None,
                 enabled: true,
+                http_client: None,
                 request_headers: None,
                 request_body: None,
                 response_body: None,
@@ -225,11 +357,22 @@ impl ServerConfig {
                 api_key: None,
                 base_url: None,
                 enabled: true,
+                http_client: None,
                 request_headers: None,
                 request_body: None,
                 response_body: None,
             });
             provider.api_key = Some(api_key);
+        }
+
+        // OpenAI HTTP client pool settings
+        if let Some(openai) = &mut self.providers.openai {
+            merge_http_client_env(openai, "OPENAI");
+        }
+
+        // Anthropic HTTP client pool settings
+        if let Some(anthropic) = &mut self.providers.anthropic {
+            merge_http_client_env(anthropic, "ANTHROPIC");
         }
 
         // Session recording settings

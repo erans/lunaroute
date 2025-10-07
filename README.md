@@ -1,4 +1,4 @@
-# 🌙 LunaRoute
+# 🌕 LunaRoute
 
 **Your AI Coding Assistant's Best Friend**
 
@@ -485,18 +485,13 @@ Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## 📝 License
 
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+Licensed under the Apache License, Version 2.0 ([LICENSE](LICENSE)).
 
 ---
 
 ## 🌟 Why "LunaRoute"?
 
-Like the moon 🌙 guides travelers at night, LunaRoute illuminates your AI interactions. Every request, every token, every decision - visible and trackable.
+Like the moon 🌕 guides travelers at night, LunaRoute illuminates your AI interactions. Every request, every token, every decision - visible and trackable.
 
 **Built with ❤️ for developers who want visibility, control, and performance.**
 
