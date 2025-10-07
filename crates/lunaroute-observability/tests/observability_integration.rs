@@ -3,7 +3,9 @@
 //! These tests verify that metrics, health checks, and tracing work
 //! correctly when integrated together.
 
-use lunaroute_observability::{health_router, HealthState, Metrics, ProviderStatus, ReadinessChecker};
+use lunaroute_observability::{
+    HealthState, Metrics, ProviderStatus, ReadinessChecker, health_router,
+};
 use std::sync::Arc;
 
 // Mock readiness checker that can be controlled
@@ -72,14 +74,20 @@ async fn test_metrics_recording_workflow() {
         .iter()
         .find(|m| m.get_name() == "lunaroute_requests_total")
         .expect("requests_total not found");
-    assert_eq!(requests_total.get_metric()[0].get_counter().get_value(), 3.0);
+    assert_eq!(
+        requests_total.get_metric()[0].get_counter().get_value(),
+        3.0
+    );
 
     // Verify tokens
     let tokens_total = gathered
         .iter()
         .find(|m| m.get_name() == "lunaroute_tokens_total")
         .expect("tokens_total not found");
-    assert_eq!(tokens_total.get_metric()[0].get_counter().get_value(), 450.0);
+    assert_eq!(
+        tokens_total.get_metric()[0].get_counter().get_value(),
+        450.0
+    );
 
     // Verify fallback
     let fallback = gathered
@@ -137,7 +145,12 @@ async fn test_health_and_metrics_integration() {
     // Test healthz
     let response = app
         .clone()
-        .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -145,7 +158,12 @@ async fn test_health_and_metrics_integration() {
     // Test readyz (should be ready)
     let response = app
         .clone()
-        .oneshot(Request::builder().uri("/readyz").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -156,14 +174,24 @@ async fn test_health_and_metrics_integration() {
     // Test readyz (should be not ready)
     let response = app
         .clone()
-        .oneshot(Request::builder().uri("/readyz").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     // Test metrics endpoint
     let response = app
-        .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -182,7 +210,11 @@ async fn test_concurrent_metrics_recording() {
     for i in 0..50 {
         let metrics_clone = metrics.clone();
         let handle = tokio::spawn(async move {
-            let model = if i % 2 == 0 { "gpt-5-mini" } else { "claude-sonnet-4-5" };
+            let model = if i % 2 == 0 {
+                "gpt-5-mini"
+            } else {
+                "claude-sonnet-4-5"
+            };
             let provider = if i % 2 == 0 { "openai" } else { "anthropic" };
 
             metrics_clone.record_request_success("openai", model, provider, 1.0);
@@ -326,10 +358,10 @@ async fn test_latency_histogram_buckets() {
     let metrics = Arc::new(Metrics::new().unwrap());
 
     // Record various latencies
-    metrics.record_request_success("openai", "gpt-5-mini", "openai", 0.01);  // 10ms
-    metrics.record_request_success("openai", "gpt-5-mini", "openai", 0.1);   // 100ms
-    metrics.record_request_success("openai", "gpt-5-mini", "openai", 1.0);   // 1s
-    metrics.record_request_success("openai", "gpt-5-mini", "openai", 5.0);   // 5s
+    metrics.record_request_success("openai", "gpt-5-mini", "openai", 0.01); // 10ms
+    metrics.record_request_success("openai", "gpt-5-mini", "openai", 0.1); // 100ms
+    metrics.record_request_success("openai", "gpt-5-mini", "openai", 1.0); // 1s
+    metrics.record_request_success("openai", "gpt-5-mini", "openai", 5.0); // 5s
 
     // Verify histogram recorded all samples
     let gathered = metrics.registry().gather();

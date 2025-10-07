@@ -5,13 +5,13 @@
 
 use crate::recorder::SessionRecorder;
 use crate::session::SessionMetadata;
-use lunaroute_core::{
-    normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
-    provider::{Provider, ProviderCapabilities},
-    Result,
-};
 use async_trait::async_trait;
 use futures::stream::Stream;
+use lunaroute_core::{
+    Result,
+    normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
+    provider::{Provider, ProviderCapabilities},
+};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -78,20 +78,23 @@ impl<P: Provider + Send + Sync, R: SessionRecorder + Send + Sync + 'static> Prov
         match &result {
             Ok(response) => {
                 // Record successful response
-                if let Err(e) = self
-                    .recorder
-                    .record_response(&session_id, response)
-                    .await
-                {
+                if let Err(e) = self.recorder.record_response(&session_id, response).await {
                     tracing::error!(error = %e, "Failed to record response");
                 }
 
                 // Update metadata with success info
                 metadata = metadata
-                    .with_usage(response.usage.prompt_tokens, response.usage.completion_tokens)
+                    .with_usage(
+                        response.usage.prompt_tokens,
+                        response.usage.completion_tokens,
+                    )
                     .with_success(
                         latency,
-                        response.choices.first().and_then(|c| c.finish_reason.as_ref()).map(|r| format!("{:?}", r)),
+                        response
+                            .choices
+                            .first()
+                            .and_then(|c| c.finish_reason.as_ref())
+                            .map(|r| format!("{:?}", r)),
                     );
             }
             Err(e) => {
@@ -145,7 +148,10 @@ impl<P: Provider + Send + Sync, R: SessionRecorder + Send + Sync + 'static> Prov
         let session_id_clone = session_id.clone();
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
-                if let Err(e) = recorder_clone.record_stream_event(&session_id_clone, &event).await {
+                if let Err(e) = recorder_clone
+                    .record_stream_event(&session_id_clone, &event)
+                    .await
+                {
                     tracing::error!(session_id = %session_id_clone, error = %e, "Failed to record stream event");
                 }
             }
@@ -268,8 +274,10 @@ impl<R: SessionRecorder + 'static> Unpin for RecordingStream<R> {}
 mod tests {
     use super::*;
     use crate::recorder::FileSessionRecorder;
-    use lunaroute_core::normalized::{Choice, Delta, FinishReason, Message, MessageContent, Role, Usage};
     use futures::StreamExt;
+    use lunaroute_core::normalized::{
+        Choice, Delta, FinishReason, Message, MessageContent, Role, Usage,
+    };
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -373,8 +381,12 @@ mod tests {
         let recorder = Arc::new(FileSessionRecorder::new(temp_dir.path()));
         let provider = Arc::new(MockProvider);
 
-        let recording_provider =
-            RecordingProvider::new(provider, recorder.clone(), "test-provider".to_string(), "openai".to_string());
+        let recording_provider = RecordingProvider::new(
+            provider,
+            recorder.clone(),
+            "test-provider".to_string(),
+            "openai".to_string(),
+        );
 
         let request = create_test_request();
         let response = recording_provider.send(request).await.unwrap();
@@ -385,7 +397,10 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Query sessions
-        let sessions = recorder.query_sessions(&crate::session::SessionQuery::new()).await.unwrap();
+        let sessions = recorder
+            .query_sessions(&crate::session::SessionQuery::new())
+            .await
+            .unwrap();
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].model, "gpt-5-mini");
@@ -400,8 +415,12 @@ mod tests {
         let recorder = Arc::new(FileSessionRecorder::new(temp_dir.path()));
         let provider = Arc::new(MockProvider);
 
-        let recording_provider =
-            RecordingProvider::new(provider, recorder.clone(), "test-provider".to_string(), "openai".to_string());
+        let recording_provider = RecordingProvider::new(
+            provider,
+            recorder.clone(),
+            "test-provider".to_string(),
+            "openai".to_string(),
+        );
 
         let request = create_test_request();
         let mut stream = recording_provider.stream(request).await.unwrap();
@@ -417,7 +436,10 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Query sessions
-        let sessions = recorder.query_sessions(&crate::session::SessionQuery::new()).await.unwrap();
+        let sessions = recorder
+            .query_sessions(&crate::session::SessionQuery::new())
+            .await
+            .unwrap();
 
         assert_eq!(sessions.len(), 1);
         assert!(sessions[0].streaming);

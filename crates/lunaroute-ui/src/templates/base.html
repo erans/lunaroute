@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}LunaRoute Dashboard{% endblock %}</title>
+
+    <!-- Embedded CSS (compiled into binary) -->
+    <link rel="stylesheet" href="/static/css/style.css">
+
+    <!-- Chart.js from CDN (lightweight, ~200KB) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+    <!-- Alpine.js from CDN for reactivity (~15KB) -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <span class="moon-icon">🌙</span>
+                <span class="brand-name">LunaRoute</span>
+            </div>
+            <div class="nav-links">
+                <a href="/" class="nav-link">Dashboard</a>
+                <a href="/sessions" class="nav-link">Sessions</a>
+                <a href="/analytics" class="nav-link">Analytics</a>
+                <a href="/settings" class="nav-link">Settings</a>
+            </div>
+            <div class="nav-status">
+                <span id="last-updated" class="last-updated">Last updated: --:--:--</span>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <div class="container">
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <p>Built with ❤️ for developers who want visibility, control, and performance.</p>
+        </div>
+    </footer>
+
+    <!-- Embedded JavaScript (compiled into binary) -->
+    <script src="/static/js/app.js"></script>
+    <script src="/static/js/charts.js"></script>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

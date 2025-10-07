@@ -35,6 +35,10 @@ pub struct ServerConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_stats_max_sessions: Option<usize>,
+
+    /// UI/Dashboard server configuration
+    #[serde(default)]
+    pub ui: lunaroute_ui::UiConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -156,6 +160,7 @@ impl Default for ServerConfig {
             logging: LoggingConfig::default(),
             routing: RoutingConfig::default(),
             session_stats_max_sessions: Some(100),
+            ui: lunaroute_ui::UiConfig::default(),
         }
     }
 }
@@ -174,7 +179,8 @@ impl ServerConfig {
         let path = path.as_ref();
         let contents = std::fs::read_to_string(path)?;
 
-        let mut config: ServerConfig = if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+        let mut config: ServerConfig = if path.extension().and_then(|s| s.to_str()) == Some("toml")
+        {
             toml::from_str(&contents)?
         } else {
             // Default to YAML
@@ -194,7 +200,10 @@ impl ServerConfig {
             match val.to_lowercase().as_str() {
                 "openai" => self.api_dialect = ApiDialect::OpenAI,
                 "anthropic" => self.api_dialect = ApiDialect::Anthropic,
-                _ => eprintln!("Warning: Invalid LUNAROUTE_DIALECT '{}', using default", val),
+                _ => eprintln!(
+                    "Warning: Invalid LUNAROUTE_DIALECT '{}', using default",
+                    val
+                ),
             }
         }
 

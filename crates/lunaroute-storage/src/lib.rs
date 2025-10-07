@@ -22,11 +22,10 @@ pub mod traits;
 
 pub use atomic_writer::AtomicWriter;
 pub use buffer_pool::BufferPool;
-pub use compression::{compress, decompress, CompressionAlgorithm};
+pub use compression::{CompressionAlgorithm, compress, decompress};
 pub use config::{ConfigValidator, FileConfigStore, ValidatedConfigStore};
 pub use encryption::{
-    decrypt, derive_key_from_password, encrypt, generate_key, generate_salt,
-    KeyDerivationParams,
+    KeyDerivationParams, decrypt, derive_key_from_password, encrypt, generate_key, generate_salt,
 };
 pub use file_lock::FileLock;
 pub use rolling_writer::RollingWriter;

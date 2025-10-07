@@ -58,10 +58,7 @@ fn test_type_redaction_override() {
 
     assert_eq!(override_config.pii_type, PIIType::CreditCard);
     assert_eq!(override_config.mode, RedactionMode::Partial);
-    assert_eq!(
-        override_config.replacement.as_ref().unwrap(),
-        "[CARD]"
-    );
+    assert_eq!(override_config.replacement.as_ref().unwrap(), "[CARD]");
 }
 
 #[test]

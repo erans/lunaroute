@@ -155,13 +155,15 @@ impl axum::response::IntoResponse for IngressError {
             IngressError::InvalidRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             IngressError::MissingHeader(msg) => (StatusCode::BAD_REQUEST, msg),
             IngressError::AuthenticationFailed(msg) => (StatusCode::UNAUTHORIZED, msg),
-            IngressError::RequestTooLarge(size) => {
-                (StatusCode::PAYLOAD_TOO_LARGE, format!("Request too large: {} bytes", size))
-            }
+            IngressError::RequestTooLarge(size) => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("Request too large: {} bytes", size),
+            ),
             IngressError::Timeout => (StatusCode::REQUEST_TIMEOUT, "Request timeout".to_string()),
-            IngressError::Serialization(err) => {
-                (StatusCode::BAD_REQUEST, format!("Serialization error: {}", err))
-            }
+            IngressError::Serialization(err) => (
+                StatusCode::BAD_REQUEST,
+                format!("Serialization error: {}", err),
+            ),
             IngressError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             IngressError::UnsupportedFeature(msg) => (StatusCode::NOT_IMPLEMENTED, msg),
             IngressError::ProviderError(msg) => (StatusCode::BAD_GATEWAY, msg),
@@ -449,7 +451,10 @@ mod tests {
         let error = IngressError::Internal("Database connection failed".to_string());
         let response = error.into_response();
 
-        assert_eq!(response.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]

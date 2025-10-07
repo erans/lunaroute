@@ -293,17 +293,19 @@ pub async fn build_from_config(
 
     // Add JSONL writer if enabled
     if config.is_jsonl_enabled()
-        && let Some(jsonl_config) = &config.jsonl {
-            let writer = JsonlWriter::new(jsonl_config.directory.clone());
-            builder = builder.add_writer(Arc::new(writer));
-        }
+        && let Some(jsonl_config) = &config.jsonl
+    {
+        let writer = JsonlWriter::new(jsonl_config.directory.clone());
+        builder = builder.add_writer(Arc::new(writer));
+    }
 
     // Add SQLite writer if enabled
     if config.is_sqlite_enabled()
-        && let Some(sqlite_config) = &config.sqlite {
-            let writer = SqliteWriter::new(&sqlite_config.path).await?;
-            builder = builder.add_writer(Arc::new(writer));
-        }
+        && let Some(sqlite_config) = &config.sqlite
+    {
+        let writer = SqliteWriter::new(&sqlite_config.path).await?;
+        builder = builder.add_writer(Arc::new(writer));
+    }
 
     Ok(Some(builder.build()))
 }

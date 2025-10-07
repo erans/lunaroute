@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 
 /// Maximum size of state file to load (100MB)
 const MAX_STATE_FILE_SIZE: u64 = 100 * 1024 * 1024;
@@ -185,10 +185,7 @@ impl StateStore for FileStateStore {
 
     async fn get_many(&self, keys: &[String]) -> StorageResult<Vec<Option<Vec<u8>>>> {
         let state = self.state.read().await;
-        let values: Vec<Option<Vec<u8>>> = keys
-            .iter()
-            .map(|k| state.get(k).cloned())
-            .collect();
+        let values: Vec<Option<Vec<u8>>> = keys.iter().map(|k| state.get(k).cloned()).collect();
         Ok(values)
     }
 
@@ -196,10 +193,13 @@ impl StateStore for FileStateStore {
         let mut state = self.state.write().await;
 
         // Calculate total size of new items
-        let new_items_size: usize = items.iter().map(|(k, v)| {
-            let existing_size = state.get(k).map(|v| v.len()).unwrap_or(0);
-            v.len().saturating_sub(existing_size)
-        }).sum();
+        let new_items_size: usize = items
+            .iter()
+            .map(|(k, v)| {
+                let existing_size = state.get(k).map(|v| v.len()).unwrap_or(0);
+                v.len().saturating_sub(existing_size)
+            })
+            .sum();
 
         let current_size = Self::calculate_state_size(&state);
         let projected_size = current_size + new_items_size;

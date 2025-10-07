@@ -1,16 +1,15 @@
 //! Anthropic egress connector
 
 use crate::{
-    client::{create_client, with_retry, HttpClientConfig},
     EgressError, Result,
+    client::{HttpClientConfig, create_client, with_retry},
 };
 use async_trait::async_trait;
 use futures::Stream;
 use lunaroute_core::{
     normalized::{
-        ContentPart, Delta, FinishReason, FunctionCall, FunctionCallDelta, Message,
-        MessageContent, NormalizedRequest, NormalizedResponse, NormalizedStreamEvent, Role,
-        ToolCall, Usage,
+        ContentPart, Delta, FinishReason, FunctionCall, FunctionCallDelta, Message, MessageContent,
+        NormalizedRequest, NormalizedResponse, NormalizedStreamEvent, Role, ToolCall, Usage,
     },
     provider::{Provider, ProviderCapabilities},
 };
@@ -94,7 +93,11 @@ impl AnthropicConnector {
         debug!("├─────────────────────────────────────────────────────────");
         debug!("│ Anthropic Passthrough Request Body");
         debug!("├─────────────────────────────────────────────────────────");
-        debug!("│ {}", serde_json::to_string_pretty(&request_json).unwrap_or_else(|_| "Failed to serialize".to_string()));
+        debug!(
+            "│ {}",
+            serde_json::to_string_pretty(&request_json)
+                .unwrap_or_else(|_| "Failed to serialize".to_string())
+        );
         debug!("└─────────────────────────────────────────────────────────");
 
         let max_retries = self.config.client_config.max_retries;
@@ -103,7 +106,8 @@ impl AnthropicConnector {
             let headers = headers.clone();
             let config_api_key = self.config.api_key.clone();
             async move {
-                let mut request_builder = self.client
+                let mut request_builder = self
+                    .client
                     .post(format!("{}/v1/messages", self.config.base_url))
                     .header("Content-Type", "application/json");
 
@@ -118,10 +122,7 @@ impl AnthropicConnector {
                     request_builder = request_builder.header("x-api-key", &config_api_key);
                 }
 
-                let response = request_builder
-                    .json(&request_json)
-                    .send()
-                    .await?;
+                let response = request_builder.json(&request_json).send().await?;
 
                 // Log response headers at debug level
                 debug!("┌─────────────────────────────────────────────────────────");
@@ -179,16 +180,17 @@ impl AnthropicConnector {
         }
 
         // Get raw bytes for transparent passthrough
-        let raw_bytes = response
-            .bytes()
-            .await
-            .map_err(|e| {
-                EgressError::ParseError(format!("Failed to read Anthropic passthrough response bytes: {}", e))
-            })?;
+        let raw_bytes = response.bytes().await.map_err(|e| {
+            EgressError::ParseError(format!(
+                "Failed to read Anthropic passthrough response bytes: {}",
+                e
+            ))
+        })?;
 
         // Optionally parse for debug logging (decompress if gzipped)
         if tracing::enabled!(tracing::Level::DEBUG) {
-            let bytes_for_logging = if headers_map.get("content-encoding")
+            let bytes_for_logging = if headers_map
+                .get("content-encoding")
                 .map(|v| v.to_lowercase().contains("gzip"))
                 .unwrap_or(false)
             {
@@ -206,11 +208,16 @@ impl AnthropicConnector {
                 raw_bytes.to_vec()
             };
 
-            if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&bytes_for_logging) {
+            if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&bytes_for_logging)
+            {
                 debug!("┌─────────────────────────────────────────────────────────");
                 debug!("│ Anthropic Passthrough Response Body (parsed for logging)");
                 debug!("├─────────────────────────────────────────────────────────");
-                debug!("│ {}", serde_json::to_string_pretty(&json_value).unwrap_or_else(|_| "Failed to serialize".to_string()));
+                debug!(
+                    "│ {}",
+                    serde_json::to_string_pretty(&json_value)
+                        .unwrap_or_else(|_| "Failed to serialize".to_string())
+                );
                 debug!("└─────────────────────────────────────────────────────────");
             }
         }
@@ -240,7 +247,11 @@ impl AnthropicConnector {
         debug!("├─────────────────────────────────────────────────────────");
         debug!("│ Anthropic Streaming Passthrough Request Body");
         debug!("├─────────────────────────────────────────────────────────");
-        debug!("│ {}", serde_json::to_string_pretty(&request_json).unwrap_or_else(|_| "Failed to serialize".to_string()));
+        debug!(
+            "│ {}",
+            serde_json::to_string_pretty(&request_json)
+                .unwrap_or_else(|_| "Failed to serialize".to_string())
+        );
         debug!("└─────────────────────────────────────────────────────────");
 
         let mut request_builder = self
@@ -296,10 +307,7 @@ impl AnthropicConnector {
 #[async_trait]
 impl Provider for AnthropicConnector {
     #[instrument(skip(self, request), fields(model = %request.model))]
-    async fn send(
-        &self,
-        request: NormalizedRequest,
-    ) -> lunaroute_core::Result<NormalizedResponse> {
+    async fn send(&self, request: NormalizedRequest) -> lunaroute_core::Result<NormalizedResponse> {
         debug!("Sending non-streaming request to Anthropic");
 
         let anthropic_req = to_anthropic_request(request)?;
@@ -317,7 +325,8 @@ impl Provider for AnthropicConnector {
         let result = with_retry(max_retries, || {
             let anthropic_req = anthropic_req.clone();
             async move {
-                let response = self.client
+                let response = self
+                    .client
                     .post(format!("{}/v1/messages", self.config.base_url))
                     .header("x-api-key", &self.config.api_key)
                     .header("anthropic-version", &self.config.api_version)
@@ -533,7 +542,7 @@ fn to_anthropic_request(req: NormalizedRequest) -> Result<AnthropicRequest> {
             let role = match m.role {
                 Role::User => "user",
                 Role::Assistant => "assistant",
-                Role::Tool => "user", // Tool results go in user messages
+                Role::Tool => "user",   // Tool results go in user messages
                 Role::System => "user", // Should not reach here due to filter
             }
             .to_string();
@@ -743,24 +752,15 @@ struct AnthropicStreamMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicStreamContentBlock {
-    Text {
-        text: String,
-    },
-    ToolUse {
-        id: String,
-        name: String,
-    },
+    Text { text: String },
+    ToolUse { id: String, name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicStreamDelta {
-    TextDelta {
-        text: String,
-    },
-    InputJsonDelta {
-        partial_json: String,
-    },
+    TextDelta { text: String },
+    InputJsonDelta { partial_json: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -790,19 +790,16 @@ fn create_anthropic_stream(
         (None, HashMap::new(), HashMap::new()),
         |(stream_id, tool_call_states, tool_args_buffers): &mut (
             Option<String>,
-            HashMap<u32, (String, String)>,  // index -> (id, name)
-            HashMap<u32, String>,             // index -> accumulated args
+            HashMap<u32, (String, String)>, // index -> (id, name)
+            HashMap<u32, String>,           // index -> accumulated args
         ),
          result| {
             let event = match result {
                 Ok(event) => event,
                 Err(e) => {
-                    return futures::future::ready(Some(Err(
-                        lunaroute_core::Error::Provider(format!(
-                            "SSE stream error: {}",
-                            e
-                        )),
-                    )));
+                    return futures::future::ready(Some(Err(lunaroute_core::Error::Provider(
+                        format!("SSE stream error: {}", e),
+                    ))));
                 }
             };
 
@@ -811,12 +808,9 @@ fn create_anthropic_stream(
                 Ok(evt) => evt,
                 Err(e) => {
                     debug!("Failed to parse Anthropic stream event: {}", e);
-                    return futures::future::ready(Some(Err(
-                        lunaroute_core::Error::Provider(format!(
-                            "Failed to parse stream event: {}",
-                            e
-                        )),
-                    )));
+                    return futures::future::ready(Some(Err(lunaroute_core::Error::Provider(
+                        format!("Failed to parse stream event: {}", e),
+                    ))));
                 }
             };
 
@@ -831,7 +825,10 @@ fn create_anthropic_stream(
                     })
                 }
 
-                AnthropicStreamEvent::ContentBlockStart { index, content_block } => {
+                AnthropicStreamEvent::ContentBlockStart {
+                    index,
+                    content_block,
+                } => {
                     match content_block {
                         AnthropicStreamContentBlock::Text { .. } => {
                             // Text block start - just track state, don't emit event
@@ -840,7 +837,10 @@ fn create_anthropic_stream(
                         }
                         AnthropicStreamContentBlock::ToolUse { id, name } => {
                             // Start of tool call - track by index
-                            debug!("Tool call started at index {}: id={}, name={}", index, id, name);
+                            debug!(
+                                "Tool call started at index {}: id={}, name={}",
+                                index, id, name
+                            );
                             tool_call_states.insert(index, (id.clone(), name.clone()));
                             tool_args_buffers.insert(index, String::new());
                             return futures::future::ready(None);
@@ -876,7 +876,10 @@ fn create_anthropic_stream(
                                     }),
                                 })
                             } else {
-                                debug!("InputJsonDelta at index {} without active tool call", index);
+                                debug!(
+                                    "InputJsonDelta at index {} without active tool call",
+                                    index
+                                );
                                 return futures::future::ready(None);
                             }
                         }
@@ -913,7 +916,9 @@ fn create_anthropic_stream(
                             "stop_sequence" => FinishReason::Stop,
                             _ => FinishReason::Stop,
                         };
-                        events_to_emit.push(Ok(NormalizedStreamEvent::End { finish_reason: reason }));
+                        events_to_emit.push(Ok(NormalizedStreamEvent::End {
+                            finish_reason: reason,
+                        }));
                     }
 
                     if events_to_emit.is_empty() {
@@ -922,7 +927,9 @@ fn create_anthropic_stream(
 
                     // For now, return the first event (scan returns Option<T>, not Option<Vec<T>>)
                     // This is a limitation - ideally we'd use flat_map instead
-                    return futures::future::ready(Some(events_to_emit.into_iter().next().unwrap()));
+                    return futures::future::ready(Some(
+                        events_to_emit.into_iter().next().unwrap(),
+                    ));
                 }
 
                 AnthropicStreamEvent::MessageStop => {
@@ -1288,7 +1295,10 @@ mod tests {
             _ => panic!("Expected Text content"),
         }
 
-        assert_eq!(normalized.choices[0].finish_reason, Some(FinishReason::Stop));
+        assert_eq!(
+            normalized.choices[0].finish_reason,
+            Some(FinishReason::Stop)
+        );
         assert_eq!(normalized.usage.prompt_tokens, 10);
         assert_eq!(normalized.usage.completion_tokens, 20);
         assert_eq!(normalized.usage.total_tokens, 30);
@@ -1351,7 +1361,10 @@ mod tests {
             },
         };
         let normalized = from_anthropic_response(resp).unwrap();
-        assert_eq!(normalized.choices[0].finish_reason, Some(FinishReason::Stop));
+        assert_eq!(
+            normalized.choices[0].finish_reason,
+            Some(FinishReason::Stop)
+        );
 
         // Test max_tokens
         let resp = AnthropicResponse {
@@ -1367,7 +1380,10 @@ mod tests {
             },
         };
         let normalized = from_anthropic_response(resp).unwrap();
-        assert_eq!(normalized.choices[0].finish_reason, Some(FinishReason::Length));
+        assert_eq!(
+            normalized.choices[0].finish_reason,
+            Some(FinishReason::Length)
+        );
 
         // Test tool_use
         let resp = AnthropicResponse {
@@ -1402,7 +1418,10 @@ mod tests {
             },
         };
         let normalized = from_anthropic_response(resp).unwrap();
-        assert_eq!(normalized.choices[0].finish_reason, Some(FinishReason::Stop));
+        assert_eq!(
+            normalized.choices[0].finish_reason,
+            Some(FinishReason::Stop)
+        );
     }
 
     #[test]
@@ -1658,12 +1677,17 @@ mod tests {
 
         // Helper to parse SSE events and convert to normalized events
         // This tests the core conversion logic without needing HTTP mocking
-        async fn parse_sse_events(events: Vec<&str>) -> Vec<lunaroute_core::Result<NormalizedStreamEvent>> {
+        async fn parse_sse_events(
+            events: Vec<&str>,
+        ) -> Vec<lunaroute_core::Result<NormalizedStreamEvent>> {
             use std::collections::HashMap;
 
             let mut results = Vec::new();
-            let mut state: (Option<String>, HashMap<u32, (String, String)>, HashMap<u32, String>) =
-                (None, HashMap::new(), HashMap::new());
+            let mut state: (
+                Option<String>,
+                HashMap<u32, (String, String)>,
+                HashMap<u32, String>,
+            ) = (None, HashMap::new(), HashMap::new());
 
             for event_data in events {
                 let anthropic_event: AnthropicStreamEvent = match serde_json::from_str(event_data) {
@@ -1690,18 +1714,22 @@ mod tests {
                         }));
                     }
 
-                    AnthropicStreamEvent::ContentBlockStart { index, content_block } => {
-                        match content_block {
-                            AnthropicStreamContentBlock::Text { .. } => {
-                                debug!("Text content block started at index {}", index);
-                            }
-                            AnthropicStreamContentBlock::ToolUse { id, name } => {
-                                debug!("Tool call started at index {}: id={}, name={}", index, id, name);
-                                tool_call_states.insert(index, (id.clone(), name.clone()));
-                                tool_args_buffers.insert(index, String::new());
-                            }
+                    AnthropicStreamEvent::ContentBlockStart {
+                        index,
+                        content_block,
+                    } => match content_block {
+                        AnthropicStreamContentBlock::Text { .. } => {
+                            debug!("Text content block started at index {}", index);
                         }
-                    }
+                        AnthropicStreamContentBlock::ToolUse { id, name } => {
+                            debug!(
+                                "Tool call started at index {}: id={}, name={}",
+                                index, id, name
+                            );
+                            tool_call_states.insert(index, (id.clone(), name.clone()));
+                            tool_args_buffers.insert(index, String::new());
+                        }
+                    },
 
                     AnthropicStreamEvent::ContentBlockDelta { index, delta } => {
                         match delta {
@@ -1759,7 +1787,9 @@ mod tests {
                                 "stop_sequence" => FinishReason::Stop,
                                 _ => FinishReason::Stop,
                             };
-                            results.push(Ok(NormalizedStreamEvent::End { finish_reason: reason }));
+                            results.push(Ok(NormalizedStreamEvent::End {
+                                finish_reason: reason,
+                            }));
                         }
                     }
 
@@ -1871,11 +1901,7 @@ mod tests {
 
             // Tool call deltas
             match &collected[1] {
-                NormalizedStreamEvent::ToolCallDelta {
-                    id,
-                    function,
-                    ..
-                } => {
+                NormalizedStreamEvent::ToolCallDelta { id, function, .. } => {
                     assert_eq!(id.as_ref().unwrap(), "call_123");
                     let func = function.as_ref().unwrap();
                     assert_eq!(func.name.as_ref().unwrap(), "get_weather");
@@ -1885,10 +1911,7 @@ mod tests {
             }
 
             match &collected[2] {
-                NormalizedStreamEvent::ToolCallDelta {
-                    function,
-                    ..
-                } => {
+                NormalizedStreamEvent::ToolCallDelta { function, .. } => {
                     let func = function.as_ref().unwrap();
                     assert_eq!(func.arguments.as_ref().unwrap(), "\"NYC\"}");
                 }
@@ -1948,9 +1971,7 @@ mod tests {
         #[tokio::test]
         async fn test_stream_error_handling() {
             // Test with invalid JSON
-            let events = vec![
-                r#"{"invalid json"#,
-            ];
+            let events = vec![r#"{"invalid json"#];
 
             let results = parse_sse_events(events).await;
 
@@ -1982,14 +2003,15 @@ mod tests {
             assert_eq!(collected.len(), 5);
 
             // Verify we got both text and tool call
-            let has_text_delta = collected.iter().any(|e| matches!(
-                e,
-                NormalizedStreamEvent::Delta { delta, .. } if delta.content.is_some()
-            ));
-            let has_tool_delta = collected.iter().any(|e| matches!(
-                e,
-                NormalizedStreamEvent::ToolCallDelta { .. }
-            ));
+            let has_text_delta = collected.iter().any(|e| {
+                matches!(
+                    e,
+                    NormalizedStreamEvent::Delta { delta, .. } if delta.content.is_some()
+                )
+            });
+            let has_tool_delta = collected
+                .iter()
+                .any(|e| matches!(e, NormalizedStreamEvent::ToolCallDelta { .. }));
 
             assert!(has_text_delta);
             assert!(has_tool_delta);

@@ -180,12 +180,12 @@ pub struct TokenStats {
     pub total_tokens: u32,
 
     // Extended/reasoning tokens (model-specific)
-    pub thinking_tokens: Option<u32>,         // Anthropic extended thinking
-    pub reasoning_tokens: Option<u32>,        // OpenAI o1/o3/o4 reasoning
+    pub thinking_tokens: Option<u32>,  // Anthropic extended thinking
+    pub reasoning_tokens: Option<u32>, // OpenAI o1/o3/o4 reasoning
 
     // Cache tokens (separated by type)
-    pub cache_read_tokens: Option<u32>,       // Tokens FROM cache (cheap)
-    pub cache_creation_tokens: Option<u32>,   // Tokens TO cache (normal price)
+    pub cache_read_tokens: Option<u32>, // Tokens FROM cache (cheap)
+    pub cache_creation_tokens: Option<u32>, // Tokens TO cache (normal price)
 
     // Audio/multimodal tokens
     pub audio_input_tokens: Option<u32>,
@@ -251,18 +251,18 @@ pub struct StreamingStats {
 pub struct TokenTotals {
     pub total_input: u64,
     pub total_output: u64,
-    pub total_thinking: u64,  // Anthropic extended thinking
+    pub total_thinking: u64, // Anthropic extended thinking
     #[serde(default)]
-    pub total_reasoning: u64,  // OpenAI o1/o3/o4 reasoning
-    pub total_cached: u64,  // Deprecated: use total_cache_read instead
+    pub total_reasoning: u64, // OpenAI o1/o3/o4 reasoning
+    pub total_cached: u64,   // Deprecated: use total_cache_read instead
     #[serde(default)]
-    pub total_cache_read: u64,  // Tokens FROM cache (discounted)
+    pub total_cache_read: u64, // Tokens FROM cache (discounted)
     #[serde(default)]
-    pub total_cache_creation: u64,  // Tokens TO cache (normal price)
+    pub total_cache_creation: u64, // Tokens TO cache (normal price)
     #[serde(default)]
-    pub total_audio_input: u64,  // Audio input tokens
+    pub total_audio_input: u64, // Audio input tokens
     #[serde(default)]
-    pub total_audio_output: u64,  // Audio output tokens
+    pub total_audio_output: u64, // Audio output tokens
     pub grand_total: u64,
     #[serde(default)]
     pub by_model: HashMap<String, TokenStats>,

@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+
+{% block title %}Sessions - LunaRoute{% endblock %}
+
+{% block content %}
+<div class="sessions-page">
+    <!-- Header -->
+    <div class="page-header">
+        <h1>📝 Sessions</h1>
+        <p class="subtitle">All recorded sessions</p>
+    </div>
+
+    <!-- Filters -->
+    <div class="filters">
+        <input type="text" placeholder="Search..." class="search-input">
+        <select class="filter-select" id="user-agent-filter" onchange="changeUserAgentFilter(this.value)">
+            <option value="">All User Agents</option>
+        </select>
+        <select class="filter-select" id="model-filter" onchange="changeModelFilter(this.value)">
+            <option value="">All Models</option>
+        </select>
+    </div>
+
+    <!-- Sessions Table -->
+    <div class="table-container">
+        <table class="sessions-table" id="all-sessions">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Model</th>
+                    <th>Requests</th>
+                    <th>Tokens</th>
+                    <th>Cost</th>
+                    <th>Duration</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="sessions-tbody">
+                <tr>
+                    <td colspan="7" class="loading">Loading sessions...</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Pagination Controls -->
+        <div class="pagination" id="pagination">
+            <button class="btn-pagination" id="prev-page" onclick="previousPage()" disabled>← Previous</button>
+            <span class="page-info" id="page-info">Page 1</span>
+            <button class="btn-pagination" id="next-page" onclick="nextPage()">Next →</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const REFRESH_INTERVAL = {{ refresh_interval }} * 1000;
+    const PAGE_SIZE = 50;
+    let currentPage = 0;
+    let currentUserAgent = '';
+    let currentModel = '';
+
+    document.addEventListener('DOMContentLoaded', () => {
+        loadUserAgents();
+        loadModels();
+        loadAllSessions();
+
+        // Auto-refresh sessions list
+        setInterval(loadAllSessions, REFRESH_INTERVAL);
+    });
+
+    async function loadUserAgents() {
+        try {
+            const response = await fetch('/api/user-agents');
+            const userAgents = await response.json();
+
+            // Group user agents by prefix (part before first "/")
+            const grouped = {};
+            userAgents.forEach(ua => {
+                const slashIndex = ua.indexOf('/');
+                if (slashIndex > 0) {
+                    const prefix = ua.substring(0, slashIndex);
+                    if (!grouped[prefix]) {
+                        grouped[prefix] = [];
+                    }
+                    grouped[prefix].push(ua);
+                } else {
+                    // No slash, treat as standalone
+                    if (!grouped['_standalone']) {
+                        grouped['_standalone'] = [];
+                    }
+                    grouped['_standalone'].push(ua);
+                }
+            });
+
+            const select = document.getElementById('user-agent-filter');
+
+            // Sort prefixes alphabetically
+            const sortedPrefixes = Object.keys(grouped).sort();
+
+            sortedPrefixes.forEach(prefix => {
+                if (prefix === '_standalone') {
+                    // Add standalone user agents without grouping
+                    grouped[prefix].forEach(ua => {
+                        const option = document.createElement('option');
+                        option.value = ua;
+                        option.textContent = ua;
+                        select.appendChild(option);
+                    });
+                } else {
+                    // Create optgroup for this prefix
+                    const optgroup = document.createElement('optgroup');
+                    optgroup.label = prefix;
+
+                    // Add "All [prefix]" option
+                    const allOption = document.createElement('option');
+                    allOption.value = `${prefix}/*`;
+                    allOption.textContent = `All ${prefix}`;
+                    optgroup.appendChild(allOption);
+
+                    // Add specific versions
+                    grouped[prefix].sort().forEach(ua => {
+                        const option = document.createElement('option');
+                        option.value = ua;
+                        option.textContent = `  ${ua}`;
+                        optgroup.appendChild(option);
+                    });
+
+                    select.appendChild(optgroup);
+                }
+            });
+        } catch (error) {
+            console.error('Failed to load user agents:', error);
+        }
+    }
+
+    async function loadModels() {
+        try {
+            const response = await fetch('/api/models');
+            const models = await response.json();
+
+            const select = document.getElementById('model-filter');
+            models.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model;
+                option.textContent = model;
+                select.appendChild(option);
+            });
+        } catch (error) {
+            console.error('Failed to load models:', error);
+        }
+    }
+
+    async function loadAllSessions() {
+        try {
+            const offset = currentPage * PAGE_SIZE;
+            let url = `/api/sessions?offset=${offset}&limit=${PAGE_SIZE}`;
+
+            if (currentUserAgent) {
+                url += `&user_agent=${encodeURIComponent(currentUserAgent)}`;
+            }
+
+            if (currentModel) {
+                url += `&model=${encodeURIComponent(currentModel)}`;
+            }
+
+            const response = await fetch(url);
+            const sessions = await response.json();
+
+            renderSessionsTable(sessions, 'sessions-tbody');
+            updatePaginationControls(sessions.length);
+            updateLastUpdated();
+        } catch (error) {
+            console.error('Failed to load sessions:', error);
+        }
+    }
+
+    function updatePaginationControls(sessionCount) {
+        const prevBtn = document.getElementById('prev-page');
+        const nextBtn = document.getElementById('next-page');
+        const pageInfo = document.getElementById('page-info');
+
+        // Update page info
+        pageInfo.textContent = `Page ${currentPage + 1}`;
+
+        // Update button states
+        prevBtn.disabled = currentPage === 0;
+        nextBtn.disabled = sessionCount < PAGE_SIZE;
+    }
+
+    function previousPage() {
+        if (currentPage > 0) {
+            currentPage--;
+            loadAllSessions();
+        }
+    }
+
+    function nextPage() {
+        currentPage++;
+        loadAllSessions();
+    }
+
+    function changeUserAgentFilter(userAgent) {
+        currentUserAgent = userAgent;
+        currentPage = 0; // Reset to first page when filtering
+        loadAllSessions();
+    }
+
+    function changeModelFilter(model) {
+        currentModel = model;
+        currentPage = 0; // Reset to first page when filtering
+        loadAllSessions();
+    }
+</script>
+{% endblock %}

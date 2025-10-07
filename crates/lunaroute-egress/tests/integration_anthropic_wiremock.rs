@@ -8,8 +8,8 @@ use lunaroute_core::{
 };
 use lunaroute_egress::anthropic::{AnthropicConfig, AnthropicConnector};
 use wiremock::{
-    matchers::{header, method, path},
     Mock, MockServer, ResponseTemplate,
+    matchers::{header, method, path},
 };
 
 #[tokio::test]
@@ -161,15 +161,13 @@ async fn test_anthropic_send_rate_limit_error() {
     // Mock rate limit response (429)
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(429).set_body_json(serde_json::json!({
-                "type": "error",
-                "error": {
-                    "type": "rate_limit_error",
-                    "message": "Rate limit exceeded"
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "rate_limit_error",
+                "message": "Rate limit exceeded"
+            }
+        })))
         .mount(&mock_server)
         .await;
 
@@ -214,15 +212,13 @@ async fn test_anthropic_send_server_error_with_retry() {
     // First two requests fail with 500
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "type": "error",
-                "error": {
-                    "type": "api_error",
-                    "message": "Internal server error"
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": "Internal server error"
+            }
+        })))
         .up_to_n_times(2)
         .mount(&mock_server)
         .await;
@@ -291,15 +287,13 @@ async fn test_anthropic_send_invalid_api_key() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(401).set_body_json(serde_json::json!({
-                "type": "error",
-                "error": {
-                    "type": "authentication_error",
-                    "message": "Invalid API key"
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "authentication_error",
+                "message": "Invalid API key"
+            }
+        })))
         .mount(&mock_server)
         .await;
 

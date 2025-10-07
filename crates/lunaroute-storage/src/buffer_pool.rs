@@ -27,7 +27,8 @@ impl BufferPool {
     /// Get a buffer from the pool, or create a new one if pool is empty
     pub fn get(&self) -> Vec<u8> {
         let mut pool = self.pool.lock().unwrap();
-        pool.pop().unwrap_or_else(|| Vec::with_capacity(self.buffer_size))
+        pool.pop()
+            .unwrap_or_else(|| Vec::with_capacity(self.buffer_size))
     }
 
     /// Return a buffer to the pool for reuse

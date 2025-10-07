@@ -5,19 +5,19 @@
 
 use futures::stream::{self, StreamExt};
 use lunaroute_core::{
+    Error, Result,
     normalized::{
-        Choice, Delta, FinishReason, Message, MessageContent, NormalizedRequest, NormalizedResponse,
-        NormalizedStreamEvent, Role, Usage,
+        Choice, Delta, FinishReason, Message, MessageContent, NormalizedRequest,
+        NormalizedResponse, NormalizedStreamEvent, Role, Usage,
     },
     provider::Provider,
-    Error, Result,
 };
 use lunaroute_routing::{
     CircuitBreakerConfig, HealthMonitorConfig, RouteTable, Router, RoutingRule, RuleMatcher,
 };
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 // Test provider that can stream responses
@@ -88,7 +88,10 @@ impl Provider for StreamingTestProvider {
         self.call_count.fetch_add(1, Ordering::SeqCst);
 
         if self.should_fail.load(Ordering::SeqCst) {
-            return Err(Error::Provider(format!("Provider {} stream failed", self.id)));
+            return Err(Error::Provider(format!(
+                "Provider {} stream failed",
+                self.id
+            )));
         }
 
         // Create stream from pre-defined events

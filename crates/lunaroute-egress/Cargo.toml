@@ -41,3 +41,4 @@ tokio-test = "0.4"
 wiremock = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
+axum = { workspace = true }

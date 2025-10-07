@@ -141,9 +141,10 @@ impl Router {
             )));
         }
 
-        let provider = self.providers.get(provider_id).ok_or_else(|| {
-            Error::Provider(format!("Provider '{}' not found", provider_id))
-        })?;
+        let provider = self
+            .providers
+            .get(provider_id)
+            .ok_or_else(|| Error::Provider(format!("Provider '{}' not found", provider_id)))?;
 
         tracing::debug!(
             provider = provider_id,
@@ -191,15 +192,17 @@ impl Provider for Router {
         let context = RoutingContext::new();
 
         // Find route
-        let decision = self.route_table.find_route(&request, &context).ok_or_else(|| {
-            Error::Provider(format!("No route found for model '{}'", request.model))
-        })?;
+        let decision = self
+            .route_table
+            .find_route(&request, &context)
+            .ok_or_else(|| {
+                Error::Provider(format!("No route found for model '{}'", request.model))
+            })?;
 
         // Determine primary provider (from strategy or direct)
         let primary_provider = if let Some(strategy) = &decision.strategy {
             let rule_name = decision.matched_rule.as_deref().unwrap_or("unknown");
-            let selected = self
-                .select_provider_from_strategy(strategy, rule_name)?;
+            let selected = self.select_provider_from_strategy(strategy, rule_name)?;
 
             tracing::info!(
                 model = %request.model,
@@ -273,15 +276,17 @@ impl Provider for Router {
         let context = RoutingContext::new();
 
         // Find route
-        let decision = self.route_table.find_route(&request, &context).ok_or_else(|| {
-            Error::Provider(format!("No route found for model '{}'", request.model))
-        })?;
+        let decision = self
+            .route_table
+            .find_route(&request, &context)
+            .ok_or_else(|| {
+                Error::Provider(format!("No route found for model '{}'", request.model))
+            })?;
 
         // Determine primary provider (from strategy or direct)
         let primary_provider = if let Some(strategy) = &decision.strategy {
             let rule_name = decision.matched_rule.as_deref().unwrap_or("unknown");
-            let selected = self
-                .select_provider_from_strategy(strategy, rule_name)?;
+            let selected = self.select_provider_from_strategy(strategy, rule_name)?;
 
             tracing::info!(
                 model = %request.model,
@@ -344,9 +349,10 @@ impl Provider for Router {
         }
 
         // Use primary/selected provider for streaming
-        let provider = self.providers.get(&primary_provider).ok_or_else(|| {
-            Error::Provider(format!("Provider '{}' not found", primary_provider))
-        })?;
+        let provider = self
+            .providers
+            .get(&primary_provider)
+            .ok_or_else(|| Error::Provider(format!("Provider '{}' not found", primary_provider)))?;
 
         tracing::debug!(
             provider = %primary_provider,
@@ -551,10 +557,12 @@ mod tests {
         let result = router.send(request).await;
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("All providers failed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("All providers failed")
+        );
     }
 
     #[tokio::test]
@@ -669,8 +677,8 @@ mod tests {
     async fn test_router_round_robin_strategy() {
         use crate::router::{RoutingRule, RuleMatcher};
         use crate::strategy::RoutingStrategy;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         // Track which provider was called
         let p1_calls = StdArc::new(AtomicUsize::new(0));
@@ -735,8 +743,8 @@ mod tests {
     async fn test_router_weighted_round_robin_strategy() {
         use crate::router::{RoutingRule, RuleMatcher};
         use crate::strategy::{RoutingStrategy, WeightedProvider};
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         // Track which provider was called
         let p1_calls = StdArc::new(AtomicUsize::new(0));
@@ -903,8 +911,8 @@ mod tests {
     async fn test_router_strategy_concurrent_requests() {
         use crate::router::{RoutingRule, RuleMatcher};
         use crate::strategy::RoutingStrategy;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let p1_calls = StdArc::new(AtomicUsize::new(0));
         let p2_calls = StdArc::new(AtomicUsize::new(0));
@@ -970,8 +978,8 @@ mod tests {
     async fn test_router_streaming_with_strategy() {
         use crate::router::{RoutingRule, RuleMatcher};
         use crate::strategy::RoutingStrategy;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let p1_calls = StdArc::new(AtomicUsize::new(0));
         let p2_calls = StdArc::new(AtomicUsize::new(0));
@@ -1043,8 +1051,8 @@ mod tests {
     async fn test_router_multiple_rules_with_different_strategies() {
         use crate::router::{RoutingRule, RuleMatcher};
         use crate::strategy::RoutingStrategy;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let p1_calls = StdArc::new(AtomicUsize::new(0));
         let p2_calls = StdArc::new(AtomicUsize::new(0));

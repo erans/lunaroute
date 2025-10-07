@@ -15,8 +15,8 @@ mod e2e_tests {
     use std::sync::Arc;
     use tower::ServiceExt;
     use wiremock::{
-        matchers::{header, method, path},
         Mock, MockServer, ResponseTemplate,
+        matchers::{header, method, path},
     };
 
     #[tokio::test]
@@ -173,7 +173,10 @@ mod e2e_tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        assert_eq!(json["choices"][0]["message"]["content"], "I am a helpful assistant");
+        assert_eq!(
+            json["choices"][0]["message"]["content"],
+            "I am a helpful assistant"
+        );
     }
 
     #[tokio::test]
@@ -229,10 +232,12 @@ mod e2e_tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        assert!(json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("Provider error"));
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Provider error")
+        );
     }
 
     #[tokio::test]
@@ -279,10 +284,12 @@ mod e2e_tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        assert!(json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("temperature"));
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("temperature")
+        );
     }
 
     #[tokio::test]
@@ -371,7 +378,10 @@ mod e2e_tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(json["choices"][0]["finish_reason"], "tool_calls");
-        assert_eq!(json["choices"][0]["message"]["tool_calls"][0]["id"], "call_weather");
+        assert_eq!(
+            json["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_weather"
+        );
         assert_eq!(
             json["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
             "get_weather"

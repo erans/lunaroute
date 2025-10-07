@@ -4,20 +4,20 @@
 //! including metrics recording, circuit breaker tracking, and health monitoring.
 
 use lunaroute_core::{
+    Error, Result,
     normalized::{
         Choice, FinishReason, Message, MessageContent, NormalizedRequest, NormalizedResponse,
         NormalizedStreamEvent, Role, Usage,
     },
     provider::Provider,
-    Error, Result,
 };
 use lunaroute_observability::Metrics;
 use lunaroute_routing::{
     CircuitBreakerConfig, HealthMonitorConfig, RouteTable, Router, RoutingRule, RuleMatcher,
 };
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 // Test provider with controllable behavior
@@ -159,9 +159,11 @@ async fn test_router_with_metrics_integration() {
 
     // Manually record metrics (simulating what ingress/demo server would do)
     metrics.record_request_success("openai", "test-model", "test-provider", duration);
-    metrics.record_tokens("test-provider", "test-model",
+    metrics.record_tokens(
+        "test-provider",
+        "test-model",
         response.usage.prompt_tokens,
-        response.usage.completion_tokens
+        response.usage.completion_tokens,
     );
 
     // Verify provider was called
@@ -174,7 +176,10 @@ async fn test_router_with_metrics_integration() {
         .iter()
         .find(|m| m.get_name() == "lunaroute_requests_total")
         .expect("requests_total not found");
-    assert_eq!(requests_total.get_metric()[0].get_counter().get_value(), 1.0);
+    assert_eq!(
+        requests_total.get_metric()[0].get_counter().get_value(),
+        1.0
+    );
 
     let tokens_total = gathered
         .iter()
@@ -294,7 +299,10 @@ async fn test_fallback_with_metrics_tracking() {
         .iter()
         .find(|m| m.get_name() == "lunaroute_fallback_triggered_total")
         .expect("fallback not found");
-    assert_eq!(fallback_metric.get_metric()[0].get_counter().get_value(), 1.0);
+    assert_eq!(
+        fallback_metric.get_metric()[0].get_counter().get_value(),
+        1.0
+    );
 }
 
 #[tokio::test]
@@ -441,7 +449,12 @@ async fn test_health_status_with_metrics() {
         failure_window: Duration::from_secs(60),
         min_requests: 5,
     };
-    let router = Router::new(route_table, providers, health_config, CircuitBreakerConfig::default());
+    let router = Router::new(
+        route_table,
+        providers,
+        health_config,
+        CircuitBreakerConfig::default(),
+    );
 
     let request = create_test_request("test-model");
 
@@ -551,7 +564,13 @@ async fn test_mixed_success_failure_metrics() {
         let duration = start.elapsed().as_secs_f64();
 
         if result.is_err() {
-            metrics.record_request_failure("test", "test-model", "test-provider", "provider_error", duration);
+            metrics.record_request_failure(
+                "test",
+                "test-model",
+                "test-provider",
+                "provider_error",
+                duration,
+            );
         }
     }
 
@@ -562,13 +581,19 @@ async fn test_mixed_success_failure_metrics() {
         .iter()
         .find(|m| m.get_name() == "lunaroute_requests_success_total")
         .expect("requests_success not found");
-    assert_eq!(success_metric.get_metric()[0].get_counter().get_value(), 7.0);
+    assert_eq!(
+        success_metric.get_metric()[0].get_counter().get_value(),
+        7.0
+    );
 
     let failure_metric = gathered
         .iter()
         .find(|m| m.get_name() == "lunaroute_requests_failure_total")
         .expect("requests_failure not found");
-    assert_eq!(failure_metric.get_metric()[0].get_counter().get_value(), 3.0);
+    assert_eq!(
+        failure_metric.get_metric()[0].get_counter().get_value(),
+        3.0
+    );
 
     let total_metric = gathered
         .iter()

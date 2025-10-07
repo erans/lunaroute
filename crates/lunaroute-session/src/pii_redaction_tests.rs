@@ -1,7 +1,7 @@
 //! Tests for PII redaction in session recording
 
-use crate::pii_redaction::SessionPIIRedactor;
 use crate::config::PIIConfig;
+use crate::pii_redaction::SessionPIIRedactor;
 use lunaroute_core::normalized::*;
 use std::collections::HashMap;
 
@@ -399,9 +399,7 @@ fn test_custom_pattern() {
     let mut request = NormalizedRequest {
         messages: vec![Message {
             role: Role::User,
-            content: MessageContent::Text(
-                "Key: sk-abcdefghijklmnopqrstuvwxyz123456".to_string(),
-            ),
+            content: MessageContent::Text("Key: sk-abcdefghijklmnopqrstuvwxyz123456".to_string()),
             name: None,
             tool_calls: Vec::new(),
             tool_call_id: None,

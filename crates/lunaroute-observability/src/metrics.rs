@@ -9,9 +9,7 @@
 //! - Fallback trigger counts
 //! - Streaming metrics (TTFT, chunk latencies, chunk counts, memory bounds)
 
-use prometheus::{
-    CounterVec, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts, Registry,
-};
+use prometheus::{CounterVec, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts, Registry};
 use std::sync::Arc;
 
 /// Metrics collector for LunaRoute
@@ -147,9 +145,7 @@ impl Metrics {
                 "lunaroute_egress_duration_seconds",
                 "Egress provider request duration in seconds",
             )
-            .buckets(vec![
-                0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
-            ]),
+            .buckets(vec![0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]),
             &["provider", "model"],
         )?;
 
@@ -189,10 +185,7 @@ impl Metrics {
 
         // Token metrics
         let tokens_prompt = CounterVec::new(
-            Opts::new(
-                "lunaroute_tokens_prompt_total",
-                "Total prompt tokens used",
-            ),
+            Opts::new("lunaroute_tokens_prompt_total", "Total prompt tokens used"),
             &["provider", "model"],
         )?;
 
@@ -241,7 +234,9 @@ impl Metrics {
                 "lunaroute_proxy_overhead_seconds",
                 "Total proxy overhead in seconds (pre + post processing)",
             )
-            .buckets(vec![0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05]),
+            .buckets(vec![
+                0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05,
+            ]),
         )?;
 
         // Streaming metrics
@@ -276,7 +271,9 @@ impl Metrics {
                 "lunaroute_streaming_chunks_total",
                 "Number of chunks per streaming request",
             )
-            .buckets(vec![1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 5000.0, 10000.0]),
+            .buckets(vec![
+                1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 5000.0, 10000.0,
+            ]),
             &["provider", "model"],
         )?;
 

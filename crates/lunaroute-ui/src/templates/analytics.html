@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics - LunaRoute{% endblock %}
+
+{% block content %}
+<div class="analytics-page">
+    <!-- Header -->
+    <div class="page-header">
+        <h1>📊 Analytics</h1>
+        <p class="subtitle">Advanced insights and trends</p>
+    </div>
+
+    <!-- Model Usage -->
+    <div class="chart-container">
+        <h2>🤖 Model Usage Distribution</h2>
+        <canvas id="modelChart"></canvas>
+    </div>
+
+    <!-- More charts TODO -->
+    <div class="grid-2col">
+        <div class="chart-container">
+            <h2>⏱️ Session Duration Distribution</h2>
+            <canvas id="durationChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <h2>🎯 Success Rate Over Time</h2>
+            <canvas id="successChart"></canvas>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const REFRESH_INTERVAL = {{ refresh_interval }} * 1000;
+    let modelChart, durationChart, successChart;
+
+    document.addEventListener('DOMContentLoaded', () => {
+        initCharts();
+        loadAnalytics();
+
+        // Auto-refresh
+        setInterval(loadAnalytics, REFRESH_INTERVAL);
+    });
+
+    function initCharts() {
+        // Model Usage Chart
+        const modelCtx = document.getElementById('modelChart').getContext('2d');
+        modelChart = new Chart(modelCtx, {
+            type: 'doughnut',
+            data: {
+                labels: [],
+                datasets: [{
+                    data: [],
+                    backgroundColor: [
+                        '#3b82f6',
+                        '#10b981',
+                        '#f59e0b',
+                        '#ef4444',
+                        '#8b5cf6',
+                        '#ec4899',
+                        '#06b6d4',
+                        '#14b8a6'
+                    ]
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'right',
+                        labels: {
+                            color: '#e5e7eb',
+                            font: { size: 12 }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Duration Distribution Chart
+        const durationCtx = document.getElementById('durationChart').getContext('2d');
+        durationChart = new Chart(durationCtx, {
+            type: 'bar',
+            data: {
+                labels: ['0-1s', '1-5s', '5-10s', '10-30s', '30s+'],
+                datasets: [{
+                    label: 'Sessions',
+                    data: [0, 0, 0, 0, 0],
+                    backgroundColor: '#3b82f6'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: { color: '#9ca3af' },
+                        grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                    },
+                    x: {
+                        ticks: { color: '#9ca3af' },
+                        grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                    }
+                },
+                plugins: {
+                    legend: { display: false }
+                }
+            }
+        });
+
+        // Success Rate Chart
+        const successCtx = document.getElementById('successChart').getContext('2d');
+        successChart = new Chart(successCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Success Rate %',
+                    data: [],
+                    borderColor: '#10b981',
+                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                    tension: 0.3,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100,
+                        ticks: { color: '#9ca3af' },
+                        grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                    },
+                    x: {
+                        ticks: { color: '#9ca3af' },
+                        grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        labels: { color: '#e5e7eb' }
+                    }
+                }
+            }
+        });
+    }
+
+    async function loadAnalytics() {
+        try {
+            const [models, sessions, tokenStats] = await Promise.all([
+                fetch('/api/stats/models').then(r => r.json()),
+                fetch('/api/sessions').then(r => r.json()),
+                fetch('/api/stats/tokens?days=7').then(r => r.json())
+            ]);
+
+            updateModelChart(models);
+            updateDurationChart(sessions);
+            updateSuccessChart(tokenStats, sessions);
+        } catch (error) {
+            console.error('Failed to load analytics:', error);
+        }
+    }
+
+    function updateModelChart(models) {
+        modelChart.data.labels = models.map(m => m.model_name);
+        modelChart.data.datasets[0].data = models.map(m => m.request_count);
+        modelChart.update();
+    }
+
+    function updateDurationChart(sessions) {
+        // Categorize sessions by duration
+        const buckets = [0, 0, 0, 0, 0]; // 0-1s, 1-5s, 5-10s, 10-30s, 30s+
+
+        sessions.forEach(session => {
+            const seconds = session.duration_ms / 1000;
+            if (seconds <= 1) buckets[0]++;
+            else if (seconds <= 5) buckets[1]++;
+            else if (seconds <= 10) buckets[2]++;
+            else if (seconds <= 30) buckets[3]++;
+            else buckets[4]++;
+        });
+
+        durationChart.data.datasets[0].data = buckets;
+        durationChart.update();
+    }
+
+    function updateSuccessChart(tokenStats, sessions) {
+        // Calculate success rate per day based on sessions
+        const dailyStats = {};
+
+        sessions.forEach(session => {
+            const date = new Date(session.started_at).toLocaleDateString();
+            if (!dailyStats[date]) {
+                dailyStats[date] = { total: 0, success: 0 };
+            }
+            dailyStats[date].total++;
+            if (session.success) dailyStats[date].success++;
+        });
+
+        // Sort by date and calculate percentages
+        const sortedDates = Object.keys(dailyStats).sort();
+        const labels = sortedDates.map(d => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+        const data = sortedDates.map(date => {
+            const stats = dailyStats[date];
+            return stats.total > 0 ? (stats.success / stats.total * 100) : 100;
+        });
+
+        successChart.data.labels = labels;
+        successChart.data.datasets[0].data = data;
+        successChart.update();
+    }
+</script>
+{% endblock %}

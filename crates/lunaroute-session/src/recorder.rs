@@ -10,11 +10,11 @@
 //! This ensures session IDs are unpredictable and filesystem-safe.
 
 use crate::session::{SessionId, SessionMetadata, SessionQuery};
-use lunaroute_core::{
-    normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
-    Result, Error,
-};
 use async_trait::async_trait;
+use lunaroute_core::{
+    Error, Result,
+    normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
+};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -114,7 +114,10 @@ impl FileSessionRecorder {
         }
 
         // Only allow alphanumeric, dash, and underscore (safe for filesystem)
-        if !session_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        if !session_id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
             return Err(Error::Internal(format!(
                 "Invalid session ID format: {}. Only alphanumeric, dash, and underscore allowed",
                 session_id
@@ -159,22 +162,46 @@ impl SessionRecorder for FileSessionRecorder {
     ) -> Result<()> {
         // Create session directory
         let session_dir = self.session_dir(&session_id)?;
-        fs::create_dir_all(&session_dir).await
-            .map_err(|e| Error::Internal(format!("Failed to create session directory {}: {}", session_id, e)))?;
+        fs::create_dir_all(&session_dir).await.map_err(|e| {
+            Error::Internal(format!(
+                "Failed to create session directory {}: {}",
+                session_id, e
+            ))
+        })?;
 
         // Write session metadata
         let metadata_json = serde_json::to_vec_pretty(&metadata)?;
-        fs::write(self.metadata_path(&session_id)?, &metadata_json).await
-            .map_err(|e| Error::Internal(format!("Failed to write metadata for session {}: {}", session_id, e)))?;
+        fs::write(self.metadata_path(&session_id)?, &metadata_json)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to write metadata for session {}: {}",
+                    session_id, e
+                ))
+            })?;
 
         // Write request as first line of NDJSON
         let request_json = serde_json::to_vec(&request)?;
-        let mut events_file = fs::File::create(self.events_path(&session_id)?).await
-            .map_err(|e| Error::Internal(format!("Failed to create events file for session {}: {}", session_id, e)))?;
-        events_file.write_all(&request_json).await
-            .map_err(|e| Error::Internal(format!("Failed to write request for session {}: {}", session_id, e)))?;
-        events_file.write_all(b"\n").await
-            .map_err(|e| Error::Internal(format!("Failed to write newline for session {}: {}", session_id, e)))?;
+        let mut events_file = fs::File::create(self.events_path(&session_id)?)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to create events file for session {}: {}",
+                    session_id, e
+                ))
+            })?;
+        events_file.write_all(&request_json).await.map_err(|e| {
+            Error::Internal(format!(
+                "Failed to write request for session {}: {}",
+                session_id, e
+            ))
+        })?;
+        events_file.write_all(b"\n").await.map_err(|e| {
+            Error::Internal(format!(
+                "Failed to write newline for session {}: {}",
+                session_id, e
+            ))
+        })?;
 
         tracing::debug!(session_id = %session_id, "Started recording session");
         Ok(())
@@ -191,11 +218,24 @@ impl SessionRecorder for FileSessionRecorder {
             .append(true)
             .open(self.events_path(session_id)?)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to open events file for session {}: {}", session_id, e)))?;
-        events_file.write_all(&response_json).await
-            .map_err(|e| Error::Internal(format!("Failed to write response for session {}: {}", session_id, e)))?;
-        events_file.write_all(b"\n").await
-            .map_err(|e| Error::Internal(format!("Failed to write newline for session {}: {}", session_id, e)))?;
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to open events file for session {}: {}",
+                    session_id, e
+                ))
+            })?;
+        events_file.write_all(&response_json).await.map_err(|e| {
+            Error::Internal(format!(
+                "Failed to write response for session {}: {}",
+                session_id, e
+            ))
+        })?;
+        events_file.write_all(b"\n").await.map_err(|e| {
+            Error::Internal(format!(
+                "Failed to write newline for session {}: {}",
+                session_id, e
+            ))
+        })?;
 
         tracing::debug!(session_id = %session_id, "Recorded response");
         Ok(())
@@ -212,11 +252,24 @@ impl SessionRecorder for FileSessionRecorder {
             .append(true)
             .open(self.events_path(session_id)?)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to open events file for session {}: {}", session_id, e)))?;
-        events_file.write_all(&event_json).await
-            .map_err(|e| Error::Internal(format!("Failed to write event for session {}: {}", session_id, e)))?;
-        events_file.write_all(b"\n").await
-            .map_err(|e| Error::Internal(format!("Failed to write newline for session {}: {}", session_id, e)))?;
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to open events file for session {}: {}",
+                    session_id, e
+                ))
+            })?;
+        events_file.write_all(&event_json).await.map_err(|e| {
+            Error::Internal(format!(
+                "Failed to write event for session {}: {}",
+                session_id, e
+            ))
+        })?;
+        events_file.write_all(b"\n").await.map_err(|e| {
+            Error::Internal(format!(
+                "Failed to write newline for session {}: {}",
+                session_id, e
+            ))
+        })?;
 
         Ok(())
     }
@@ -228,8 +281,14 @@ impl SessionRecorder for FileSessionRecorder {
     ) -> Result<()> {
         // Update session metadata with final information
         let metadata_json = serde_json::to_vec_pretty(&metadata)?;
-        fs::write(self.metadata_path(session_id)?, &metadata_json).await
-            .map_err(|e| Error::Internal(format!("Failed to write final metadata for session {}: {}", session_id, e)))?;
+        fs::write(self.metadata_path(session_id)?, &metadata_json)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to write final metadata for session {}: {}",
+                    session_id, e
+                ))
+            })?;
 
         tracing::info!(
             session_id = %session_id,
@@ -246,14 +305,19 @@ impl SessionRecorder for FileSessionRecorder {
         // Read all session directories
         let mut results = Vec::new();
 
-        let mut entries = fs::read_dir(&self.base_path).await
+        let mut entries = fs::read_dir(&self.base_path)
+            .await
             .map_err(|e| Error::Internal(format!("Failed to read sessions directory: {}", e)))?;
 
-        while let Some(entry) = entries.next_entry().await
-            .map_err(|e| Error::Internal(format!("Failed to read directory entry: {}", e)))? {
-
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to read directory entry: {}", e)))?
+        {
             // Use file_type() to avoid following symlinks (security fix)
-            let file_type = entry.file_type().await
+            let file_type = entry
+                .file_type()
+                .await
                 .map_err(|e| Error::Internal(format!("Failed to get file type: {}", e)))?;
 
             if !file_type.is_dir() {
@@ -294,34 +358,40 @@ impl SessionRecorder for FileSessionRecorder {
 
             // Apply filters
             if let Some(model_pattern) = &query.model
-                && !metadata.model.contains(model_pattern) {
-                    continue;
-                }
+                && !metadata.model.contains(model_pattern)
+            {
+                continue;
+            }
 
             if let Some(provider) = &query.provider
-                && &metadata.provider != provider {
-                    continue;
-                }
+                && &metadata.provider != provider
+            {
+                continue;
+            }
 
             if let Some(success) = query.success
-                && metadata.success != success {
-                    continue;
-                }
+                && metadata.success != success
+            {
+                continue;
+            }
 
             if let Some(streaming) = query.streaming
-                && metadata.streaming != streaming {
-                    continue;
-                }
+                && metadata.streaming != streaming
+            {
+                continue;
+            }
 
             if let Some(since) = query.since
-                && metadata.timestamp < since {
-                    continue;
-                }
+                && metadata.timestamp < since
+            {
+                continue;
+            }
 
             if let Some(until) = query.until
-                && metadata.timestamp > until {
-                    continue;
-                }
+                && metadata.timestamp > until
+            {
+                continue;
+            }
 
             results.push(metadata);
         }
@@ -343,23 +413,42 @@ impl SessionRecorder for FileSessionRecorder {
         let metadata_data = match fs::read(&metadata_path).await {
             Ok(data) => data,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(Error::Internal(format!("Failed to read metadata for session {}: {}", session_id, e))),
+            Err(e) => {
+                return Err(Error::Internal(format!(
+                    "Failed to read metadata for session {}: {}",
+                    session_id, e
+                )));
+            }
         };
 
-        let metadata: SessionMetadata = serde_json::from_slice(&metadata_data)
-            .map_err(|e| Error::Internal(format!("Invalid metadata JSON for session {}: {}", session_id, e)))?;
+        let metadata: SessionMetadata = serde_json::from_slice(&metadata_data).map_err(|e| {
+            Error::Internal(format!(
+                "Invalid metadata JSON for session {}: {}",
+                session_id, e
+            ))
+        })?;
 
         // Read events (NDJSON format)
         let events_path = self.events_path(session_id)?;
         let events_data = match fs::read(&events_path).await {
             Ok(data) => data,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(Error::Internal(format!("Session {} has no events data", session_id)));
+                return Err(Error::Internal(format!(
+                    "Session {} has no events data",
+                    session_id
+                )));
             }
-            Err(e) => return Err(Error::Internal(format!("Failed to read events for session {}: {}", session_id, e))),
+            Err(e) => {
+                return Err(Error::Internal(format!(
+                    "Failed to read events for session {}: {}",
+                    session_id, e
+                )));
+            }
         };
 
-        let mut lines = events_data.split(|&b| b == b'\n').filter(|line| !line.is_empty());
+        let mut lines = events_data
+            .split(|&b| b == b'\n')
+            .filter(|line| !line.is_empty());
 
         // First line is the request
         let request: NormalizedRequest = if let Some(line) = lines.next() {
@@ -398,8 +487,9 @@ impl SessionRecorder for FileSessionRecorder {
         Self::validate_session_id(session_id)?;
 
         let session_dir = self.session_dir(session_id)?;
-        fs::remove_dir_all(&session_dir).await
-            .map_err(|e| Error::Internal(format!("Failed to delete session {}: {}", session_id, e)))?;
+        fs::remove_dir_all(&session_dir).await.map_err(|e| {
+            Error::Internal(format!("Failed to delete session {}: {}", session_id, e))
+        })?;
         tracing::info!(session_id = %session_id, "Deleted session");
         Ok(())
     }
@@ -408,7 +498,7 @@ impl SessionRecorder for FileSessionRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lunaroute_core::normalized::{Message, MessageContent, Role, Usage, Choice, FinishReason};
+    use lunaroute_core::normalized::{Choice, FinishReason, Message, MessageContent, Role, Usage};
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -477,17 +567,26 @@ mod tests {
             "openai".to_string(),
         );
 
-        recorder.start_session(session_id.clone(), &request, metadata.clone()).await.unwrap();
+        recorder
+            .start_session(session_id.clone(), &request, metadata.clone())
+            .await
+            .unwrap();
 
         // Record response
-        recorder.record_response(&session_id, &response).await.unwrap();
+        recorder
+            .record_response(&session_id, &response)
+            .await
+            .unwrap();
 
         // Complete session
         let final_metadata = metadata
             .with_usage(10, 20)
             .with_success(1.5, Some("stop".to_string()));
 
-        recorder.complete_session(&session_id, final_metadata).await.unwrap();
+        recorder
+            .complete_session(&session_id, final_metadata)
+            .await
+            .unwrap();
 
         // Retrieve session
         let recorded = recorder.get_session(&session_id).await.unwrap().unwrap();
@@ -510,14 +609,25 @@ mod tests {
 
             let metadata = SessionMetadata::new(
                 session_id.clone(),
-                if i < 3 { "gpt-5-mini" } else { "claude-sonnet-4-5" }.to_string(),
+                if i < 3 {
+                    "gpt-5-mini"
+                } else {
+                    "claude-sonnet-4-5"
+                }
+                .to_string(),
                 if i < 3 { "openai" } else { "anthropic" }.to_string(),
                 "openai".to_string(),
             )
             .with_success(1.0, Some("stop".to_string()));
 
-            recorder.start_session(session_id.clone(), &request, metadata.clone()).await.unwrap();
-            recorder.complete_session(&session_id, metadata).await.unwrap();
+            recorder
+                .start_session(session_id.clone(), &request, metadata.clone())
+                .await
+                .unwrap();
+            recorder
+                .complete_session(&session_id, metadata)
+                .await
+                .unwrap();
         }
 
         // Query OpenAI sessions
@@ -543,7 +653,10 @@ mod tests {
             "openai".to_string(),
         );
 
-        recorder.start_session(session_id.clone(), &request, metadata).await.unwrap();
+        recorder
+            .start_session(session_id.clone(), &request, metadata)
+            .await
+            .unwrap();
 
         // Verify session exists
         assert!(recorder.get_session(&session_id).await.unwrap().is_some());

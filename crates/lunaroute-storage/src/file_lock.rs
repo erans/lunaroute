@@ -201,9 +201,7 @@ impl FileLock {
 
         let handle = self.file.as_raw_handle();
 
-        let result = unsafe {
-            UnlockFileEx(handle as _, 0, !0, !0, std::ptr::null_mut())
-        };
+        let result = unsafe { UnlockFileEx(handle as _, 0, !0, !0, std::ptr::null_mut()) };
 
         if result != 0 {
             Ok(())
@@ -256,7 +254,10 @@ mod tests {
 
         // Now we should be able to acquire
         let lock3 = FileLock::try_acquire(&file_path).unwrap();
-        assert!(lock3.is_some(), "Should acquire lock after first is released");
+        assert!(
+            lock3.is_some(),
+            "Should acquire lock after first is released"
+        );
     }
 
     #[test]

@@ -51,27 +51,28 @@
 mod config;
 mod session_stats;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use config::{ApiDialect, ServerConfig};
+use futures::StreamExt;
 use lunaroute_core::provider::Provider;
+use lunaroute_core::{
+    error::Error as CoreError,
+    normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
+};
 use lunaroute_egress::{
     anthropic::{AnthropicConfig, AnthropicConnector},
     openai::{OpenAIConfig, OpenAIConnector, RequestBodyModConfig, ResponseBodyModConfig},
 };
 use lunaroute_ingress::{anthropic as anthropic_ingress, openai};
-use lunaroute_observability::{health_router, HealthState, Metrics};
-use lunaroute_routing::{Router, RouteTable, RoutingRule, RuleMatcher};
+use lunaroute_observability::{HealthState, Metrics, health_router};
+use lunaroute_routing::{RouteTable, Router, RoutingRule, RuleMatcher};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{debug, info, warn, Level};
+use tracing::{Level, debug, info, warn};
 use tracing_subscriber::FmtSubscriber;
-use lunaroute_core::{
-    normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
-    error::Error as CoreError,
-};
-use futures::StreamExt;
 
 const MOON: &str = r#"
          ___---___
@@ -97,13 +98,60 @@ const MOON: &str = r#"
 #[command(about = "LunaRoute production server for LLM API routing", long_about = None)]
 #[command(before_help = MOON)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Path to configuration file (YAML or TOML)
-    #[arg(short, long, value_name = "FILE", env = "LUNAROUTE_CONFIG")]
+    #[arg(
+        short,
+        long,
+        value_name = "FILE",
+        env = "LUNAROUTE_CONFIG",
+        global = true
+    )]
     config: Option<String>,
 
     /// API dialect to accept (openai or anthropic)
-    #[arg(short = 'd', long, value_name = "DIALECT", env = "LUNAROUTE_DIALECT")]
+    #[arg(
+        short = 'd',
+        long,
+        value_name = "DIALECT",
+        env = "LUNAROUTE_DIALECT",
+        global = true
+    )]
     dialect: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Start the LunaRoute server (default if no command specified)
+    Serve,
+    /// Import JSONL session logs into SQLite database
+    ImportSessions {
+        /// Path to JSONL sessions directory
+        #[arg(long, default_value = "~/.lunaroute/sessions")]
+        sessions_dir: PathBuf,
+
+        /// Path to SQLite database
+        #[arg(long, default_value = "~/.lunaroute/sessions.db")]
+        db_path: PathBuf,
+
+        /// Number of sessions to process in one batch
+        #[arg(long, default_value = "10")]
+        batch_size: usize,
+
+        /// Skip sessions that already exist in database
+        #[arg(long, default_value = "true")]
+        skip_existing: bool,
+
+        /// Continue importing even if some sessions fail
+        #[arg(long, default_value = "true")]
+        continue_on_error: bool,
+
+        /// Show what would be imported without writing to DB
+        #[arg(long, default_value = "false")]
+        dry_run: bool,
+    },
 }
 
 /// Logging provider that prints all requests and responses to stdout
@@ -114,7 +162,10 @@ struct LoggingProvider {
 
 impl LoggingProvider {
     fn new(inner: Arc<dyn Provider>, provider_name: String) -> Self {
-        Self { inner, provider_name }
+        Self {
+            inner,
+            provider_name,
+        }
     }
 }
 
@@ -126,7 +177,11 @@ impl Provider for LoggingProvider {
         info!("├─────────────────────────────────────────────────────────");
         info!("│ Model: {}", request.model);
         info!("│ Messages: {} messages", request.messages.len());
-        debug!("│ Full request:\n{}", serde_json::to_string_pretty(&request).unwrap_or_else(|e| format!("Serialization error: {}", e)));
+        debug!(
+            "│ Full request:\n{}",
+            serde_json::to_string_pretty(&request)
+                .unwrap_or_else(|e| format!("Serialization error: {}", e))
+        );
         info!("└─────────────────────────────────────────────────────────");
 
         let response = self.inner.send(request).await?;
@@ -141,10 +196,17 @@ impl Provider for LoggingProvider {
                 info!("│ Content: {}", text);
             }
         }
-        info!("│ Tokens: input={}, output={}, total={}",
-            response.usage.prompt_tokens, response.usage.completion_tokens,
-            response.usage.prompt_tokens + response.usage.completion_tokens);
-        debug!("│ Full response:\n{}", serde_json::to_string_pretty(&response).unwrap_or_else(|e| format!("Serialization error: {}", e)));
+        info!(
+            "│ Tokens: input={}, output={}, total={}",
+            response.usage.prompt_tokens,
+            response.usage.completion_tokens,
+            response.usage.prompt_tokens + response.usage.completion_tokens
+        );
+        debug!(
+            "│ Full response:\n{}",
+            serde_json::to_string_pretty(&response)
+                .unwrap_or_else(|e| format!("Serialization error: {}", e))
+        );
         info!("└─────────────────────────────────────────────────────────");
 
         Ok(response)
@@ -153,13 +215,20 @@ impl Provider for LoggingProvider {
     async fn stream(
         &self,
         request: NormalizedRequest,
-    ) -> Result<Box<dyn futures::Stream<Item = Result<NormalizedStreamEvent, CoreError>> + Send + Unpin>, CoreError> {
+    ) -> Result<
+        Box<dyn futures::Stream<Item = Result<NormalizedStreamEvent, CoreError>> + Send + Unpin>,
+        CoreError,
+    > {
         info!("┌─────────────────────────────────────────────────────────");
         info!("│ REQUEST to {} (streaming)", self.provider_name);
         info!("├─────────────────────────────────────────────────────────");
         info!("│ Model: {}", request.model);
         info!("│ Messages: {} messages", request.messages.len());
-        debug!("│ Full request:\n{}", serde_json::to_string_pretty(&request).unwrap_or_else(|e| format!("Serialization error: {}", e)));
+        debug!(
+            "│ Full request:\n{}",
+            serde_json::to_string_pretty(&request)
+                .unwrap_or_else(|e| format!("Serialization error: {}", e))
+        );
         info!("└─────────────────────────────────────────────────────────");
 
         let stream = self.inner.stream(request).await?;
@@ -192,9 +261,12 @@ impl Provider for LoggingProvider {
                         }
                     }
                     NormalizedStreamEvent::Usage { usage } => {
-                        info!("│ 📊 Usage: input={}, output={}, total={}",
-                            usage.prompt_tokens, usage.completion_tokens,
-                            usage.prompt_tokens + usage.completion_tokens);
+                        info!(
+                            "│ 📊 Usage: input={}, output={}, total={}",
+                            usage.prompt_tokens,
+                            usage.completion_tokens,
+                            usage.prompt_tokens + usage.completion_tokens
+                        );
                     }
                     NormalizedStreamEvent::End { finish_reason } => {
                         info!("│ 🏁 Stream ended: {:?}", finish_reason);
@@ -220,6 +292,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse CLI arguments
     let cli = Cli::parse();
 
+    // Handle subcommands
+    match cli.command {
+        Some(Commands::ImportSessions {
+            sessions_dir,
+            db_path,
+            batch_size,
+            skip_existing,
+            continue_on_error,
+            dry_run,
+        }) => {
+            // Expand tilde in paths
+            let sessions_dir = shellexpand::tilde(&sessions_dir.to_string_lossy()).to_string();
+            let db_path = shellexpand::tilde(&db_path.to_string_lossy()).to_string();
+
+            let config = lunaroute_session::ImportConfig {
+                sessions_dir: PathBuf::from(sessions_dir),
+                db_path: PathBuf::from(db_path),
+                batch_size,
+                skip_existing,
+                continue_on_error,
+                dry_run,
+            };
+
+            lunaroute_session::import_sessions(config).await?;
+            return Ok(());
+        }
+        Some(Commands::Serve) | None => {
+            // Continue with server startup (default behavior)
+        }
+    }
+
     // Load configuration
     let mut config = if let Some(config_path) = cli.config {
         info!("📁 Loading configuration from: {}", config_path);
@@ -238,7 +341,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "openai" => config.api_dialect = ApiDialect::OpenAI,
             "anthropic" => config.api_dialect = ApiDialect::Anthropic,
             _ => {
-                return Err(format!("Invalid dialect '{}'. Use 'openai' or 'anthropic'", dialect_str).into());
+                return Err(format!(
+                    "Invalid dialect '{}'. Use 'openai' or 'anthropic'",
+                    dialect_str
+                )
+                .into());
             }
         }
     }
@@ -252,9 +359,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "error" => Level::ERROR,
         _ => Level::INFO,
     };
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(log_level)
-        .finish();
+    let subscriber = FmtSubscriber::builder().with_max_level(log_level).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
     // Print the moon
@@ -263,28 +368,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("🚀 Initializing LunaRoute Gateway with Intelligent Routing");
 
     // Setup async multi-writer session recording if enabled
-    let async_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>> = if config.session_recording.enabled {
-        match lunaroute_session::build_from_config(&config.session_recording).await? {
-            Some(multi_recorder) => {
-                if config.session_recording.is_jsonl_enabled() {
-                    info!("📝 JSONL session recording enabled: {:?}",
-                        config.session_recording.jsonl.as_ref().map(|c| &c.directory));
+    let async_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>> =
+        if config.session_recording.enabled {
+            match lunaroute_session::build_from_config(&config.session_recording).await? {
+                Some(multi_recorder) => {
+                    if config.session_recording.is_jsonl_enabled() {
+                        info!(
+                            "📝 JSONL session recording enabled: {:?}",
+                            config
+                                .session_recording
+                                .jsonl
+                                .as_ref()
+                                .map(|c| &c.directory)
+                        );
+                    }
+                    if config.session_recording.is_sqlite_enabled() {
+                        info!(
+                            "📝 SQLite session recording enabled: {:?}",
+                            config.session_recording.sqlite.as_ref().map(|c| &c.path)
+                        );
+                    }
+                    Some(Arc::new(multi_recorder))
                 }
-                if config.session_recording.is_sqlite_enabled() {
-                    info!("📝 SQLite session recording enabled: {:?}",
-                        config.session_recording.sqlite.as_ref().map(|c| &c.path));
+                None => {
+                    info!("📝 Session recording enabled but no writers configured");
+                    None
                 }
-                Some(Arc::new(multi_recorder))
             }
-            None => {
-                info!("📝 Session recording enabled but no writers configured");
-                None
-            }
-        }
-    } else {
-        info!("📝 Session recording disabled");
-        None
-    };
+        } else {
+            info!("📝 Session recording disabled");
+            None
+        };
 
     if config.logging.log_requests {
         info!("📋 Request/response logging enabled (stdout)");
@@ -349,7 +463,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Session recording is now handled via async multi-writer in passthrough mode
         let provider: Arc<dyn Provider> = if config.logging.log_requests {
             info!("  Request/response logging: enabled");
-            Arc::new(LoggingProvider::new(connector.clone(), "OpenAI".to_string()))
+            Arc::new(LoggingProvider::new(
+                connector.clone(),
+                "OpenAI".to_string(),
+            ))
         } else {
             connector
         };
@@ -389,7 +506,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         anthropic_connector = Some(connector.clone()); // Save for passthrough
         let provider: Arc<dyn Provider> = if config.logging.log_requests {
             info!("  Request/response logging: enabled");
-            Arc::new(LoggingProvider::new(connector.clone(), "Anthropic".to_string()))
+            Arc::new(LoggingProvider::new(
+                connector.clone(),
+                "Anthropic".to_string(),
+            ))
         } else {
             connector
         };
@@ -456,8 +576,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("📋 Created {} routing rules", rules.len());
     for rule in &rules {
-        info!("   - {:?}: {:?} → {:?} (fallbacks: {:?})",
-            rule.name, rule.matcher, rule.primary, rule.fallbacks);
+        info!(
+            "   - {:?}: {:?} → {:?} (fallbacks: {:?})",
+            rule.name, rule.matcher, rule.primary, rule.fallbacks
+        );
     }
 
     // Detect passthrough mode BEFORE creating router: dialect matches the only enabled provider
@@ -496,7 +618,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ));
     let stats_tracker_clone = stats_tracker.clone();
-    info!("📊 Session statistics tracking enabled (max {} sessions)", config.session_stats_max_sessions.unwrap_or(100));
+    info!(
+        "📊 Session statistics tracking enabled (max {} sessions)",
+        config.session_stats_max_sessions.unwrap_or(100)
+    );
 
     // Create ingress router based on selected dialect
     let api_router = match config.api_dialect {
@@ -553,7 +678,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         ApiDialect::Anthropic => {
             info!("   - Anthropic API: http://{}/v1/messages", addr);
-            info!("   💡 For Claude Code: export ANTHROPIC_BASE_URL=http://{}", addr);
+            info!(
+                "   💡 For Claude Code: export ANTHROPIC_BASE_URL=http://{}",
+                addr
+            );
         }
     }
     info!("   Observability:");
@@ -567,11 +695,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         shutdown_signal().await;
         // Only print stats if debug logging is enabled
-        if tracing::level_filters::LevelFilter::current() >= tracing::level_filters::LevelFilter::DEBUG {
+        if tracing::level_filters::LevelFilter::current()
+            >= tracing::level_filters::LevelFilter::DEBUG
+        {
             info!("Shutdown signal received, printing session statistics...");
             stats_tracker_for_shutdown.print_summary();
         }
     });
+
+    // Start UI server if enabled and SQLite is configured
+    if config.ui.enabled {
+        if let Some(sqlite_config) = &config.session_recording.sqlite {
+            let db_path = sqlite_config.path.to_string_lossy().to_string();
+            let ui_config = config.ui.clone();
+
+            tokio::spawn(async move {
+                match start_ui_server(ui_config, db_path).await {
+                    Ok(_) => info!("UI server stopped"),
+                    Err(e) => warn!("UI server error: {}", e),
+                }
+            });
+        } else {
+            warn!("📊 UI server enabled but SQLite session recording is not configured");
+            warn!("   Enable SQLite session recording to use the UI dashboard");
+        }
+    }
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -579,10 +727,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Print stats one final time in case the shutdown handler didn't run
     // Only print if debug logging is enabled
-    if tracing::level_filters::LevelFilter::current() >= tracing::level_filters::LevelFilter::DEBUG {
+    if tracing::level_filters::LevelFilter::current() >= tracing::level_filters::LevelFilter::DEBUG
+    {
         info!("Server stopped, printing final session statistics...");
         stats_tracker.print_summary();
     }
+
+    Ok(())
+}
+
+/// Start the UI server
+async fn start_ui_server(config: lunaroute_ui::UiConfig, db_path: String) -> anyhow::Result<()> {
+    // Connect to SQLite database
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(&format!("sqlite://{}", db_path))
+        .await?;
+
+    let pool = std::sync::Arc::new(pool);
+
+    // Create and start UI server
+    let ui_server = lunaroute_ui::UiServer::new(config, pool);
+    ui_server.serve().await?;
 
     Ok(())
 }

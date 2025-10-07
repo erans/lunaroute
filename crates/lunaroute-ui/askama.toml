@@ -1,0 +1,3 @@
+[general]
+# Directory for templates (relative to crate root)
+dirs = ["src/templates"]

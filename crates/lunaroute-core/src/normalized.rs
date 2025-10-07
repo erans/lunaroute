@@ -87,25 +87,16 @@ pub enum MessageContent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
-    Text {
-        text: String,
-    },
-    Image {
-        source: ImageSource,
-    },
+    Text { text: String },
+    Image { source: ImageSource },
 }
 
 /// Source of an image
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ImageSource {
-    Url {
-        url: String,
-    },
-    Base64 {
-        media_type: String,
-        data: String,
-    },
+    Url { url: String },
+    Base64 { media_type: String, data: String },
 }
 
 /// Tool/function definition
@@ -246,16 +237,10 @@ pub struct Usage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NormalizedStreamEvent {
     /// Stream started
-    Start {
-        id: String,
-        model: String,
-    },
+    Start { id: String, model: String },
 
     /// Content delta
-    Delta {
-        index: u32,
-        delta: Delta,
-    },
+    Delta { index: u32, delta: Delta },
 
     /// Tool call delta
     ToolCallDelta {
@@ -266,19 +251,13 @@ pub enum NormalizedStreamEvent {
     },
 
     /// Usage information
-    Usage {
-        usage: Usage,
-    },
+    Usage { usage: Usage },
 
     /// Stream ended
-    End {
-        finish_reason: FinishReason,
-    },
+    End { finish_reason: FinishReason },
 
     /// Error occurred
-    Error {
-        error: String,
-    },
+    Error { error: String },
 }
 
 /// Content delta in a stream event
@@ -303,4 +282,3 @@ pub struct FunctionCallDelta {
 
 #[cfg(test)]
 mod tests;
-

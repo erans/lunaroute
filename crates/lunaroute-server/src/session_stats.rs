@@ -187,11 +187,20 @@ impl SessionStatsTracker {
             tracing::info!("  Requests: {}", session_stats.request_count);
             tracing::info!("  Input tokens: {}", session_stats.input_tokens);
             tracing::info!("  Output tokens: {}", session_stats.output_tokens);
-            tracing::info!("  Total tokens: {}", session_stats.input_tokens + session_stats.output_tokens);
+            tracing::info!(
+                "  Total tokens: {}",
+                session_stats.input_tokens + session_stats.output_tokens
+            );
             if session_stats.thinking_tokens > 0 {
-                tracing::info!("  Thinking tokens: {} ({} requests with thinking)",
-                    session_stats.thinking_tokens, session_stats.thinking_requests);
-                tracing::info!("  Avg thinking tokens/thinking request: {:.1}", session_stats.avg_thinking_tokens());
+                tracing::info!(
+                    "  Thinking tokens: {} ({} requests with thinking)",
+                    session_stats.thinking_tokens,
+                    session_stats.thinking_requests
+                );
+                tracing::info!(
+                    "  Avg thinking tokens/thinking request: {:.1}",
+                    session_stats.avg_thinking_tokens()
+                );
             }
             if session_stats.total_tool_calls > 0 {
                 tracing::info!("  Tool calls: {} total", session_stats.total_tool_calls);
@@ -202,10 +211,22 @@ impl SessionStatsTracker {
                     tracing::info!("    {}: {}", tool_name, count);
                 }
             }
-            tracing::info!("  Pre-proxy time: {:.2}ms", session_stats.pre_proxy_time.as_secs_f64() * 1000.0);
-            tracing::info!("  Post-proxy time: {:.2}ms", session_stats.post_proxy_time.as_secs_f64() * 1000.0);
-            tracing::info!("  Total processing time: {:.2}ms", session_stats.total_processing_time().as_secs_f64() * 1000.0);
-            tracing::info!("  Avg processing time/request: {:.2}ms", session_stats.avg_processing_time().as_secs_f64() * 1000.0);
+            tracing::info!(
+                "  Pre-proxy time: {:.2}ms",
+                session_stats.pre_proxy_time.as_secs_f64() * 1000.0
+            );
+            tracing::info!(
+                "  Post-proxy time: {:.2}ms",
+                session_stats.post_proxy_time.as_secs_f64() * 1000.0
+            );
+            tracing::info!(
+                "  Total processing time: {:.2}ms",
+                session_stats.total_processing_time().as_secs_f64() * 1000.0
+            );
+            tracing::info!(
+                "  Avg processing time/request: {:.2}ms",
+                session_stats.avg_processing_time().as_secs_f64() * 1000.0
+            );
             tracing::info!("");
         }
 
@@ -217,23 +238,46 @@ impl SessionStatsTracker {
         tracing::info!("Total output tokens: {}", total_output_tokens);
         tracing::info!("Total tokens: {}", total_input_tokens + total_output_tokens);
         if total_thinking_tokens > 0 {
-            tracing::info!("Total thinking tokens: {} ({} requests with thinking)",
-                total_thinking_tokens, total_thinking_requests);
+            tracing::info!(
+                "Total thinking tokens: {} ({} requests with thinking)",
+                total_thinking_tokens,
+                total_thinking_requests
+            );
             if total_thinking_requests > 0 {
-                tracing::info!("Avg thinking tokens/thinking request: {:.1}",
-                    total_thinking_tokens as f64 / total_thinking_requests as f64);
+                tracing::info!(
+                    "Avg thinking tokens/thinking request: {:.1}",
+                    total_thinking_tokens as f64 / total_thinking_requests as f64
+                );
             }
         }
-        tracing::info!("Total pre-proxy time: {:.2}ms", total_pre_time.as_secs_f64() * 1000.0);
-        tracing::info!("Total post-proxy time: {:.2}ms", total_post_time.as_secs_f64() * 1000.0);
-        tracing::info!("Total processing overhead: {:.2}ms", (total_pre_time + total_post_time).as_secs_f64() * 1000.0);
+        tracing::info!(
+            "Total pre-proxy time: {:.2}ms",
+            total_pre_time.as_secs_f64() * 1000.0
+        );
+        tracing::info!(
+            "Total post-proxy time: {:.2}ms",
+            total_post_time.as_secs_f64() * 1000.0
+        );
+        tracing::info!(
+            "Total processing overhead: {:.2}ms",
+            (total_pre_time + total_post_time).as_secs_f64() * 1000.0
+        );
 
         if total_requests > 0 {
             let avg_pre = total_pre_time / total_requests as u32;
             let avg_post = total_post_time / total_requests as u32;
-            tracing::info!("Avg pre-proxy time/request: {:.2}ms", avg_pre.as_secs_f64() * 1000.0);
-            tracing::info!("Avg post-proxy time/request: {:.2}ms", avg_post.as_secs_f64() * 1000.0);
-            tracing::info!("Avg total processing time/request: {:.2}ms", (avg_pre + avg_post).as_secs_f64() * 1000.0);
+            tracing::info!(
+                "Avg pre-proxy time/request: {:.2}ms",
+                avg_pre.as_secs_f64() * 1000.0
+            );
+            tracing::info!(
+                "Avg post-proxy time/request: {:.2}ms",
+                avg_post.as_secs_f64() * 1000.0
+            );
+            tracing::info!(
+                "Avg total processing time/request: {:.2}ms",
+                (avg_pre + avg_post).as_secs_f64() * 1000.0
+            );
         }
 
         if total_tool_calls > 0 {
@@ -254,7 +298,11 @@ impl SessionStatsTracker {
 }
 
 impl lunaroute_ingress::types::SessionStatsTracker for SessionStatsTracker {
-    fn record_request(&self, session_id: String, stats: lunaroute_ingress::types::SessionRequestStats) {
+    fn record_request(
+        &self,
+        session_id: String,
+        stats: lunaroute_ingress::types::SessionRequestStats,
+    ) {
         self.record_request(
             session_id,
             stats.input_tokens,
@@ -364,9 +412,33 @@ mod tests {
         let config = SessionStatsConfig { max_sessions: 2 };
         let tracker = SessionStatsTracker::new(config);
 
-        tracker.record_request("session1".to_string(), 100, 200, 0, HashMap::new(), Duration::from_millis(5), Duration::from_millis(10));
-        tracker.record_request("session2".to_string(), 100, 200, 0, HashMap::new(), Duration::from_millis(5), Duration::from_millis(10));
-        tracker.record_request("session3".to_string(), 100, 200, 0, HashMap::new(), Duration::from_millis(5), Duration::from_millis(10));
+        tracker.record_request(
+            "session1".to_string(),
+            100,
+            200,
+            0,
+            HashMap::new(),
+            Duration::from_millis(5),
+            Duration::from_millis(10),
+        );
+        tracker.record_request(
+            "session2".to_string(),
+            100,
+            200,
+            0,
+            HashMap::new(),
+            Duration::from_millis(5),
+            Duration::from_millis(10),
+        );
+        tracker.record_request(
+            "session3".to_string(),
+            100,
+            200,
+            0,
+            HashMap::new(),
+            Duration::from_millis(5),
+            Duration::from_millis(10),
+        );
 
         // Should have evicted one session
         assert_eq!(tracker.session_count(), 2);
@@ -376,8 +448,24 @@ mod tests {
     fn test_get_all_stats() {
         let tracker = SessionStatsTracker::new(SessionStatsConfig::default());
 
-        tracker.record_request("session1".to_string(), 100, 200, 0, HashMap::new(), Duration::from_millis(5), Duration::from_millis(10));
-        tracker.record_request("session2".to_string(), 50, 100, 0, HashMap::new(), Duration::from_millis(3), Duration::from_millis(7));
+        tracker.record_request(
+            "session1".to_string(),
+            100,
+            200,
+            0,
+            HashMap::new(),
+            Duration::from_millis(5),
+            Duration::from_millis(10),
+        );
+        tracker.record_request(
+            "session2".to_string(),
+            50,
+            100,
+            0,
+            HashMap::new(),
+            Duration::from_millis(3),
+            Duration::from_millis(7),
+        );
 
         let all_stats = tracker.get_all_stats();
         assert_eq!(all_stats.len(), 2);

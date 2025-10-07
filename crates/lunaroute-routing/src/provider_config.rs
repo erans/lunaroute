@@ -65,11 +65,10 @@ impl ProviderConfig {
 
         // Resolve headers
         for (key, value) in self.headers.iter_mut() {
-            *value = resolve_env_var(value)
-                .map_err(|e| ProviderConfigError::EnvVarResolution {
-                    header: key.clone(),
-                    source: Box::new(e),
-                })?;
+            *value = resolve_env_var(value).map_err(|e| ProviderConfigError::EnvVarResolution {
+                header: key.clone(),
+                source: Box::new(e),
+            })?;
         }
 
         Ok(())
@@ -181,7 +180,12 @@ mod tests {
     fn test_resolve_env_var_not_found() {
         let result = resolve_env_var("$NONEXISTENT_VAR_XYZ");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("NONEXISTENT_VAR_XYZ"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("NONEXISTENT_VAR_XYZ")
+        );
     }
 
     #[test]
@@ -254,6 +258,9 @@ mod tests {
 
         assert_eq!(deserialized.provider_type, ProviderType::Anthropic);
         assert_eq!(deserialized.api_key, "$ANTHROPIC_KEY");
-        assert_eq!(deserialized.base_url, Some("https://custom.anthropic.com".to_string()));
+        assert_eq!(
+            deserialized.base_url,
+            Some("https://custom.anthropic.com".to_string())
+        );
     }
 }

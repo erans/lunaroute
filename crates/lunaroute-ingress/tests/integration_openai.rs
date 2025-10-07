@@ -201,9 +201,7 @@ impl Provider for StreamingMockProvider {
         >,
     > {
         let events = self.events.clone();
-        Ok(Box::new(stream::iter(
-            events.into_iter().map(Ok),
-        )))
+        Ok(Box::new(stream::iter(events.into_iter().map(Ok))))
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -341,7 +339,10 @@ async fn test_chat_completions_success() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(json["model"], "gpt-4");
-    assert_eq!(json["choices"][0]["message"]["content"], "Hello from integration test!");
+    assert_eq!(
+        json["choices"][0]["message"]["content"],
+        "Hello from integration test!"
+    );
     assert_eq!(json["choices"][0]["message"]["role"], "assistant");
     assert_eq!(json["choices"][0]["finish_reason"], "stop");
     assert_eq!(json["usage"]["total_tokens"], 15);
@@ -378,10 +379,12 @@ async fn test_chat_completions_invalid_request() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert!(json["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("temperature"));
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("temperature")
+    );
 }
 
 #[tokio::test]
@@ -412,10 +415,12 @@ async fn test_chat_completions_empty_messages() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert!(json["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("messages array cannot be empty"));
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("messages array cannot be empty")
+    );
 }
 
 #[tokio::test]
@@ -447,10 +452,12 @@ async fn test_chat_completions_provider_error() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert!(json["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Mock provider error"));
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Mock provider error")
+    );
 }
 
 #[tokio::test]
@@ -557,7 +564,10 @@ async fn test_chat_completions_streaming_content() {
             accumulated.push_str(content);
         }
     }
-    assert_eq!(accumulated, "Hello world!", "Content should be accumulated correctly");
+    assert_eq!(
+        accumulated, "Hello world!",
+        "Content should be accumulated correctly"
+    );
 }
 
 #[tokio::test]
@@ -698,10 +708,12 @@ async fn test_chat_completions_streaming_error_handling() {
                 // Check if it's an error event
                 if json.get("error").is_some() {
                     had_error = true;
-                    assert!(json["error"]["message"]
-                        .as_str()
-                        .unwrap()
-                        .contains("Connection lost midstream"));
+                    assert!(
+                        json["error"]["message"]
+                            .as_str()
+                            .unwrap()
+                            .contains("Connection lost midstream")
+                    );
                 } else {
                     events.push(json);
                 }
@@ -710,7 +722,10 @@ async fn test_chat_completions_streaming_error_handling() {
     }
 
     // Verify we got some events before the error
-    assert!(!events.is_empty(), "Should have received events before error");
+    assert!(
+        !events.is_empty(),
+        "Should have received events before error"
+    );
 
     // Verify we got an error event
     assert!(had_error, "Should have received an error event in stream");
@@ -766,7 +781,10 @@ async fn test_chat_completions_with_tools() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(json["choices"][0]["message"]["content"], "Let me check the weather");
+    assert_eq!(
+        json["choices"][0]["message"]["content"],
+        "Let me check the weather"
+    );
 }
 
 #[tokio::test]

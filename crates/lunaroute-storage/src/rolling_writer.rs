@@ -33,7 +33,8 @@ impl RollingWriter {
     /// Write data to the rolling file, rotating if necessary
     pub fn write(&mut self, data: &[u8]) -> StorageResult<()> {
         // Check if we need to rotate
-        if self.current_file.is_none() || self.current_size + data.len() as u64 > self.max_file_size {
+        if self.current_file.is_none() || self.current_size + data.len() as u64 > self.max_file_size
+        {
             self.rotate()?;
         }
 

@@ -3,7 +3,7 @@
 use crate::types::RequestMetadata;
 use axum::{
     extract::Request,
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     middleware::Next,
     response::Response,
 };
@@ -21,9 +21,10 @@ pub async fn request_context_middleware(mut req: Request, next: Next) -> Respons
 
     // Handle traceparent header if present
     if let Some(traceparent) = headers.get("traceparent")
-        && let Ok(tp) = traceparent.to_str() {
-            metadata = metadata.with_traceparent(tp);
-        }
+        && let Ok(tp) = traceparent.to_str()
+    {
+        metadata = metadata.with_traceparent(tp);
+    }
 
     // Extract client IP from X-Forwarded-For or X-Real-IP
     if let Some(forwarded_for) = headers.get("x-forwarded-for") {
@@ -33,15 +34,17 @@ pub async fn request_context_middleware(mut req: Request, next: Next) -> Respons
             metadata = metadata.with_client_ip(client_ip);
         }
     } else if let Some(real_ip) = headers.get("x-real-ip")
-        && let Ok(ip) = real_ip.to_str() {
-            metadata = metadata.with_client_ip(ip.to_string());
-        }
+        && let Ok(ip) = real_ip.to_str()
+    {
+        metadata = metadata.with_client_ip(ip.to_string());
+    }
 
     // Extract user agent
     if let Some(user_agent) = headers.get(header::USER_AGENT)
-        && let Ok(ua) = user_agent.to_str() {
-            metadata = metadata.with_user_agent(ua.to_string());
-        }
+        && let Ok(ua) = user_agent.to_str()
+    {
+        metadata = metadata.with_user_agent(ua.to_string());
+    }
 
     // Add request ID to response headers
     let request_id = metadata.request_id.clone();
@@ -70,10 +73,11 @@ pub async fn body_size_limit_middleware(
     // Check content-length header
     if let Some(content_length) = req.headers().get(header::CONTENT_LENGTH)
         && let Ok(length_str) = content_length.to_str()
-            && let Ok(length) = length_str.parse::<usize>()
-                && length > max_size {
-                    return Err(StatusCode::PAYLOAD_TOO_LARGE);
-                }
+        && let Ok(length) = length_str.parse::<usize>()
+        && length > max_size
+    {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
 
     Ok(next.run(req).await)
 }
@@ -114,11 +118,14 @@ impl CorsConfig {
 /// Middleware for CORS headers with configurable origins
 pub async fn cors_middleware_with_config(
     config: CorsConfig,
-) -> impl Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> + Clone {
+) -> impl Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>
++ Clone {
     move |req: Request, next: Next| {
         let config = config.clone();
         Box::pin(async move {
-            let request_origin = req.headers().get(header::ORIGIN)
+            let request_origin = req
+                .headers()
+                .get(header::ORIGIN)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
 
@@ -137,7 +144,9 @@ pub async fn cors_middleware_with_config(
                 }
             } else {
                 // No origin header, use first allowed origin
-                config.allowed_origins.first()
+                config
+                    .allowed_origins
+                    .first()
                     .map(|s| s.as_str())
                     .unwrap_or("http://localhost:3000")
             };
@@ -182,7 +191,9 @@ pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
     let headers = response.headers_mut();
     headers.insert(
         "x-content-type-options",
-        "nosniff".parse().expect("Failed to parse static header value"),
+        "nosniff"
+            .parse()
+            .expect("Failed to parse static header value"),
     );
     headers.insert(
         "x-frame-options",
@@ -190,11 +201,15 @@ pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
     );
     headers.insert(
         "x-xss-protection",
-        "1; mode=block".parse().expect("Failed to parse static header value"),
+        "1; mode=block"
+            .parse()
+            .expect("Failed to parse static header value"),
     );
     headers.insert(
         "strict-transport-security",
-        "max-age=31536000; includeSubDomains".parse().expect("Failed to parse static header value"),
+        "max-age=31536000; includeSubDomains"
+            .parse()
+            .expect("Failed to parse static header value"),
     );
 
     response
@@ -206,14 +221,16 @@ pub fn extract_metadata(headers: &HeaderMap) -> Option<RequestMetadata> {
     let mut metadata = RequestMetadata::new();
 
     if let Some(traceparent) = headers.get("traceparent")
-        && let Ok(tp) = traceparent.to_str() {
-            metadata = metadata.with_traceparent(tp);
-        }
+        && let Ok(tp) = traceparent.to_str()
+    {
+        metadata = metadata.with_traceparent(tp);
+    }
 
     if let Some(user_agent) = headers.get(header::USER_AGENT)
-        && let Ok(ua) = user_agent.to_str() {
-            metadata = metadata.with_user_agent(ua.to_string());
-        }
+        && let Ok(ua) = user_agent.to_str()
+    {
+        metadata = metadata.with_user_agent(ua.to_string());
+    }
 
     Some(metadata)
 }
@@ -222,11 +239,11 @@ pub fn extract_metadata(headers: &HeaderMap) -> Option<RequestMetadata> {
 mod tests {
     use super::*;
     use axum::{
+        Router,
         body::Body,
         http::{Request, StatusCode},
         middleware,
         routing::get,
-        Router,
     };
     use tower::ServiceExt;
 
@@ -241,12 +258,7 @@ mod tests {
             .layer(middleware::from_fn(request_context_middleware));
 
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/test")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -264,7 +276,10 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/test")
-                    .header("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
+                    .header(
+                        "traceparent",
+                        "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+                    )
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -282,18 +297,18 @@ mod tests {
             .layer(middleware::from_fn(security_headers_middleware));
 
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/test")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
         assert!(response.headers().get("x-content-type-options").is_some());
         assert!(response.headers().get("x-frame-options").is_some());
-        assert!(response.headers().get("strict-transport-security").is_some());
+        assert!(
+            response
+                .headers()
+                .get("strict-transport-security")
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -303,17 +318,22 @@ mod tests {
             .layer(middleware::from_fn(cors_middleware));
 
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/test")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
-        assert!(response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_some());
-        assert!(response.headers().get(header::ACCESS_CONTROL_ALLOW_METHODS).is_some());
+        assert!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_some()
+        );
+        assert!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -372,12 +392,7 @@ mod tests {
             }));
 
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/test")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -434,7 +449,12 @@ mod tests {
     #[tokio::test]
     async fn test_extract_metadata_with_headers() {
         let mut headers = HeaderMap::new();
-        headers.insert("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".parse().unwrap());
+        headers.insert(
+            "traceparent",
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+                .parse()
+                .unwrap(),
+        );
         headers.insert(header::USER_AGENT, "test-agent/1.0".parse().unwrap());
 
         let metadata = extract_metadata(&headers);
@@ -519,4 +539,3 @@ mod tests {
         // User-Agent should be extracted
     }
 }
-

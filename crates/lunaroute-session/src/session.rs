@@ -350,7 +350,13 @@ mod tests {
         .with_custom("tenant_id".to_string(), "tenant-123".to_string())
         .with_custom("environment".to_string(), "production".to_string());
 
-        assert_eq!(metadata.custom.get("tenant_id"), Some(&"tenant-123".to_string()));
-        assert_eq!(metadata.custom.get("environment"), Some(&"production".to_string()));
+        assert_eq!(
+            metadata.custom.get("tenant_id"),
+            Some(&"tenant-123".to_string())
+        );
+        assert_eq!(
+            metadata.custom.get("environment"),
+            Some(&"production".to_string())
+        );
     }
 }

@@ -19,10 +19,7 @@ pub enum EgressError {
 
     /// Provider returned an error response
     #[error("Provider error: {status_code} - {message}")]
-    ProviderError {
-        status_code: u16,
-        message: String,
-    },
+    ProviderError { status_code: u16, message: String },
 
     /// Failed to parse provider response
     #[error("Failed to parse response: {0}")]
@@ -38,9 +35,7 @@ pub enum EgressError {
 
     /// Rate limit exceeded
     #[error("Rate limit exceeded{}", retry_after_secs.map(|s| format!(": retry after {}s", s)).unwrap_or_default())]
-    RateLimitExceeded {
-        retry_after_secs: Option<u64>,
-    },
+    RateLimitExceeded { retry_after_secs: Option<u64> },
 
     /// Invalid configuration
     #[error("Invalid configuration: {0}")]
