@@ -18,6 +18,7 @@ lunaroute-egress = { path = "../lunaroute-egress" }
 lunaroute-routing = { path = "../lunaroute-routing" }
 lunaroute-observability = { path = "../lunaroute-observability" }
 lunaroute-session = { path = "../lunaroute-session", features = ["sqlite-writer"] }
+lunaroute-ui = { path = "../lunaroute-ui" }
 
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true }
@@ -30,3 +31,6 @@ toml = { workspace = true }
 clap = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
+anyhow = { workspace = true }
+shellexpand = "3.1"

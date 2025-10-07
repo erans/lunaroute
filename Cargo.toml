@@ -9,6 +9,7 @@ members = [
     "crates/lunaroute-storage",
     "crates/lunaroute-pii",
     "crates/lunaroute-observability",
+    "crates/lunaroute-ui",
     "crates/lunaroute-server",
     "crates/lunaroute-cli",
     "crates/lunaroute-integration-tests",

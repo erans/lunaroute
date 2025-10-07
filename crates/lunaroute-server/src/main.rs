@@ -51,7 +51,7 @@
 mod config;
 mod session_stats;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use config::{ApiDialect, ServerConfig};
 use lunaroute_core::provider::Provider;
 use lunaroute_egress::{
@@ -63,6 +63,7 @@ use lunaroute_observability::{health_router, HealthState, Metrics};
 use lunaroute_routing::{Router, RouteTable, RoutingRule, RuleMatcher};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn, Level};
@@ -97,13 +98,48 @@ const MOON: &str = r#"
 #[command(about = "LunaRoute production server for LLM API routing", long_about = None)]
 #[command(before_help = MOON)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Path to configuration file (YAML or TOML)
-    #[arg(short, long, value_name = "FILE", env = "LUNAROUTE_CONFIG")]
+    #[arg(short, long, value_name = "FILE", env = "LUNAROUTE_CONFIG", global = true)]
     config: Option<String>,
 
     /// API dialect to accept (openai or anthropic)
-    #[arg(short = 'd', long, value_name = "DIALECT", env = "LUNAROUTE_DIALECT")]
+    #[arg(short = 'd', long, value_name = "DIALECT", env = "LUNAROUTE_DIALECT", global = true)]
     dialect: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Start the LunaRoute server (default if no command specified)
+    Serve,
+    /// Import JSONL session logs into SQLite database
+    ImportSessions {
+        /// Path to JSONL sessions directory
+        #[arg(long, default_value = "~/.lunaroute/sessions")]
+        sessions_dir: PathBuf,
+
+        /// Path to SQLite database
+        #[arg(long, default_value = "~/.lunaroute/sessions.db")]
+        db_path: PathBuf,
+
+        /// Number of sessions to process in one batch
+        #[arg(long, default_value = "10")]
+        batch_size: usize,
+
+        /// Skip sessions that already exist in database
+        #[arg(long, default_value = "true")]
+        skip_existing: bool,
+
+        /// Continue importing even if some sessions fail
+        #[arg(long, default_value = "true")]
+        continue_on_error: bool,
+
+        /// Show what would be imported without writing to DB
+        #[arg(long, default_value = "false")]
+        dry_run: bool,
+    },
 }
 
 /// Logging provider that prints all requests and responses to stdout
@@ -219,6 +255,37 @@ impl Provider for LoggingProvider {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse CLI arguments
     let cli = Cli::parse();
+
+    // Handle subcommands
+    match cli.command {
+        Some(Commands::ImportSessions {
+            sessions_dir,
+            db_path,
+            batch_size,
+            skip_existing,
+            continue_on_error,
+            dry_run,
+        }) => {
+            // Expand tilde in paths
+            let sessions_dir = shellexpand::tilde(&sessions_dir.to_string_lossy()).to_string();
+            let db_path = shellexpand::tilde(&db_path.to_string_lossy()).to_string();
+
+            let config = lunaroute_session::ImportConfig {
+                sessions_dir: PathBuf::from(sessions_dir),
+                db_path: PathBuf::from(db_path),
+                batch_size,
+                skip_existing,
+                continue_on_error,
+                dry_run,
+            };
+
+            lunaroute_session::import_sessions(config).await?;
+            return Ok(());
+        }
+        Some(Commands::Serve) | None => {
+            // Continue with server startup (default behavior)
+        }
+    }
 
     // Load configuration
     let mut config = if let Some(config_path) = cli.config {
@@ -573,6 +640,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Start UI server if enabled and SQLite is configured
+    if config.ui.enabled {
+        if let Some(sqlite_config) = &config.session_recording.sqlite {
+            let db_path = sqlite_config.path.to_string_lossy().to_string();
+            let ui_config = config.ui.clone();
+
+            tokio::spawn(async move {
+                match start_ui_server(ui_config, db_path).await {
+                    Ok(_) => info!("UI server stopped"),
+                    Err(e) => warn!("UI server error: {}", e),
+                }
+            });
+        } else {
+            warn!("📊 UI server enabled but SQLite session recording is not configured");
+            warn!("   Enable SQLite session recording to use the UI dashboard");
+        }
+    }
+
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -583,6 +668,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Server stopped, printing final session statistics...");
         stats_tracker.print_summary();
     }
+
+    Ok(())
+}
+
+/// Start the UI server
+async fn start_ui_server(config: lunaroute_ui::UiConfig, db_path: String) -> anyhow::Result<()> {
+    // Connect to SQLite database
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(&format!("sqlite://{}", db_path))
+        .await?;
+
+    let pool = std::sync::Arc::new(pool);
+
+    // Create and start UI server
+    let ui_server = lunaroute_ui::UiServer::new(config, pool);
+    ui_server.serve().await?;
 
     Ok(())
 }

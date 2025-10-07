@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - LunaRoute{% endblock %}
+
+{% block content %}
+<div class="settings-page">
+    <!-- Header -->
+    <div class="page-header">
+        <h1>⚙️ Settings</h1>
+        <p class="subtitle">Configure dashboard behavior</p>
+    </div>
+
+    <!-- Settings Form (TODO: make functional) -->
+    <div class="settings-form">
+        <div class="setting-group">
+            <label>Refresh Interval</label>
+            <p class="setting-description">How often to update statistics (seconds)</p>
+            <input type="number" value="{{ refresh_interval }}" disabled>
+            <p class="help-text">Configure in server config file</p>
+        </div>
+
+        <div class="setting-group">
+            <label>Export Enabled</label>
+            <p class="setting-description">Allow exporting sessions to CSV/JSON</p>
+            <input type="checkbox" {% if export_enabled %}checked{% endif %} disabled>
+            <p class="help-text">Configure in server config file</p>
+        </div>
+
+        <div class="setting-group">
+            <label>Delete Enabled</label>
+            <p class="setting-description">Allow deleting sessions (dangerous!)</p>
+            <input type="checkbox" {% if delete_enabled %}checked{% endif %} disabled>
+            <p class="help-text">Configure in server config file</p>
+        </div>
+    </div>
+
+    <!-- Info -->
+    <div class="info-box">
+        <h3>💡 Configuration</h3>
+        <p>Settings are currently configured in the server configuration file:</p>
+        <pre><code>ui:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8082
+  refresh_interval: {{ refresh_interval }}
+  export_enabled: {{ export_enabled }}
+  delete_enabled: {{ delete_enabled }}</code></pre>
+    </div>
+</div>
+{% endblock %}

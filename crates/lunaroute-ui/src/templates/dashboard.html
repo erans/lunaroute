@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - LunaRoute{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <!-- Header -->
+    <div class="page-header">
+        <div class="header-content">
+            <div>
+                <h1>📊 Dashboard</h1>
+                <p class="subtitle" id="dashboard-subtitle">Last 24 Hours Overview</p>
+            </div>
+            <div class="time-range-selector">
+                <select id="time-range" onchange="changeTimeRange(this.value)">
+                    <option value="24">Last 24 Hours</option>
+                    <option value="168">Last 7 Days</option>
+                    <option value="720">Last 30 Days</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <!-- Overview Cards -->
+    <div class="stats-grid" id="overview-stats">
+        <div class="stat-card">
+            <div class="stat-label">Sessions</div>
+            <div class="stat-value" id="stat-sessions">--</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Total Tokens</div>
+            <div class="stat-value" id="stat-tokens">--</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Cost</div>
+            <div class="stat-value" id="stat-cost">--</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Success Rate</div>
+            <div class="stat-value" id="stat-success">--</div>
+        </div>
+    </div>
+
+    <!-- Token Usage Chart -->
+    <div class="chart-container">
+        <h2 id="token-chart-title">📈 Token Usage (Last 24 Hours)</h2>
+        <canvas id="tokenChart"></canvas>
+    </div>
+
+    <!-- Hours of Day Chart -->
+    <div class="chart-container">
+        <h2 id="hour-chart-title">🕐 Sessions by Hour of Day</h2>
+        <canvas id="hourOfDayChart"></canvas>
+    </div>
+
+    <!-- Spending Section -->
+    <div class="chart-container">
+        <h2 id="spending-title">💸 Spending Analysis</h2>
+        <div class="stats-grid" style="margin-bottom: 1rem;">
+            <div class="stat-card">
+                <div class="stat-label">Total Spend</div>
+                <div class="stat-value" id="spend-total">--</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Avg per Session</div>
+                <div class="stat-value" id="spend-avg">--</div>
+            </div>
+        </div>
+        <h3 style="color: #cbd5e1; margin-top: 1rem; margin-bottom: 0.5rem;">Spending by Model</h3>
+        <canvas id="spendingByModelChart"></canvas>
+    </div>
+
+    <!-- Tool Usage and Cost Trend -->
+    <div class="grid-2col">
+        <div class="chart-container">
+            <h2>🔧 Most Used Tools</h2>
+            <canvas id="toolChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <h2>💰 Cost Trend</h2>
+            <div class="cost-cards">
+                <div class="cost-card">
+                    <div class="cost-label">Today</div>
+                    <div class="cost-value" id="cost-today">--</div>
+                </div>
+                <div class="cost-card">
+                    <div class="cost-label">This Week</div>
+                    <div class="cost-value" id="cost-week">--</div>
+                </div>
+                <div class="cost-card">
+                    <div class="cost-label">This Month</div>
+                    <div class="cost-value" id="cost-month">--</div>
+                </div>
+                <div class="cost-card">
+                    <div class="cost-label">Projected</div>
+                    <div class="cost-value" id="cost-projection">--</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Sessions Table -->
+    <div class="table-container">
+        <h2>📝 Recent Sessions</h2>
+        <table class="sessions-table" id="recent-sessions">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Model</th>
+                    <th>Requests</th>
+                    <th>Tokens</th>
+                    <th>Cost</th>
+                    <th>Duration</th>
+                </tr>
+            </thead>
+            <tbody id="sessions-tbody">
+                <tr>
+                    <td colspan="6" class="loading">Loading sessions...</td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="table-footer">
+            <a href="/sessions" class="btn-link">View All Sessions →</a>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Initialize dashboard with refresh interval from server
+    const REFRESH_INTERVAL = {{ refresh_interval }} * 1000; // Convert to milliseconds
+    let currentTimeRangeHours = 24; // Default to 24 hours
+
+    // Start the dashboard refresher
+    document.addEventListener('DOMContentLoaded', () => {
+        const dashboard = new DashboardRefresher(REFRESH_INTERVAL);
+        dashboard.start();
+
+        // Initialize charts
+        initTokenChart();
+        initToolChart();
+        initHourOfDayChart();
+        initSpendingByModelChart();
+
+        // Load spending stats
+        loadSpendingStats();
+    });
+
+    function changeTimeRange(hours) {
+        currentTimeRangeHours = parseInt(hours);
+
+        // Update subtitle
+        const subtitle = document.getElementById('dashboard-subtitle');
+        const chartTitle = document.getElementById('token-chart-title');
+        const hourChartTitle = document.getElementById('hour-chart-title');
+        const spendingTitle = document.getElementById('spending-title');
+
+        if (hours == 24) {
+            subtitle.textContent = 'Last 24 Hours Overview';
+            chartTitle.textContent = '📈 Token Usage (Last 24 Hours)';
+            hourChartTitle.textContent = '🕐 Sessions by Hour of Day (Last 24 Hours)';
+            spendingTitle.textContent = '💸 Spending Analysis (Last 24 Hours)';
+        } else if (hours == 168) {
+            subtitle.textContent = 'Last 7 Days Overview';
+            chartTitle.textContent = '📈 Token Usage (Last 7 Days)';
+            hourChartTitle.textContent = '🕐 Sessions by Hour of Day (Last 7 Days)';
+            spendingTitle.textContent = '💸 Spending Analysis (Last 7 Days)';
+        } else if (hours == 720) {
+            subtitle.textContent = 'Last 30 Days Overview';
+            chartTitle.textContent = '📈 Token Usage (Last 30 Days)';
+            hourChartTitle.textContent = '🕐 Sessions by Hour of Day (Last 30 Days)';
+            spendingTitle.textContent = '💸 Spending Analysis (Last 30 Days)';
+        }
+
+        // Trigger immediate refresh with new time range
+        const dashboard = new DashboardRefresher(REFRESH_INTERVAL);
+        dashboard.refresh();
+
+        // Update all charts
+        if (typeof updateTokenChart === 'function') {
+            updateTokenChart();
+        }
+        if (typeof updateHourOfDayChart === 'function') {
+            updateHourOfDayChart();
+        }
+        if (typeof updateSpendingByModelChart === 'function') {
+            updateSpendingByModelChart();
+        }
+
+        // Reload spending stats
+        loadSpendingStats();
+    }
+
+    async function loadSpendingStats() {
+        const hours = currentTimeRangeHours || 24;
+
+        try {
+            const response = await fetch(`/api/stats/spending?hours=${hours}`);
+            const data = await response.json();
+
+            document.getElementById('spend-total').textContent = '$' + data.total_cost.toFixed(4);
+            document.getElementById('spend-avg').textContent = '$' + data.avg_cost_per_session.toFixed(4);
+        } catch (error) {
+            console.error('Failed to load spending stats:', error);
+        }
+
+        // Auto-refresh spending stats
+        setTimeout(loadSpendingStats, 5000);
+    }
+</script>
+{% endblock %}

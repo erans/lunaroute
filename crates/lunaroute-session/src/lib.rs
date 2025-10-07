@@ -26,6 +26,9 @@ pub mod search;
 #[cfg(feature = "sqlite-writer")]
 pub mod sqlite_writer;
 
+#[cfg(feature = "sqlite-writer")]
+pub mod import;
+
 pub use recorder::{FileSessionRecorder, RecordedSession, SessionRecorder};
 pub use session::{SessionId, SessionMetadata, SessionQuery};
 pub use recording_provider::RecordingProvider;
@@ -51,3 +54,6 @@ pub use search::{
 
 #[cfg(feature = "sqlite-writer")]
 pub use sqlite_writer::SqliteWriter;
+
+#[cfg(feature = "sqlite-writer")]
+pub use import::{ImportConfig, ImportResult, SessionFile, import_sessions, scan_sessions};

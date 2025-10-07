@@ -1,0 +1,411 @@
+{% extends "base.html" %}
+
+{% block title %}Session {{ session_id }} - LunaRoute{% endblock %}
+
+{% block content %}
+<div class="session-detail">
+    <!-- Header -->
+    <div class="page-header">
+        <h1>🔍 Session Detail</h1>
+        <p class="subtitle">{{ session_id }}</p>
+    </div>
+
+    <!-- Session Overview -->
+    <div class="card">
+        <h2>Overview</h2>
+        <div id="session-info">
+            <p class="loading">Loading session details...</p>
+        </div>
+    </div>
+
+    <!-- Token Statistics -->
+    <div class="card" id="token-stats-card" style="display: none;">
+        <h2>Token Statistics</h2>
+        <div id="token-stats"></div>
+    </div>
+
+    <!-- Performance Metrics -->
+    <div class="card" id="performance-card" style="display: none;">
+        <h2>Performance Metrics</h2>
+        <div id="performance-metrics"></div>
+    </div>
+
+    <!-- Tool Usage Statistics -->
+    <div class="card" id="tool-usage-card" style="display: none;">
+        <h2>Tool Usage Statistics</h2>
+        <div id="tool-usage-stats"></div>
+        <div id="tool-breakdown" style="margin-top: 1rem;"></div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="card">
+        <h2>Timeline</h2>
+        <div id="session-timeline">
+            <p class="loading">Loading timeline...</p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const SESSION_ID = '{{ session_id }}';
+
+    let timelineOffset = 0;
+    let timelineLimit = 20;
+    let isLoadingTimeline = false;
+    let hasMoreTimeline = true;
+    let allEvents = [];
+
+    document.addEventListener('DOMContentLoaded', () => {
+        loadSessionDetail();
+        loadTimeline();
+        loadToolUsageStats();
+        setupInfiniteScroll();
+    });
+
+    async function loadSessionDetail() {
+        try {
+            const response = await fetch(`/api/sessions/${SESSION_ID}`);
+            const session = await response.json();
+            renderSessionDetail(session);
+        } catch (error) {
+            console.error('Failed to load session:', error);
+            document.getElementById('session-info').innerHTML = '<p class="error">Failed to load session details</p>';
+        }
+    }
+
+    async function loadTimeline() {
+        if (isLoadingTimeline || !hasMoreTimeline) return;
+
+        isLoadingTimeline = true;
+
+        try {
+            const response = await fetch(`/api/sessions/${SESSION_ID}/timeline?offset=${timelineOffset}&limit=${timelineLimit}`);
+            const events = await response.json();
+
+            if (events.length < timelineLimit) {
+                hasMoreTimeline = false;
+            }
+
+            if (events.length > 0) {
+                allEvents = allEvents.concat(events);
+                timelineOffset += events.length;
+                renderTimeline(allEvents);
+            } else {
+                hasMoreTimeline = false;
+                if (allEvents.length === 0) {
+                    document.getElementById('session-timeline').innerHTML = '<p>No timeline events available</p>';
+                }
+            }
+        } catch (error) {
+            console.error('Failed to load timeline:', error);
+            if (allEvents.length === 0) {
+                document.getElementById('session-timeline').innerHTML = '<p class="error">Failed to load timeline</p>';
+            }
+        } finally {
+            isLoadingTimeline = false;
+        }
+    }
+
+    async function loadToolUsageStats() {
+        try {
+            const response = await fetch(`/api/sessions/${SESSION_ID}/tools`);
+            const toolStats = await response.json();
+
+            if (toolStats.total_tool_calls > 0) {
+                document.getElementById('tool-usage-card').style.display = 'block';
+
+                // Overall stats
+                document.getElementById('tool-usage-stats').innerHTML = `
+                    <div class="info-grid">
+                        <div><strong>Total Tool Calls:</strong> ${toolStats.total_tool_calls.toLocaleString()}</div>
+                        <div><strong>Tool Usage %:</strong> ${toolStats.tool_usage_percentage.toFixed(1)}%</div>
+                    </div>
+                `;
+
+                // Breakdown by tool
+                if (toolStats.by_tool && toolStats.by_tool.length > 0) {
+                    const breakdownHtml = toolStats.by_tool.map(tool => `
+                        <div class="tool-item">
+                            <div class="tool-name">${tool.tool_name}</div>
+                            <div class="tool-stats">
+                                <span class="tool-count">${tool.call_count} calls</span>
+                                <span class="tool-percentage">${tool.percentage.toFixed(1)}%</span>
+                            </div>
+                            <div class="tool-bar">
+                                <div class="tool-bar-fill" style="width: ${tool.percentage}%"></div>
+                            </div>
+                        </div>
+                    `).join('');
+
+                    document.getElementById('tool-breakdown').innerHTML = `
+                        <h3 style="color: #cbd5e1; margin-bottom: 0.5rem;">Breakdown by Tool</h3>
+                        <div class="tool-list">${breakdownHtml}</div>
+                    `;
+                }
+            }
+        } catch (error) {
+            console.error('Failed to load tool usage stats:', error);
+        }
+    }
+
+    function setupInfiniteScroll() {
+        const timelineContainer = document.getElementById('session-timeline');
+
+        // Create sentinel element for intersection observer
+        const sentinel = document.createElement('div');
+        sentinel.id = 'timeline-sentinel';
+        sentinel.style.height = '1px';
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting && hasMoreTimeline && !isLoadingTimeline) {
+                    loadTimeline();
+                }
+            });
+        }, {
+            rootMargin: '200px' // Start loading 200px before reaching the sentinel
+        });
+
+        // Observe the sentinel
+        timelineContainer.appendChild(sentinel);
+        observer.observe(sentinel);
+    }
+
+    function renderSessionDetail(session) {
+        // Overview
+        const container = document.getElementById('session-info');
+        container.innerHTML = `
+            <div class="info-grid">
+                <div><strong>Provider:</strong> ${session.provider}</div>
+                <div><strong>Model:</strong> ${session.model_used || session.model_requested}</div>
+                <div><strong>Started:</strong> ${new Date(session.started_at).toLocaleString()}</div>
+                <div><strong>Status:</strong> ${session.success ? '✅ Success' : '❌ Failed'}</div>
+                ${session.error_message ? `<div class="error"><strong>Error:</strong> ${session.error_message}</div>` : ''}
+                <div><strong>Requests:</strong> ${session.request_count}</div>
+                <div><strong>Cost:</strong> $${session.cost.toFixed(6)}</div>
+                ${session.finish_reason ? `<div><strong>Finish Reason:</strong> ${session.finish_reason}</div>` : ''}
+                ${session.user_agent ? `<div><strong>User Agent:</strong> ${session.user_agent}</div>` : ''}
+            </div>
+        `;
+
+        // Token Statistics
+        if (session.total_tokens > 0) {
+            document.getElementById('token-stats-card').style.display = 'block';
+            document.getElementById('token-stats').innerHTML = `
+                <div class="info-grid">
+                    <div><strong>Input Tokens:</strong> ${session.input_tokens.toLocaleString()}</div>
+                    <div><strong>Output Tokens:</strong> ${session.output_tokens.toLocaleString()}</div>
+                    ${session.thinking_tokens > 0 ? `<div><strong>Thinking Tokens:</strong> ${session.thinking_tokens.toLocaleString()}</div>` : ''}
+                    ${session.reasoning_tokens > 0 ? `<div><strong>Reasoning Tokens:</strong> ${session.reasoning_tokens.toLocaleString()}</div>` : ''}
+                    ${session.cache_read_tokens > 0 ? `<div><strong>Cache Read:</strong> ${session.cache_read_tokens.toLocaleString()}</div>` : ''}
+                    ${session.cache_creation_tokens > 0 ? `<div><strong>Cache Creation:</strong> ${session.cache_creation_tokens.toLocaleString()}</div>` : ''}
+                    <div><strong>Total Tokens:</strong> ${session.total_tokens.toLocaleString()}</div>
+                </div>
+            `;
+        }
+
+        // Performance Metrics
+        if (session.total_duration_ms || session.provider_latency_ms || session.time_to_first_token_ms) {
+            document.getElementById('performance-card').style.display = 'block';
+            document.getElementById('performance-metrics').innerHTML = `
+                <div class="info-grid">
+                    ${session.total_duration_ms ? `<div><strong>Total Duration:</strong> ${(session.total_duration_ms / 1000).toFixed(2)}s</div>` : ''}
+                    ${session.provider_latency_ms ? `<div><strong>Provider Latency:</strong> ${(session.provider_latency_ms / 1000).toFixed(2)}s</div>` : ''}
+                    ${session.time_to_first_token_ms ? `<div><strong>Time to First Token:</strong> ${session.time_to_first_token_ms}ms</div>` : ''}
+                    ${session.is_streaming ? `<div><strong>Streaming:</strong> Yes</div>` : ''}
+                    ${session.chunk_count ? `<div><strong>Chunks:</strong> ${session.chunk_count}</div>` : ''}
+                    ${session.streaming_duration_ms ? `<div><strong>Streaming Duration:</strong> ${(session.streaming_duration_ms / 1000).toFixed(2)}s</div>` : ''}
+                </div>
+            `;
+        }
+    }
+
+    function renderTimeline(events) {
+        const container = document.getElementById('session-timeline');
+
+        if (events.length === 0) {
+            container.innerHTML = '<p>No timeline events available</p>';
+            return;
+        }
+
+        const timelineHtml = events.map(event => {
+            const icon = event.event_type === 'request' ? '📨' : '🔧';
+            const time = new Date(event.timestamp).toLocaleTimeString();
+
+            return `
+                <div class="timeline-event">
+                    <div class="timeline-marker">${icon}</div>
+                    <div class="timeline-content">
+                        <div class="timeline-time">${time}</div>
+                        <div class="timeline-description">${event.description}</div>
+                        ${event.metadata ? `<details class="timeline-metadata">
+                            <summary>Details</summary>
+                            <pre>${JSON.stringify(event.metadata, null, 2)}</pre>
+                        </details>` : ''}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        const loadingIndicator = isLoadingTimeline ? '<div class="timeline-loading">Loading more events...</div>' : '';
+        const sentinel = document.getElementById('timeline-sentinel');
+
+        container.innerHTML = `<div class="timeline">${timelineHtml}${loadingIndicator}</div>`;
+
+        // Re-append sentinel after updating content
+        if (sentinel && hasMoreTimeline) {
+            container.appendChild(sentinel);
+        }
+    }
+</script>
+
+<style>
+    .session-detail .card {
+        margin-bottom: 20px;
+    }
+
+    .info-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 15px;
+    }
+
+    .info-grid .error {
+        grid-column: 1 / -1;
+        color: var(--danger);
+    }
+
+    .timeline {
+        position: relative;
+        padding-left: 40px;
+    }
+
+    .timeline::before {
+        content: '';
+        position: absolute;
+        left: 15px;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: var(--border);
+    }
+
+    .timeline-event {
+        position: relative;
+        margin-bottom: 20px;
+    }
+
+    .timeline-marker {
+        position: absolute;
+        left: -40px;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: var(--card-bg);
+        border: 2px solid var(--primary);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+    }
+
+    .timeline-content {
+        background: var(--card-bg);
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+    }
+
+    .timeline-time {
+        color: var(--text-muted);
+        font-size: 0.85em;
+        margin-bottom: 5px;
+    }
+
+    .timeline-description {
+        margin-bottom: 10px;
+    }
+
+    .timeline-metadata {
+        margin-top: 10px;
+    }
+
+    .timeline-metadata summary {
+        cursor: pointer;
+        color: var(--primary);
+        user-select: none;
+    }
+
+    .timeline-metadata pre {
+        margin-top: 10px;
+        padding: 10px;
+        background: var(--bg);
+        border-radius: 4px;
+        overflow-x: auto;
+        font-size: 0.85em;
+    }
+
+    .timeline-loading {
+        text-align: center;
+        padding: 20px;
+        color: var(--text-muted);
+        font-style: italic;
+    }
+
+    #timeline-sentinel {
+        height: 1px;
+        visibility: hidden;
+    }
+
+    .tool-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .tool-item {
+        background: var(--bg);
+        padding: 12px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+    }
+
+    .tool-name {
+        font-weight: 600;
+        margin-bottom: 6px;
+        color: var(--text);
+    }
+
+    .tool-stats {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.9em;
+        margin-bottom: 6px;
+        color: var(--text-muted);
+    }
+
+    .tool-count {
+        color: var(--primary);
+    }
+
+    .tool-percentage {
+        font-weight: 600;
+    }
+
+    .tool-bar {
+        height: 6px;
+        background: var(--border);
+        border-radius: 3px;
+        overflow: hidden;
+    }
+
+    .tool-bar-fill {
+        height: 100%;
+        background: linear-gradient(90deg, var(--primary), var(--success));
+        border-radius: 3px;
+        transition: width 0.3s ease;
+    }
+</style>
+{% endblock %}

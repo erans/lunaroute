@@ -119,7 +119,7 @@ impl SqliteWriter {
         .await
         .map_err(|e| WriterError::Database(e.to_string()))?;
 
-        sqlx::query("INSERT OR IGNORE INTO schema_version (version) VALUES (2)")
+        sqlx::query("INSERT OR IGNORE INTO schema_version (version) VALUES (3)")
             .execute(pool)
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
@@ -150,7 +150,13 @@ impl SqliteWriter {
                 audio_input_tokens INTEGER DEFAULT 0,
                 audio_output_tokens INTEGER DEFAULT 0,
                 total_tokens INTEGER GENERATED ALWAYS AS (
-                    input_tokens + output_tokens + COALESCE(thinking_tokens, 0) + COALESCE(reasoning_tokens, 0)
+                    input_tokens + output_tokens +
+                    COALESCE(thinking_tokens, 0) +
+                    COALESCE(reasoning_tokens, 0) +
+                    COALESCE(cache_read_tokens, 0) +
+                    COALESCE(cache_creation_tokens, 0) +
+                    COALESCE(audio_input_tokens, 0) +
+                    COALESCE(audio_output_tokens, 0)
                 ) STORED,
                 request_text TEXT,
                 response_text TEXT,
@@ -364,7 +370,7 @@ impl SqliteWriter {
 
     /// Run schema migrations to bring database up to current version
     async fn run_migrations(pool: &SqlitePool) -> WriterResult<()> {
-        const CURRENT_VERSION: i32 = 2;
+        const CURRENT_VERSION: i32 = 3;
 
         // Get current schema version
         let version: i32 = sqlx::query_scalar("SELECT version FROM schema_version")
@@ -380,8 +386,7 @@ impl SqliteWriter {
         }
 
         // Apply migrations one by one
-        // Note: Change to `let mut current_version` when adding migration 2->3
-        let current_version = version;
+        let mut current_version = version;
 
         // Migration 1 -> 2: Add new token columns to sessions table
         if current_version == 1 {
@@ -415,13 +420,184 @@ impl SqliteWriter {
                 .await
                 .map_err(|e| WriterError::Database(format!("Migration 1->2 failed (version update): {}", e)))?;
 
-            // current_version = 2; // Uncomment when adding migration 2->3
+            current_version = 2;
+        }
+
+        // Migration 2 -> 3: Update total_tokens GENERATED column to include cache and audio tokens
+        // SQLite doesn't support ALTER COLUMN for generated columns, so we need to recreate the table
+        if current_version == 2 {
+            // Check if sessions table still exists (might have been dropped in a previous failed migration)
+            let sessions_exists: bool = sqlx::query_scalar(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='sessions'"
+            )
+            .fetch_one(pool)
+            .await
+            .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (check sessions exists): {}", e)))?;
+
+            if !sessions_exists {
+                // Migration was partially completed, just rename sessions_new if it exists
+                let sessions_new_exists: bool = sqlx::query_scalar(
+                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='sessions_new'"
+                )
+                .fetch_one(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (check sessions_new exists): {}", e)))?;
+
+                if sessions_new_exists {
+                    sqlx::query("ALTER TABLE sessions_new RENAME TO sessions")
+                        .execute(pool)
+                        .await
+                        .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (rename table): {}", e)))?;
+
+                    // Recreate indexes
+                    sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC)")
+                        .execute(pool)
+                        .await
+                        .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_created): {}", e)))?;
+
+                    sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_provider ON sessions(provider, created_at DESC)")
+                        .execute(pool)
+                        .await
+                        .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_provider): {}", e)))?;
+
+                    sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_user_agent ON sessions(user_agent, created_at DESC)")
+                        .execute(pool)
+                        .await
+                        .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_user_agent): {}", e)))?;
+                }
+
+                // Update schema version
+                sqlx::query("UPDATE schema_version SET version = 3")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (version update): {}", e)))?;
+
+                #[allow(unused_assignments)]
+                {
+                    current_version = 3;
+                }
+
+                return Ok(());
+            }
+
+            // Drop sessions_new if it exists from a previous failed migration attempt
+            sqlx::query("DROP TABLE IF EXISTS sessions_new")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (drop sessions_new): {}", e)))?;
+
+            // Create new table with updated formula
+            sqlx::query(
+                r#"
+                CREATE TABLE sessions_new (
+                    session_id TEXT PRIMARY KEY,
+                    request_id TEXT,
+                    started_at TIMESTAMP NOT NULL,
+                    completed_at TIMESTAMP,
+                    provider TEXT NOT NULL,
+                    listener TEXT NOT NULL,
+                    model_requested TEXT NOT NULL,
+                    model_used TEXT,
+                    success BOOLEAN,
+                    error_message TEXT,
+                    finish_reason TEXT,
+                    total_duration_ms INTEGER,
+                    provider_latency_ms INTEGER,
+                    input_tokens INTEGER DEFAULT 0,
+                    output_tokens INTEGER DEFAULT 0,
+                    thinking_tokens INTEGER DEFAULT 0,
+                    reasoning_tokens INTEGER DEFAULT 0,
+                    cache_read_tokens INTEGER DEFAULT 0,
+                    cache_creation_tokens INTEGER DEFAULT 0,
+                    audio_input_tokens INTEGER DEFAULT 0,
+                    audio_output_tokens INTEGER DEFAULT 0,
+                    total_tokens INTEGER GENERATED ALWAYS AS (
+                        input_tokens + output_tokens +
+                        COALESCE(thinking_tokens, 0) +
+                        COALESCE(reasoning_tokens, 0) +
+                        COALESCE(cache_read_tokens, 0) +
+                        COALESCE(cache_creation_tokens, 0) +
+                        COALESCE(audio_input_tokens, 0) +
+                        COALESCE(audio_output_tokens, 0)
+                    ) STORED,
+                    request_text TEXT,
+                    response_text TEXT,
+                    client_ip TEXT,
+                    user_agent TEXT,
+                    is_streaming BOOLEAN DEFAULT 0,
+                    time_to_first_token_ms INTEGER,
+                    chunk_count INTEGER,
+                    streaming_duration_ms INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                "#,
+            )
+            .execute(pool)
+            .await
+            .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (create new table): {}", e)))?;
+
+            // Copy data from old table to new table
+            sqlx::query(
+                r#"
+                INSERT INTO sessions_new
+                SELECT session_id, request_id, started_at, completed_at, provider, listener,
+                       model_requested, model_used, success, error_message, finish_reason,
+                       total_duration_ms, provider_latency_ms, input_tokens, output_tokens,
+                       thinking_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens,
+                       audio_input_tokens, audio_output_tokens, request_text, response_text,
+                       client_ip, user_agent, is_streaming, time_to_first_token_ms,
+                       chunk_count, streaming_duration_ms, created_at
+                FROM sessions
+                "#,
+            )
+            .execute(pool)
+            .await
+            .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (copy data): {}", e)))?;
+
+            // Drop old table
+            sqlx::query("DROP TABLE sessions")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (drop old table): {}", e)))?;
+
+            // Rename new table
+            sqlx::query("ALTER TABLE sessions_new RENAME TO sessions")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (rename table): {}", e)))?;
+
+            // Recreate indexes
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_created): {}", e)))?;
+
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_provider ON sessions(provider, created_at DESC)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_provider): {}", e)))?;
+
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_user_agent ON sessions(user_agent, created_at DESC)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_user_agent): {}", e)))?;
+
+            // Update schema version
+            sqlx::query("UPDATE schema_version SET version = 3")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (version update): {}", e)))?;
+
+            #[allow(unused_assignments)]
+            {
+                current_version = 3;
+            }
         }
 
         // Future migrations go here
-        // if current_version == 2 {
-        //     // Migration 2 -> 3
-        //     current_version = 3;
+        // if current_version == 3 {
+        //     // Migration 3 -> 4
+        //     current_version = 4;
         // }
 
         Ok(())
@@ -916,7 +1092,12 @@ impl SessionWriter for SqliteWriter {
                             model_used = ?,
                             output_tokens = ?,
                             thinking_tokens = ?,
+                            reasoning_tokens = ?,
                             input_tokens = ?,
+                            cache_read_tokens = ?,
+                            cache_creation_tokens = ?,
+                            audio_input_tokens = ?,
+                            audio_output_tokens = ?,
                             provider_latency_ms = ?,
                             chunk_count = ?,
                             streaming_duration_ms = ?
@@ -927,7 +1108,12 @@ impl SessionWriter for SqliteWriter {
                     .bind(model_used)
                     .bind(output_tokens)
                     .bind(thinking_tokens)
+                    .bind(reasoning_tokens)
                     .bind(input_tokens)
+                    .bind(cache_read)
+                    .bind(cache_creation)
+                    .bind(audio_input)
+                    .bind(audio_output)
                     .bind(provider_latency)
                     .bind(chunk_count)
                     .bind(streaming_duration)
@@ -1582,7 +1768,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 
     #[tokio::test]

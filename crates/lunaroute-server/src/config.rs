@@ -35,6 +35,10 @@ pub struct ServerConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_stats_max_sessions: Option<usize>,
+
+    /// UI/Dashboard server configuration
+    #[serde(default)]
+    pub ui: lunaroute_ui::UiConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -156,6 +160,7 @@ impl Default for ServerConfig {
             logging: LoggingConfig::default(),
             routing: RoutingConfig::default(),
             session_stats_max_sessions: Some(100),
+            ui: lunaroute_ui::UiConfig::default(),
         }
     }
 }
