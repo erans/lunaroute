@@ -85,15 +85,40 @@ pub struct Metrics {
     pub streaming_duration_seconds: HistogramVec,
 
     // Connection pool metrics
+    //
+    // IMPORTANT LIMITATION: These metrics are defined and tested, but currently NOT populated
+    // by production code. The underlying HTTP client (reqwest) does not expose connection pool
+    // lifecycle events (connection created/reused/closed/idle count).
+    //
+    // Metrics status:
+    // - pool_config: CAN be populated (static configuration at startup) - TODO: instrument
+    // - pool_connections_created_total: CANNOT be populated without reqwest hooks
+    // - pool_connections_reused_total: CANNOT be populated without reqwest hooks
+    // - pool_connections_idle: CANNOT be populated without reqwest hooks
+    // - pool_connection_lifetime_seconds: CANNOT be populated without reqwest hooks
+    //
+    // Options to populate dynamic metrics:
+    // 1. Wait for reqwest to expose pool events (upstream feature request needed)
+    // 2. Switch to hyper with custom Connector implementation (significant refactoring)
+    // 3. Use a different HTTP client that exposes pool metrics
+    // 4. Implement connection wrapper/middleware (complex, may not capture all events)
+    //
+    // See: https://github.com/seanmonstar/reqwest/issues - no existing issue for pool metrics
+    //
     /// Total connections created (indicates pool churn)
+    /// NOTE: Currently not populated - reqwest doesn't expose this event
     pub pool_connections_created_total: CounterVec,
     /// Total connections reused from pool
+    /// NOTE: Currently not populated - reqwest doesn't expose this event
     pub pool_connections_reused_total: CounterVec,
     /// Current idle connections in pool
+    /// NOTE: Currently not populated - reqwest doesn't expose this metric
     pub pool_connections_idle: GaugeVec,
     /// Connection lifetime distribution
+    /// NOTE: Currently not populated - reqwest doesn't expose connection close events
     pub pool_connection_lifetime_seconds: HistogramVec,
-    /// Pool configuration settings
+    /// Pool configuration settings (max_idle_per_host, idle_timeout_secs, etc.)
+    /// NOTE: This CAN be populated at startup - instrumentation TODO
     pub pool_config: GaugeVec,
 }
 
@@ -567,6 +592,10 @@ impl Metrics {
     }
 
     /// Record a new connection creation (indicates pool churn)
+    ///
+    /// **NOTE**: This method is currently not called by production code.
+    /// reqwest doesn't expose connection lifecycle events.
+    /// See struct-level documentation for details and options.
     pub fn record_pool_connection_created(&self, provider: &str, dialect: &str) {
         self.pool_connections_created_total
             .with_label_values(&[provider, dialect])
@@ -574,6 +603,10 @@ impl Metrics {
     }
 
     /// Record a connection reused from the pool
+    ///
+    /// **NOTE**: This method is currently not called by production code.
+    /// reqwest doesn't expose connection lifecycle events.
+    /// See struct-level documentation for details and options.
     pub fn record_pool_connection_reused(&self, provider: &str, dialect: &str) {
         self.pool_connections_reused_total
             .with_label_values(&[provider, dialect])
@@ -581,6 +614,10 @@ impl Metrics {
     }
 
     /// Update the current number of idle connections in the pool
+    ///
+    /// **NOTE**: This method is currently not called by production code.
+    /// reqwest doesn't expose pool state.
+    /// See struct-level documentation for details and options.
     pub fn update_pool_connections_idle(&self, provider: &str, dialect: &str, count: usize) {
         self.pool_connections_idle
             .with_label_values(&[provider, dialect])
@@ -588,6 +625,10 @@ impl Metrics {
     }
 
     /// Record a connection's lifetime when it's closed
+    ///
+    /// **NOTE**: This method is currently not called by production code.
+    /// reqwest doesn't expose connection close events.
+    /// See struct-level documentation for details and options.
     pub fn record_pool_connection_lifetime(
         &self,
         provider: &str,
@@ -600,6 +641,10 @@ impl Metrics {
     }
 
     /// Set pool configuration gauge (called once during initialization)
+    ///
+    /// **NOTE**: This method is currently not called by production code.
+    /// This CAN be implemented - should be called when creating HTTP clients.
+    /// See `record_pool_configuration` for the convenience method.
     pub fn set_pool_config(&self, provider: &str, setting: &str, value: f64) {
         self.pool_config
             .with_label_values(&[provider, setting])
@@ -608,7 +653,11 @@ impl Metrics {
 
     /// Record HTTP client pool configuration for a provider
     ///
-    /// This should be called when initializing HTTP clients for providers.
+    /// **NOTE**: This method is currently not called by production code.
+    /// Unlike the dynamic pool metrics, this CAN be implemented easily.
+    /// Should be called in `OpenAIConnector::new()` and `AnthropicConnector::new()`.
+    ///
+    /// This records static pool configuration settings that don't change after initialization.
     /// The `dialect` parameter should be the provider type (e.g., "openai_compatible", "anthropic").
     ///
     /// # Parameters
@@ -619,6 +668,20 @@ impl Metrics {
     /// - `timeout_secs`: Request timeout in seconds
     /// - `connect_timeout_secs`: Connection timeout in seconds
     /// - `tcp_keepalive_secs`: TCP keepalive interval in seconds
+    ///
+    /// # Example
+    /// ```ignore
+    /// // In OpenAIConnector::new():
+    /// metrics.record_pool_configuration(
+    ///     "openai",
+    ///     "openai_compatible",
+    ///     config.client_config.pool_max_idle_per_host,
+    ///     config.client_config.pool_idle_timeout_secs,
+    ///     config.client_config.timeout_secs,
+    ///     config.client_config.connect_timeout_secs,
+    ///     config.client_config.tcp_keepalive_secs,
+    /// );
+    /// ```
     #[allow(clippy::too_many_arguments)]
     pub fn record_pool_configuration(
         &self,

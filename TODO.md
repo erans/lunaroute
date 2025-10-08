@@ -609,6 +609,15 @@ Documentation deferred to future iterations as code is well-tested and self-docu
 - [x] Implement token metrics (prompt, completion, total)
 - [x] Add circuit breaker state tracking
 - [x] Add provider health status metrics
+- [x] **Connection pool metrics** (infrastructure ready, awaiting instrumentation)
+  - [x] Metric definitions (pool_connections_created_total, pool_connections_reused_total, etc.)
+  - [x] Recording methods (record_pool_connection_created, etc.)
+  - [x] Comprehensive test coverage (6 tests)
+  - [ ] **LIMITATION**: Dynamic metrics cannot be populated - reqwest doesn't expose pool lifecycle events
+  - [ ] **Option 1**: Wait for reqwest to add pool metrics API (upstream feature request needed)
+  - [ ] **Option 2**: Migrate to hyper with custom Connector (significant refactoring)
+  - [ ] **Option 3**: Switch to different HTTP client with pool metrics support
+  - [ ] Static pool configuration recording (CAN be implemented - TODO)
 - [ ] Add PII detection metrics (deferred to Phase 11)
 
 ### Health Endpoints ✅
