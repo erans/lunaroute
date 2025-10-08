@@ -1449,6 +1449,7 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
             metadata: std::collections::HashMap::new(),
         };
@@ -1522,6 +1523,7 @@ mod tests {
                     }),
                 },
             }],
+            tool_results: vec![],
             tool_choice: Some(ToolChoice::Auto),
             metadata: std::collections::HashMap::new(),
         };
@@ -1551,6 +1553,7 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: Some(ToolChoice::Auto),
             metadata: std::collections::HashMap::new(),
         };
@@ -1569,6 +1572,7 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: Some(ToolChoice::Required),
             metadata: std::collections::HashMap::new(),
         };
@@ -1589,6 +1593,7 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: Some(ToolChoice::None),
             metadata: std::collections::HashMap::new(),
         };
@@ -1607,6 +1612,7 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: Some(ToolChoice::Specific {
                 name: "my_func".to_string(),
             }),
@@ -1656,6 +1662,7 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
             metadata: std::collections::HashMap::new(),
         };
@@ -1750,6 +1757,7 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
             metadata: std::collections::HashMap::new(),
         };
@@ -1829,6 +1837,7 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
             metadata: std::collections::HashMap::new(),
         };
@@ -1860,6 +1869,7 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
             metadata: std::collections::HashMap::new(),
         };
@@ -1887,6 +1897,7 @@ mod tests {
             stream: false,
             stop_sequences: vec!["STOP".to_string(), "END".to_string()],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
             metadata: std::collections::HashMap::new(),
         };

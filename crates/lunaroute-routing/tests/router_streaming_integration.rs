@@ -127,6 +127,7 @@ fn create_test_request(model: &str, streaming: bool) -> NormalizedRequest {
         stop_sequences: vec![],
         stream: streaming,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: HashMap::new(),
     }

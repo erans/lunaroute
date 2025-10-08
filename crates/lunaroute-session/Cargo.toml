@@ -11,6 +11,7 @@ rust-version.workspace = true
 lunaroute-core = { path = "../lunaroute-core" }
 lunaroute-storage = { path = "../lunaroute-storage" }
 lunaroute-pii = { path = "../lunaroute-pii" }
+lunaroute-observability = { path = "../lunaroute-observability", optional = true }
 
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -28,6 +29,7 @@ rand = { workspace = true }
 hex = "0.4"
 dirs = { workspace = true }
 anyhow = { workspace = true }
+dashmap = { workspace = true }
 
 # SQLite support for session recording
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"], optional = true }
@@ -35,6 +37,7 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"], opti
 [features]
 default = []
 sqlite-writer = ["sqlx"]
+metrics = ["lunaroute-observability"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

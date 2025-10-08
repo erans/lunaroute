@@ -390,6 +390,42 @@ providers:
 - `${request_id}` - Request ID
 - `${env.VAR_NAME}` - Environment variables (filtered for security)
 
+### 11. **Web UI**
+
+LunaRoute includes a built-in web interface for browsing and analyzing sessions visually:
+
+```bash
+# The UI server starts automatically on port 8082
+lunaroute-server
+
+# Open in your browser:
+# http://localhost:8082
+```
+
+**Features:**
+- 📊 **Dashboard** - View all sessions with filtering, search, and sorting
+- 🔍 **Session Details** - Inspect individual sessions with timeline view
+- 📄 **Raw Request/Response** - View complete JSON data for debugging
+- 📈 **Analytics** - Token usage charts, tool statistics, and performance metrics
+- ⌨️ **Keyboard Shortcuts** - Press `ESC` to close dialogs
+
+**Configuration:**
+```yaml
+ui:
+  enabled: true        # Enable/disable UI server
+  host: "127.0.0.1"   # Bind address (localhost for security)
+  port: 8082          # UI server port
+  refresh_interval: 5  # Auto-refresh interval (seconds)
+```
+
+**Session Detail View:**
+- Timeline of all events (requests, responses, tool calls)
+- Token usage breakdown (input/output/thinking/cached)
+- Performance metrics (latency, TTFT, proxy overhead)
+- Tool call statistics with execution times
+- Raw JSON inspection with copy/download
+- Request ID tracking for debugging
+
 ---
 
 ## 📋 Practical Use Cases

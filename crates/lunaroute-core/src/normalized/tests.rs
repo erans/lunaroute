@@ -21,6 +21,7 @@ fn test_normalized_request_text_message() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: HashMap::new(),
     };
@@ -287,6 +288,7 @@ fn test_empty_request() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: HashMap::new(),
     };

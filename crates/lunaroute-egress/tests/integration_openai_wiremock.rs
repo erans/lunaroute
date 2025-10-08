@@ -74,6 +74,7 @@ async fn test_openai_send_success() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -149,6 +150,7 @@ async fn test_openai_send_with_organization() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -206,6 +208,7 @@ async fn test_openai_send_rate_limit_error() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -285,6 +288,7 @@ async fn test_openai_send_server_error_with_retry() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -341,6 +345,7 @@ async fn test_openai_send_invalid_api_key() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -414,6 +419,7 @@ async fn test_openai_send_with_tools() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };

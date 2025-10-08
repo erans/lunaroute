@@ -257,6 +257,7 @@ async fn test_e2e_streaming_multiple_chunks() {
         stop_sequences: vec![],
         stream: true,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: HashMap::new(),
     };
@@ -398,6 +399,7 @@ async fn test_e2e_streaming_concurrent_clients() {
                 stream: true,
                 tools: vec![],
                 tool_choice: None,
+                tool_results: vec![],
                 metadata: HashMap::new(),
             };
 

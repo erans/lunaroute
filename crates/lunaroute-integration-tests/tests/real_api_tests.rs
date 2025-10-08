@@ -66,6 +66,7 @@ async fn test_openai_real_api_simple_completion() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -120,6 +121,7 @@ async fn test_anthropic_real_api_simple_completion() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -175,6 +177,7 @@ async fn test_openai_with_system_message() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -218,6 +221,7 @@ async fn test_anthropic_with_system_message() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -264,6 +268,7 @@ async fn test_openai_error_handling_invalid_model() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -307,6 +312,7 @@ async fn test_both_providers_sequential() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -340,6 +346,7 @@ async fn test_both_providers_sequential() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -385,6 +392,7 @@ async fn test_openai_streaming_basic() {
         stop_sequences: vec![],
         stream: true,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -463,6 +471,7 @@ async fn test_anthropic_streaming_basic() {
         stop_sequences: vec![],
         stream: true,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -545,6 +554,7 @@ async fn test_openai_streaming_with_system_prompt() {
         stop_sequences: vec![],
         stream: true,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };
@@ -603,6 +613,7 @@ async fn test_anthropic_streaming_with_system_prompt() {
         stop_sequences: vec![],
         stream: true,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: std::collections::HashMap::new(),
     };

@@ -3,6 +3,8 @@
 use crate::{models::*, queries, AppState};
 use axum::{
     extract::{Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::Deserialize;
@@ -36,6 +38,8 @@ pub struct TimelineQuery {
     offset: i64,
     #[serde(default = "default_limit")]
     limit: i64,
+    #[serde(default = "default_order")]
+    order: String, // "asc" or "desc"
 }
 
 fn default_offset() -> i64 {
@@ -43,6 +47,9 @@ fn default_offset() -> i64 {
 }
 fn default_limit() -> i64 {
     20
+}
+fn default_order() -> String {
+    "asc".to_string()
 }
 
 /// Query parameters for sessions list pagination
@@ -111,9 +118,20 @@ pub async fn cost_stats(State(state): State<AppState>) -> Json<CostStats> {
     Json(stats)
 }
 
+/// Query parameters for model stats
+#[derive(Debug, Deserialize)]
+pub struct ModelStatsQuery {
+    #[serde(default = "default_hours")]
+    hours: i64,
+    user_agent: Option<String>,
+}
+
 /// Model usage statistics
-pub async fn model_stats(State(state): State<AppState>) -> Json<Vec<ModelUsage>> {
-    let stats = queries::get_model_usage(&state.db)
+pub async fn model_stats(
+    State(state): State<AppState>,
+    Query(params): Query<ModelStatsQuery>,
+) -> Json<Vec<ModelUsage>> {
+    let stats = queries::get_model_usage(&state.db, params.hours, params.user_agent.as_deref())
         .await
         .unwrap_or_default();
     Json(stats)
@@ -204,9 +222,16 @@ pub async fn session_timeline(
     Query(params): Query<TimelineQuery>,
     State(state): State<AppState>,
 ) -> Json<Vec<TimelineEvent>> {
-    let events = queries::get_session_timeline(&state.db, &session_id, params.offset, params.limit)
-        .await
-        .unwrap_or_default();
+    let order = if params.order.to_lowercase() == "desc" {
+        "DESC"
+    } else {
+        "ASC"
+    };
+
+    let events =
+        queries::get_session_timeline(&state.db, &session_id, params.offset, params.limit, order)
+            .await
+            .unwrap_or_default();
     Json(events)
 }
 
@@ -249,4 +274,202 @@ pub async fn session_tool_stats(
             by_tool: vec![],
         });
     Json(stats)
+}
+
+/// Get raw request and response from JSONL file
+pub async fn session_raw_data(
+    Path((session_id, request_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Response {
+    // Check if sessions_dir is configured
+    let sessions_dir = match &state.config.sessions_dir {
+        Some(dir) => dir,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "JSONL sessions directory not configured"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Get session details to find the date
+    let session = match queries::get_session_detail(&state.db, &session_id).await {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "Session not found"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Parse the date from started_at
+    // Handle multiple formats:
+    // - ISO 8601: "2025-10-07T19:34:04.213124729+00:00"
+    // - SQLite: "YYYY-MM-DD HH:MM:SS"
+    // - Date only: "YYYY-MM-DD"
+    let date = if session.started_at.contains('T') {
+        // ISO 8601 format - split on 'T' and take date part
+        session
+            .started_at
+            .split('T')
+            .next()
+            .unwrap_or(&session.started_at)
+            .to_string()
+    } else if let Some(date_part) = session.started_at.split_whitespace().next() {
+        // SQLite format with space
+        date_part.to_string()
+    } else if session.started_at.len() >= 10 {
+        // Take first 10 characters
+        session.started_at[0..10].to_string()
+    } else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "Invalid session timestamp format",
+                "started_at": session.started_at
+            })),
+        )
+            .into_response();
+    };
+
+    // Try to find the JSONL file - check current date and neighboring dates
+    // (in case of timezone differences or date boundary issues)
+    let mut dates_to_try = vec![date.clone()];
+
+    // Try to parse the date and add +/- 1 day variants
+    if let Ok(parsed_date) = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d") {
+        let prev_day = parsed_date - chrono::Duration::days(1);
+        let next_day = parsed_date + chrono::Duration::days(1);
+        dates_to_try.push(prev_day.format("%Y-%m-%d").to_string());
+        dates_to_try.push(next_day.format("%Y-%m-%d").to_string());
+    }
+
+    let mut jsonl_path = None;
+    let mut attempted_paths = Vec::new();
+
+    for check_date in &dates_to_try {
+        let path = sessions_dir
+            .join(check_date)
+            .join(format!("{}.jsonl", session_id));
+        attempted_paths.push(path.display().to_string());
+
+        if tokio::fs::metadata(&path).await.is_ok() {
+            jsonl_path = Some(path);
+            break;
+        }
+    }
+
+    let jsonl_path = match jsonl_path {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "JSONL file not found",
+                    "session_id": session_id,
+                    "started_at": session.started_at,
+                    "parsed_date": date,
+                    "attempted_paths": attempted_paths,
+                    "sessions_dir": sessions_dir.display().to_string()
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Read the JSONL file
+    let content = match tokio::fs::read_to_string(&jsonl_path).await {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to read JSONL file: {}", e),
+                    "path": jsonl_path.display().to_string()
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Parse each line and find events with matching request_id
+    let mut request_json = None;
+    let mut response_json = None;
+    let mut all_request_ids = Vec::new(); // Track all request IDs we see
+    let mut all_event_types = Vec::new(); // Track all event types we see
+
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        // Parse as SessionEvent
+        let event: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue, // Skip invalid lines
+        };
+
+        // Collect debug info
+        if let Some(rid) = event.get("request_id").and_then(|v| v.as_str()) {
+            all_request_ids.push(rid.to_string());
+        }
+        if let Some(et) = event.get("type").and_then(|v| v.as_str()) {
+            all_event_types.push(et.to_string());
+        }
+
+        // Check if this event has the matching request_id
+        if event.get("request_id").and_then(|v| v.as_str()) != Some(&request_id) {
+            continue;
+        }
+
+        // Check event type
+        match event.get("type").and_then(|v| v.as_str()) {
+            Some("request_recorded") => {
+                request_json = event.get("request_json").cloned();
+            }
+            Some("response_recorded") => {
+                response_json = event.get("response_json").cloned();
+            }
+            _ => {}
+        }
+
+        // If we found both, we can stop
+        if request_json.is_some() && response_json.is_some() {
+            break;
+        }
+    }
+
+    // If nothing found, return debug info
+    if request_json.is_none() && response_json.is_none() {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "error": "No matching request/response found",
+                "request_id": request_id,
+                "session_id": session_id,
+                "file_path": jsonl_path.display().to_string(),
+                "total_lines": content.lines().count(),
+                "request_ids_in_file": all_request_ids,
+                "event_types_in_file": all_event_types,
+                "hint": "Check if the request_id matches any events in this session"
+            })),
+        )
+            .into_response();
+    }
+
+    // Return the data
+    Json(RawRequestResponse {
+        session_id: session_id.clone(),
+        request_id: request_id.clone(),
+        request: request_json,
+        response: response_json,
+    })
+    .into_response()
 }

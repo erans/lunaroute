@@ -83,6 +83,7 @@ async fn test_custom_headers_with_template_substitution() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: HashMap::new(),
     };
@@ -163,6 +164,7 @@ async fn test_request_body_defaults() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: HashMap::new(),
     };
@@ -236,6 +238,7 @@ async fn test_request_body_overrides() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: HashMap::new(),
     };
@@ -308,6 +311,7 @@ async fn test_prepend_messages() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
         metadata: HashMap::new(),
     };

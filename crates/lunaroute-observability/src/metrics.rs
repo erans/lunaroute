@@ -63,6 +63,8 @@ pub struct Metrics {
     // Tool call metrics
     /// Tool calls made during requests
     pub tool_calls_total: CounterVec,
+    /// Tool result failures (is_error=true)
+    pub tool_result_failures_total: CounterVec,
 
     // Processing time metrics
     /// Post-processing duration (after provider response)
@@ -257,6 +259,14 @@ impl Metrics {
             &["provider", "model", "tool_name"],
         )?;
 
+        let tool_result_failures_total = CounterVec::new(
+            Opts::new(
+                "lunaroute_tool_result_failures_total",
+                "Total number of tool result failures (is_error=true)",
+            ),
+            &["provider", "model", "tool_name"],
+        )?;
+
         // Processing time metrics
         let post_processing_duration_seconds = Histogram::with_opts(
             HistogramOpts::new(
@@ -390,6 +400,7 @@ impl Metrics {
         registry.register(Box::new(tokens_total.clone()))?;
         registry.register(Box::new(fallback_triggered.clone()))?;
         registry.register(Box::new(tool_calls_total.clone()))?;
+        registry.register(Box::new(tool_result_failures_total.clone()))?;
         registry.register(Box::new(post_processing_duration_seconds.clone()))?;
         registry.register(Box::new(proxy_overhead_seconds.clone()))?;
         registry.register(Box::new(streaming_ttft_seconds.clone()))?;
@@ -422,6 +433,7 @@ impl Metrics {
             tokens_total,
             fallback_triggered,
             tool_calls_total,
+            tool_result_failures_total,
             post_processing_duration_seconds,
             proxy_overhead_seconds,
             streaming_ttft_seconds,
@@ -540,6 +552,13 @@ impl Metrics {
     /// Record a tool call
     pub fn record_tool_call(&self, provider: &str, model: &str, tool_name: &str) {
         self.tool_calls_total
+            .with_label_values(&[provider, model, tool_name])
+            .inc();
+    }
+
+    /// Record a tool result failure
+    pub fn record_tool_failure(&self, provider: &str, model: &str, tool_name: &str) {
+        self.tool_result_failures_total
             .with_label_values(&[provider, model, tool_name])
             .inc();
     }
