@@ -83,6 +83,18 @@ pub struct Metrics {
     pub streaming_memory_bounds_hit: CounterVec,
     /// Total streaming duration (first to last chunk)
     pub streaming_duration_seconds: HistogramVec,
+
+    // Connection pool metrics
+    /// Total connections created (indicates pool churn)
+    pub pool_connections_created_total: CounterVec,
+    /// Total connections reused from pool
+    pub pool_connections_reused_total: CounterVec,
+    /// Current idle connections in pool
+    pub pool_connections_idle: GaugeVec,
+    /// Connection lifetime distribution
+    pub pool_connection_lifetime_seconds: HistogramVec,
+    /// Pool configuration settings
+    pub pool_config: GaugeVec,
 }
 
 impl Metrics {
@@ -294,6 +306,48 @@ impl Metrics {
             &["provider", "model"],
         )?;
 
+        // Connection pool metrics
+        let pool_connections_created_total = CounterVec::new(
+            Opts::new(
+                "http_pool_connections_created_total",
+                "Total number of new connections created (indicates pool churn)",
+            ),
+            &["provider", "dialect"],
+        )?;
+
+        let pool_connections_reused_total = CounterVec::new(
+            Opts::new(
+                "http_pool_connections_reused_total",
+                "Total number of connections reused from pool",
+            ),
+            &["provider", "dialect"],
+        )?;
+
+        let pool_connections_idle = GaugeVec::new(
+            Opts::new(
+                "http_pool_connections_idle",
+                "Current number of idle connections in pool",
+            ),
+            &["provider", "dialect"],
+        )?;
+
+        let pool_connection_lifetime_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "http_pool_connection_lifetime_seconds",
+                "Connection lifetime distribution in seconds",
+            )
+            .buckets(vec![1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0]),
+            &["provider", "dialect"],
+        )?;
+
+        let pool_config = GaugeVec::new(
+            Opts::new(
+                "http_pool_config",
+                "HTTP connection pool configuration settings",
+            ),
+            &["provider", "setting"],
+        )?;
+
         // Register all metrics
         registry.register(Box::new(requests_total.clone()))?;
         registry.register(Box::new(requests_success.clone()))?;
@@ -319,6 +373,11 @@ impl Metrics {
         registry.register(Box::new(streaming_chunks_total.clone()))?;
         registry.register(Box::new(streaming_memory_bounds_hit.clone()))?;
         registry.register(Box::new(streaming_duration_seconds.clone()))?;
+        registry.register(Box::new(pool_connections_created_total.clone()))?;
+        registry.register(Box::new(pool_connections_reused_total.clone()))?;
+        registry.register(Box::new(pool_connections_idle.clone()))?;
+        registry.register(Box::new(pool_connection_lifetime_seconds.clone()))?;
+        registry.register(Box::new(pool_config.clone()))?;
 
         Ok(Self {
             registry: Arc::new(registry),
@@ -346,6 +405,11 @@ impl Metrics {
             streaming_chunks_total,
             streaming_memory_bounds_hit,
             streaming_duration_seconds,
+            pool_connections_created_total,
+            pool_connections_reused_total,
+            pool_connections_idle,
+            pool_connection_lifetime_seconds,
+            pool_config,
         })
     }
 
@@ -500,6 +564,96 @@ impl Metrics {
         self.streaming_memory_bounds_hit
             .with_label_values(&[provider, model, bound_type])
             .inc();
+    }
+
+    /// Record a new connection creation (indicates pool churn)
+    pub fn record_pool_connection_created(&self, provider: &str, dialect: &str) {
+        self.pool_connections_created_total
+            .with_label_values(&[provider, dialect])
+            .inc();
+    }
+
+    /// Record a connection reused from the pool
+    pub fn record_pool_connection_reused(&self, provider: &str, dialect: &str) {
+        self.pool_connections_reused_total
+            .with_label_values(&[provider, dialect])
+            .inc();
+    }
+
+    /// Update the current number of idle connections in the pool
+    pub fn update_pool_connections_idle(&self, provider: &str, dialect: &str, count: usize) {
+        self.pool_connections_idle
+            .with_label_values(&[provider, dialect])
+            .set(count as f64);
+    }
+
+    /// Record a connection's lifetime when it's closed
+    pub fn record_pool_connection_lifetime(
+        &self,
+        provider: &str,
+        dialect: &str,
+        lifetime_secs: f64,
+    ) {
+        self.pool_connection_lifetime_seconds
+            .with_label_values(&[provider, dialect])
+            .observe(lifetime_secs);
+    }
+
+    /// Set pool configuration gauge (called once during initialization)
+    pub fn set_pool_config(&self, provider: &str, setting: &str, value: f64) {
+        self.pool_config
+            .with_label_values(&[provider, setting])
+            .set(value);
+    }
+
+    /// Record HTTP client pool configuration for a provider
+    ///
+    /// This should be called when initializing HTTP clients for providers.
+    /// The `dialect` parameter should be the provider type (e.g., "openai_compatible", "anthropic").
+    ///
+    /// # Parameters
+    /// - `provider`: Provider name (e.g., "openai", "anthropic", "groq")
+    /// - `dialect`: Provider dialect/type (e.g., "openai_compatible", "anthropic")
+    /// - `max_idle_per_host`: Maximum idle connections per host
+    /// - `idle_timeout_secs`: Idle timeout in seconds
+    /// - `timeout_secs`: Request timeout in seconds
+    /// - `connect_timeout_secs`: Connection timeout in seconds
+    /// - `tcp_keepalive_secs`: TCP keepalive interval in seconds
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_pool_configuration(
+        &self,
+        provider: &str,
+        dialect: &str,
+        max_idle_per_host: usize,
+        idle_timeout_secs: u64,
+        timeout_secs: u64,
+        connect_timeout_secs: u64,
+        tcp_keepalive_secs: u64,
+    ) {
+        // Record each setting as a separate metric with provider+setting labels
+        // This matches the documented format: http_pool_config{provider="openai", setting="max_idle_per_host"}
+        let provider_dialect = format!("{}:{}", provider, dialect);
+        self.set_pool_config(
+            &provider_dialect,
+            "max_idle_per_host",
+            max_idle_per_host as f64,
+        );
+        self.set_pool_config(
+            &provider_dialect,
+            "idle_timeout_secs",
+            idle_timeout_secs as f64,
+        );
+        self.set_pool_config(&provider_dialect, "timeout_secs", timeout_secs as f64);
+        self.set_pool_config(
+            &provider_dialect,
+            "connect_timeout_secs",
+            connect_timeout_secs as f64,
+        );
+        self.set_pool_config(
+            &provider_dialect,
+            "tcp_keepalive_secs",
+            tcp_keepalive_secs as f64,
+        );
     }
 }
 
@@ -764,5 +918,199 @@ mod tests {
 
         let histogram = overhead_metric.metric[0].histogram.as_ref().unwrap();
         assert_eq!(histogram.sample_count.unwrap(), 3);
+    }
+
+    #[test]
+    fn test_record_pool_connection_created() {
+        let metrics = Metrics::new().unwrap();
+        metrics.record_pool_connection_created("openai", "openai_compatible");
+        metrics.record_pool_connection_created("openai", "openai_compatible");
+        metrics.record_pool_connection_created("anthropic", "anthropic");
+
+        let gathered = metrics.registry().gather();
+        let created_metric = gathered
+            .iter()
+            .find(|m| m.name() == "http_pool_connections_created_total")
+            .expect("pool_connections_created_total metric not found");
+
+        // Should have 2 label sets (openai:openai_compatible and anthropic:anthropic)
+        assert_eq!(created_metric.metric.len(), 2);
+
+        // Find openai metric and verify count
+        let openai_metric = created_metric
+            .metric
+            .iter()
+            .find(|m| {
+                m.label
+                    .iter()
+                    .any(|l| l.name() == "provider" && l.value() == "openai")
+            })
+            .expect("openai pool metric not found");
+
+        assert_eq!(openai_metric.counter.as_ref().unwrap().value.unwrap(), 2.0);
+    }
+
+    #[test]
+    fn test_record_pool_connection_reused() {
+        let metrics = Metrics::new().unwrap();
+        metrics.record_pool_connection_reused("openai", "openai_compatible");
+        metrics.record_pool_connection_reused("openai", "openai_compatible");
+        metrics.record_pool_connection_reused("openai", "openai_compatible");
+
+        let gathered = metrics.registry().gather();
+        let reused_metric = gathered
+            .iter()
+            .find(|m| m.name() == "http_pool_connections_reused_total")
+            .expect("pool_connections_reused_total metric not found");
+
+        assert_eq!(
+            reused_metric.metric[0]
+                .counter
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
+            3.0
+        );
+    }
+
+    #[test]
+    fn test_update_pool_connections_idle() {
+        let metrics = Metrics::new().unwrap();
+        metrics.update_pool_connections_idle("openai", "openai_compatible", 5);
+        metrics.update_pool_connections_idle("anthropic", "anthropic", 3);
+
+        let gathered = metrics.registry().gather();
+        let idle_metric = gathered
+            .iter()
+            .find(|m| m.name() == "http_pool_connections_idle")
+            .expect("pool_connections_idle metric not found");
+
+        // Should have 2 providers
+        assert_eq!(idle_metric.metric.len(), 2);
+
+        // Check openai has 5 idle connections
+        let openai_metric = idle_metric
+            .metric
+            .iter()
+            .find(|m| {
+                m.label
+                    .iter()
+                    .any(|l| l.name() == "provider" && l.value() == "openai")
+            })
+            .expect("openai idle metric not found");
+
+        assert_eq!(openai_metric.gauge.as_ref().unwrap().value.unwrap(), 5.0);
+    }
+
+    #[test]
+    fn test_record_pool_connection_lifetime() {
+        let metrics = Metrics::new().unwrap();
+        metrics.record_pool_connection_lifetime("openai", "openai_compatible", 10.5);
+        metrics.record_pool_connection_lifetime("openai", "openai_compatible", 30.2);
+        metrics.record_pool_connection_lifetime("openai", "openai_compatible", 60.0);
+
+        let gathered = metrics.registry().gather();
+        let lifetime_metric = gathered
+            .iter()
+            .find(|m| m.name() == "http_pool_connection_lifetime_seconds")
+            .expect("pool_connection_lifetime_seconds metric not found");
+
+        let histogram = lifetime_metric.metric[0].histogram.as_ref().unwrap();
+        assert_eq!(histogram.sample_count.unwrap(), 3);
+
+        // Verify sum of observations
+        let expected_sum = 10.5 + 30.2 + 60.0;
+        assert!((histogram.sample_sum.unwrap() - expected_sum).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_set_pool_config() {
+        let metrics = Metrics::new().unwrap();
+        metrics.set_pool_config("openai:openai_compatible", "max_idle_per_host", 32.0);
+        metrics.set_pool_config("openai:openai_compatible", "idle_timeout_secs", 90.0);
+        metrics.set_pool_config("anthropic:anthropic", "max_idle_per_host", 16.0);
+
+        let gathered = metrics.registry().gather();
+        let config_metric = gathered
+            .iter()
+            .find(|m| m.name() == "http_pool_config")
+            .expect("pool_config metric not found");
+
+        // Should have 3 settings (2 for openai, 1 for anthropic)
+        assert_eq!(config_metric.metric.len(), 3);
+
+        // Find max_idle_per_host for openai
+        let openai_max_idle = config_metric
+            .metric
+            .iter()
+            .find(|m| {
+                m.label
+                    .iter()
+                    .any(|l| l.name() == "provider" && l.value() == "openai:openai_compatible")
+                    && m.label
+                        .iter()
+                        .any(|l| l.name() == "setting" && l.value() == "max_idle_per_host")
+            })
+            .expect("openai max_idle_per_host not found");
+
+        assert_eq!(openai_max_idle.gauge.as_ref().unwrap().value.unwrap(), 32.0);
+    }
+
+    #[test]
+    fn test_record_pool_configuration() {
+        let metrics = Metrics::new().unwrap();
+        metrics.record_pool_configuration(
+            "openai",
+            "openai_compatible",
+            32,  // max_idle_per_host
+            90,  // idle_timeout_secs
+            600, // timeout_secs
+            10,  // connect_timeout_secs
+            60,  // tcp_keepalive_secs
+        );
+
+        let gathered = metrics.registry().gather();
+        let config_metric = gathered
+            .iter()
+            .find(|m| m.name() == "http_pool_config")
+            .expect("pool_config metric not found");
+
+        // Should have 5 settings (all config params)
+        assert_eq!(config_metric.metric.len(), 5);
+
+        // Verify all settings are present
+        let settings: Vec<&str> = config_metric
+            .metric
+            .iter()
+            .filter_map(|m| {
+                m.label
+                    .iter()
+                    .find(|l| l.name() == "setting")
+                    .map(|l| l.value())
+            })
+            .collect();
+
+        assert!(settings.contains(&"max_idle_per_host"));
+        assert!(settings.contains(&"idle_timeout_secs"));
+        assert!(settings.contains(&"timeout_secs"));
+        assert!(settings.contains(&"connect_timeout_secs"));
+        assert!(settings.contains(&"tcp_keepalive_secs"));
+
+        // Verify timeout_secs value
+        let timeout_setting = config_metric
+            .metric
+            .iter()
+            .find(|m| {
+                m.label
+                    .iter()
+                    .any(|l| l.name() == "setting" && l.value() == "timeout_secs")
+            })
+            .expect("timeout_secs setting not found");
+
+        assert_eq!(
+            timeout_setting.gauge.as_ref().unwrap().value.unwrap(),
+            600.0
+        );
     }
 }
