@@ -113,10 +113,12 @@ pub async fn get_tool_usage(pool: &SqlitePool) -> Result<Vec<ToolUsage>> {
         SELECT
             tool_name,
             SUM(call_count) as total_calls,
+            SUM(error_count) as failure_count,
+            SUM(call_count - error_count) as success_count,
+            ROUND(100.0 * SUM(call_count - error_count) / NULLIF(SUM(call_count), 0), 1) as success_rate,
             AVG(avg_execution_time_ms) as avg_time,
             MIN(avg_execution_time_ms) as min_time,
-            MAX(avg_execution_time_ms) as max_time,
-            SUM(call_count - error_count) as success_count
+            MAX(avg_execution_time_ms) as max_time
         FROM tool_calls
         GROUP BY tool_name
         ORDER BY total_calls DESC
@@ -135,6 +137,8 @@ pub async fn get_tool_usage(pool: &SqlitePool) -> Result<Vec<ToolUsage>> {
             min_time_ms: row.try_get("min_time").unwrap_or(0.0),
             max_time_ms: row.try_get("max_time").unwrap_or(0.0),
             success_count: row.try_get("success_count").unwrap_or(0),
+            failure_count: row.try_get("failure_count").unwrap_or(0),
+            success_rate: row.try_get("success_rate").unwrap_or(100.0),
         })
         .collect();
 
@@ -232,28 +236,89 @@ pub async fn get_cost_stats(pool: &SqlitePool) -> Result<CostStats> {
 }
 
 /// Get model usage statistics
-pub async fn get_model_usage(pool: &SqlitePool) -> Result<Vec<ModelUsage>> {
-    // First get total count
-    let total = sqlx::query("SELECT COUNT(*) as count FROM sessions WHERE model_used IS NOT NULL")
-        .fetch_one(pool)
-        .await?;
+pub async fn get_model_usage(
+    pool: &SqlitePool,
+    hours: i64,
+    user_agent_filter: Option<&str>,
+) -> Result<Vec<ModelUsage>> {
+    // Build WHERE clause for filters
+    // Query session_stats joined with sessions for user_agent filtering
+    let mut where_conditions = vec!["ss.model_name IS NOT NULL"];
 
+    let time_filter;
+    if hours > 0 {
+        time_filter = format!("s.started_at >= datetime('now', '-{} hours')", hours);
+        where_conditions.push(&time_filter);
+    }
+
+    let use_prefix_match = user_agent_filter
+        .map(|ua| ua.ends_with("/*"))
+        .unwrap_or(false);
+
+    let ua_filter_str;
+    if user_agent_filter.is_some() {
+        if use_prefix_match {
+            ua_filter_str = "s.user_agent LIKE ?".to_string();
+        } else {
+            ua_filter_str = "s.user_agent = ?".to_string();
+        }
+        where_conditions.push(&ua_filter_str);
+    }
+
+    let where_clause = where_conditions.join(" AND ");
+
+    // First get total count of requests with filters
+    let total_query = format!(
+        r#"
+        SELECT COUNT(*) as count
+        FROM session_stats ss
+        INNER JOIN sessions s ON ss.session_id = s.session_id
+        WHERE {}
+        "#,
+        where_clause
+    );
+    let mut total_sqlx_query = sqlx::query(&total_query);
+
+    if let Some(ua) = user_agent_filter {
+        if use_prefix_match {
+            let prefix = ua.trim_end_matches("/*");
+            total_sqlx_query = total_sqlx_query.bind(format!("{}/%", prefix));
+        } else {
+            total_sqlx_query = total_sqlx_query.bind(ua);
+        }
+    }
+
+    let total = total_sqlx_query.fetch_one(pool).await?;
     let total_count = total.try_get::<i64, _>("count").unwrap_or(1).max(1) as f64; // Avoid division by zero
 
-    let rows = sqlx::query(
+    // Get model usage from session_stats with filters
+    let query = format!(
         r#"
         SELECT
-            model_used as model,
+            ss.model_name as model,
             COUNT(*) as count
-        FROM sessions
-        WHERE model_used IS NOT NULL
-        GROUP BY model_used
+        FROM session_stats ss
+        INNER JOIN sessions s ON ss.session_id = s.session_id
+        WHERE {}
+        GROUP BY ss.model_name
         ORDER BY count DESC
         LIMIT 15
         "#,
-    )
-    .fetch_all(pool)
-    .await?;
+        where_clause
+    );
+
+    let mut sqlx_query = sqlx::query(&query);
+
+    if let Some(ua) = user_agent_filter {
+        if use_prefix_match {
+            let prefix = ua.trim_end_matches("/*");
+            sqlx_query = sqlx_query.bind(format!("{}/%", prefix));
+        } else {
+            sqlx_query = sqlx_query.bind(ua);
+        }
+    }
+
+    let rows = sqlx_query.fetch_all(pool).await?;
 
     let models = rows
         .into_iter()
@@ -611,12 +676,21 @@ pub async fn get_session_timeline(
     session_id: &str,
     offset: i64,
     limit: i64,
+    order: &str,
 ) -> Result<Vec<TimelineEvent>> {
+    // Validate order parameter to prevent SQL injection
+    let order_clause = if order.to_uppercase() == "DESC" {
+        "DESC"
+    } else {
+        "ASC"
+    };
+
     // Get session stats entries for this session (each represents a request/response)
-    let stats = sqlx::query(
+    let stats_query = format!(
         r#"
         SELECT
             created_at,
+            request_id,
             model_name,
             input_tokens,
             output_tokens,
@@ -627,20 +701,24 @@ pub async fn get_session_timeline(
             tokens_per_second
         FROM session_stats
         WHERE session_id = ?
-        ORDER BY created_at ASC
+        ORDER BY created_at {}
         LIMIT ? OFFSET ?
         "#,
-    )
-    .bind(session_id)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
+        order_clause
+    );
+
+    let stats = sqlx::query(&stats_query)
+        .bind(session_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
 
     let mut events = Vec::new();
 
     for (idx, stat) in stats.iter().enumerate() {
         let created_at: Option<String> = stat.try_get("created_at").ok().flatten();
+        let request_id: Option<String> = stat.try_get("request_id").ok().flatten();
         let model_name: Option<String> = stat.try_get("model_name").ok().flatten();
         let input_tokens: Option<i64> = stat.try_get("input_tokens").ok().flatten();
         let output_tokens: Option<i64> = stat.try_get("output_tokens").ok().flatten();
@@ -665,11 +743,12 @@ pub async fn get_session_timeline(
                 "proxy_overhead_ms": stat.try_get::<Option<f64>, _>("proxy_overhead_ms").ok().flatten(),
                 "tokens_per_second": stat.try_get::<Option<f64>, _>("tokens_per_second").ok().flatten(),
             }).into(),
+            request_id,
         });
     }
 
     // Get tool calls for this session (within the same pagination window)
-    let tools = sqlx::query(
+    let tools_query = format!(
         r#"
         SELECT
             created_at,
@@ -679,15 +758,18 @@ pub async fn get_session_timeline(
             error_count
         FROM tool_calls
         WHERE session_id = ?
-        ORDER BY created_at ASC
+        ORDER BY created_at {}
         LIMIT ? OFFSET ?
         "#,
-    )
-    .bind(session_id)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
+        order_clause
+    );
+
+    let tools = sqlx::query(&tools_query)
+        .bind(session_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
 
     for tool in tools {
         let created_at: Option<String> = tool.try_get("created_at").ok().flatten();
@@ -708,6 +790,7 @@ pub async fn get_session_timeline(
                 "avg_execution_time_ms": tool.try_get::<Option<i64>, _>("avg_execution_time_ms").ok().flatten(),
                 "error_count": tool.try_get::<Option<i64>, _>("error_count").ok().flatten(),
             }).into(),
+            request_id: None,
         });
     }
 

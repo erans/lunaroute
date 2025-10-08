@@ -75,7 +75,7 @@ fn test_redact_request_text() {
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-            metadata: HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -121,7 +121,7 @@ fn test_redact_request_multimodal() {
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-            metadata: HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -163,7 +163,7 @@ fn test_redact_response() {
             completion_tokens: 20,
             total_tokens: 30,
         },
-            metadata: HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     redactor.redact_response(&mut response);
@@ -267,7 +267,7 @@ fn test_redact_tool_calls_in_request() {
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-            metadata: HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -314,7 +314,7 @@ fn test_remove_mode() {
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-            metadata: HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -363,7 +363,7 @@ fn test_tokenize_mode_with_hmac() {
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-            metadata: HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -420,7 +420,7 @@ fn test_custom_pattern() {
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-            metadata: HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -569,7 +569,7 @@ fn test_malformed_json_fallback() {
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-            metadata: HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);

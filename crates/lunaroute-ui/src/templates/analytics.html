@@ -10,6 +10,19 @@
         <p class="subtitle">Advanced insights and trends</p>
     </div>
 
+    <!-- Filters for Model Usage -->
+    <div class="filters" style="margin-bottom: 2rem;">
+        <select class="filter-select" id="time-range-filter" onchange="changeTimeRange(this.value)">
+            <option value="24">Last 24 hours</option>
+            <option value="168">Last 7 days</option>
+            <option value="720">Last 30 days</option>
+            <option value="0">All time</option>
+        </select>
+        <select class="filter-select" id="user-agent-filter" onchange="changeUserAgent(this.value)">
+            <option value="">All User Agents</option>
+        </select>
+    </div>
+
     <!-- Model Usage -->
     <div class="chart-container">
         <h2>🤖 Model Usage Distribution</h2>
@@ -34,14 +47,92 @@
 <script>
     const REFRESH_INTERVAL = {{ refresh_interval }} * 1000;
     let modelChart, durationChart, successChart;
+    let currentTimeRange = 24; // Default: last 24 hours
+    let currentUserAgent = ''; // Default: all user agents
 
     document.addEventListener('DOMContentLoaded', () => {
         initCharts();
+        loadUserAgents();
         loadAnalytics();
 
         // Auto-refresh
         setInterval(loadAnalytics, REFRESH_INTERVAL);
     });
+
+    async function loadUserAgents() {
+        try {
+            const response = await fetch('/api/user-agents');
+            const userAgents = await response.json();
+
+            // Group user agents by prefix (part before first "/")
+            const grouped = {};
+            userAgents.forEach(ua => {
+                const slashIndex = ua.indexOf('/');
+                if (slashIndex > 0) {
+                    const prefix = ua.substring(0, slashIndex);
+                    if (!grouped[prefix]) {
+                        grouped[prefix] = [];
+                    }
+                    grouped[prefix].push(ua);
+                } else {
+                    // No slash, treat as standalone
+                    if (!grouped['_standalone']) {
+                        grouped['_standalone'] = [];
+                    }
+                    grouped['_standalone'].push(ua);
+                }
+            });
+
+            const select = document.getElementById('user-agent-filter');
+
+            // Sort prefixes alphabetically
+            const sortedPrefixes = Object.keys(grouped).sort();
+
+            sortedPrefixes.forEach(prefix => {
+                if (prefix === '_standalone') {
+                    // Add standalone user agents without grouping
+                    grouped[prefix].forEach(ua => {
+                        const option = document.createElement('option');
+                        option.value = ua;
+                        option.textContent = ua;
+                        select.appendChild(option);
+                    });
+                } else {
+                    // Create optgroup for this prefix
+                    const optgroup = document.createElement('optgroup');
+                    optgroup.label = prefix;
+
+                    // Add "All [prefix]" option
+                    const allOption = document.createElement('option');
+                    allOption.value = `${prefix}/*`;
+                    allOption.textContent = `All ${prefix}`;
+                    optgroup.appendChild(allOption);
+
+                    // Add specific versions
+                    grouped[prefix].sort().forEach(ua => {
+                        const option = document.createElement('option');
+                        option.value = ua;
+                        option.textContent = `  ${ua}`;
+                        optgroup.appendChild(option);
+                    });
+
+                    select.appendChild(optgroup);
+                }
+            });
+        } catch (error) {
+            console.error('Failed to load user agents:', error);
+        }
+    }
+
+    function changeTimeRange(hours) {
+        currentTimeRange = parseInt(hours);
+        loadAnalytics();
+    }
+
+    function changeUserAgent(userAgent) {
+        currentUserAgent = userAgent;
+        loadAnalytics();
+    }
 
     function initCharts() {
         // Model Usage Chart
@@ -152,8 +243,14 @@
 
     async function loadAnalytics() {
         try {
+            // Build model stats URL with filters
+            let modelStatsUrl = `/api/stats/models?hours=${currentTimeRange}`;
+            if (currentUserAgent) {
+                modelStatsUrl += `&user_agent=${encodeURIComponent(currentUserAgent)}`;
+            }
+
             const [models, sessions, tokenStats] = await Promise.all([
-                fetch('/api/stats/models').then(r => r.json()),
+                fetch(modelStatsUrl).then(r => r.json()),
                 fetch('/api/sessions').then(r => r.json()),
                 fetch('/api/stats/tokens?days=7').then(r => r.json())
             ]);

@@ -6,6 +6,7 @@ use axum::{routing::get, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -36,6 +37,14 @@ pub struct UiConfig {
     /// Enable session deletion (default: false, dangerous!)
     #[serde(default)]
     pub delete_enabled: bool,
+
+    /// Enable HTTP request logging for UI endpoints (default: false)
+    #[serde(default)]
+    pub log_requests: bool,
+
+    /// Path to sessions directory (for raw JSONL access)
+    #[serde(default = "default_sessions_dir")]
+    pub sessions_dir: Option<std::path::PathBuf>,
 }
 
 fn default_enabled() -> bool {
@@ -53,6 +62,9 @@ fn default_refresh_interval() -> u64 {
 fn default_export_enabled() -> bool {
     true
 }
+fn default_sessions_dir() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from("~/.lunaroute/sessions"))
+}
 
 impl Default for UiConfig {
     fn default() -> Self {
@@ -63,6 +75,8 @@ impl Default for UiConfig {
             refresh_interval: default_refresh_interval(),
             export_enabled: default_export_enabled(),
             delete_enabled: false,
+            log_requests: false,
+            sessions_dir: default_sessions_dir(),
         }
     }
 }
@@ -75,7 +89,12 @@ pub struct UiServer {
 
 impl UiServer {
     /// Create a new UI server
-    pub fn new(config: UiConfig, db: Arc<SqlitePool>) -> Self {
+    pub fn new(mut config: UiConfig, db: Arc<SqlitePool>) -> Self {
+        // Expand tilde in sessions_dir path
+        if let Some(ref path) = config.sessions_dir {
+            config.sessions_dir = Some(expand_tilde(path));
+        }
+
         Self { config, db }
     }
 
@@ -86,7 +105,7 @@ impl UiServer {
             config: self.config.clone(),
         };
 
-        Router::new()
+        let router = Router::new()
             // HTML pages
             .route("/", get(handlers::dashboard::dashboard))
             .route("/sessions", get(handlers::sessions::sessions_list))
@@ -125,10 +144,20 @@ impl UiServer {
                 "/api/sessions/{id}/tools",
                 get(handlers::api::session_tool_stats),
             )
+            .route(
+                "/api/sessions/{id}/raw/{request_id}",
+                get(handlers::api::session_raw_data),
+            )
             .route("/api/user-agents", get(handlers::api::user_agents_list))
             .route("/api/models", get(handlers::api::models_list))
-            .layer(TraceLayer::new_for_http())
-            .with_state(state)
+            .with_state(state);
+
+        // Conditionally add request logging layer
+        if self.config.log_requests {
+            router.layer(TraceLayer::new_for_http())
+        } else {
+            router
+        }
     }
 
     /// Start the UI server
@@ -154,4 +183,25 @@ impl UiServer {
 
         Ok(())
     }
+}
+
+/// Expand tilde (~) in a path to the user's home directory
+fn expand_tilde(path: &Path) -> PathBuf {
+    if let Some(path_str) = path.to_str() {
+        if path_str.starts_with("~/") || path_str == "~" {
+            // Use dirs::home_dir() for cross-platform compatibility
+            if let Some(home) = dirs::home_dir() {
+                let expanded = if path_str == "~" {
+                    home.clone()
+                } else {
+                    // Join the home dir with the path after "~/"
+                    home.join(&path_str[2..])
+                };
+
+                // Try to canonicalize, but if path doesn't exist yet, return expanded
+                return expanded.canonicalize().unwrap_or(expanded);
+            }
+        }
+    }
+    path.to_path_buf()
 }

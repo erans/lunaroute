@@ -32,6 +32,17 @@ session_recording:
 logging:
   level: "info"  # Options: trace, debug, info, warn, error
   log_requests: true  # Print all requests/responses to stdout
+  log_sql_queries: false  # Enable SQL query debug logs (default: false to reduce noise)
+
+# Web UI configuration
+ui:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8082
+  refresh_interval: 5  # Auto-refresh interval in seconds
+  export_enabled: true  # Enable CSV/JSON export
+  delete_enabled: false  # Enable session deletion (dangerous!)
+  log_requests: false  # Log HTTP requests to UI endpoints (default: false)
 
 # Routing rules (optional - will auto-route based on model)
 # routing:

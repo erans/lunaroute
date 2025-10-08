@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 
 #[cfg(feature = "metrics")]
 use lunaroute_observability::Metrics;
@@ -31,7 +31,7 @@ pub struct RecordingProvider<P: Provider, R: SessionRecorder> {
     provider_name: String,
     listener_name: String,
     /// Tool call mapper for tracking tool_call_id -> tool_name
-    tool_mapper: Arc<RwLock<ToolCallMapper>>,
+    tool_mapper: Arc<ToolCallMapper>,
     /// Optional metrics for recording tool failures
     #[cfg(feature = "metrics")]
     metrics: Option<Arc<Metrics>>,
@@ -50,7 +50,7 @@ impl<P: Provider, R: SessionRecorder> RecordingProvider<P, R> {
             recorder,
             provider_name,
             listener_name,
-            tool_mapper: Arc::new(RwLock::new(ToolCallMapper::new())),
+            tool_mapper: Arc::new(ToolCallMapper::new()),
             #[cfg(feature = "metrics")]
             metrics: None,
         }
@@ -62,7 +62,7 @@ impl<P: Provider, R: SessionRecorder> RecordingProvider<P, R> {
         recorder: Arc<R>,
         provider_name: String,
         listener_name: String,
-        tool_mapper: Arc<RwLock<ToolCallMapper>>,
+        tool_mapper: Arc<ToolCallMapper>,
     ) -> Self {
         Self {
             provider,
@@ -82,7 +82,7 @@ impl<P: Provider, R: SessionRecorder> RecordingProvider<P, R> {
         recorder: Arc<R>,
         provider_name: String,
         listener_name: String,
-        tool_mapper: Arc<RwLock<ToolCallMapper>>,
+        tool_mapper: Arc<ToolCallMapper>,
         metrics: Option<Arc<Metrics>>,
     ) -> Self {
         Self {
@@ -107,10 +107,9 @@ impl<P: Provider + Send + Sync, R: SessionRecorder + Send + Sync + 'static> Prov
         // Enrich tool_results with tool names from mapper
         let mut enriched_request = request.clone();
         if !enriched_request.tool_results.is_empty() {
-            let mapper = self.tool_mapper.read().await;
             for tool_result in &mut enriched_request.tool_results {
                 if tool_result.tool_name.is_none() {
-                    tool_result.tool_name = mapper.lookup(&tool_result.tool_call_id);
+                    tool_result.tool_name = self.tool_mapper.lookup(&tool_result.tool_call_id);
                 }
             }
         }
@@ -157,17 +156,15 @@ impl<P: Provider + Send + Sync, R: SessionRecorder + Send + Sync + 'static> Prov
         match &result {
             Ok(response) => {
                 // Record tool call mappings from response
-                {
-                    let mut mapper = self.tool_mapper.write().await;
-                    for choice in &response.choices {
-                        for tool_call in &choice.message.tool_calls {
-                            mapper.record_call(tool_call.id.clone(), tool_call.function.name.clone());
-                            tracing::debug!(
-                                tool_call_id = %tool_call.id,
-                                tool_name = %tool_call.function.name,
-                                "Recorded tool call mapping"
-                            );
-                        }
+                for choice in &response.choices {
+                    for tool_call in &choice.message.tool_calls {
+                        self.tool_mapper
+                            .record_call(tool_call.id.clone(), tool_call.function.name.clone());
+                        tracing::debug!(
+                            tool_call_id = %tool_call.id,
+                            tool_name = %tool_call.function.name,
+                            "Recorded tool call mapping"
+                        );
                     }
                 }
 
@@ -215,10 +212,9 @@ impl<P: Provider + Send + Sync, R: SessionRecorder + Send + Sync + 'static> Prov
         // Enrich tool_results with tool names from mapper
         let mut enriched_request = request.clone();
         if !enriched_request.tool_results.is_empty() {
-            let mapper = self.tool_mapper.read().await;
             for tool_result in &mut enriched_request.tool_results {
                 if tool_result.tool_name.is_none() {
-                    tool_result.tool_name = mapper.lookup(&tool_result.tool_call_id);
+                    tool_result.tool_name = self.tool_mapper.lookup(&tool_result.tool_call_id);
                 }
             }
         }
@@ -316,7 +312,7 @@ struct RecordingStream<R: SessionRecorder> {
     // Channel for ordered event recording
     event_tx: mpsc::UnboundedSender<NormalizedStreamEvent>,
     // Tool mapper for recording tool calls in streaming responses
-    tool_mapper: Arc<RwLock<ToolCallMapper>>,
+    tool_mapper: Arc<ToolCallMapper>,
     // Track partial tool calls in streaming mode: (tool_call_index) -> (id, name)
     partial_tool_calls: HashMap<u32, (Option<String>, Option<String>)>,
 }
@@ -345,7 +341,10 @@ impl<R: SessionRecorder + 'static> Stream for RecordingStream<R> {
                         ..
                     } => {
                         // Track partial tool call data
-                        let entry = self.partial_tool_calls.entry(*tool_call_index).or_insert((None, None));
+                        let entry = self
+                            .partial_tool_calls
+                            .entry(*tool_call_index)
+                            .or_insert((None, None));
 
                         // Update id if present
                         if let Some(tool_id) = id {
@@ -366,8 +365,7 @@ impl<R: SessionRecorder + 'static> Stream for RecordingStream<R> {
 
                             // Record mapping asynchronously
                             tokio::spawn(async move {
-                                let mut mapper = tool_mapper.write().await;
-                                mapper.record_call(call_id.clone(), call_name.clone());
+                                tool_mapper.record_call(call_id.clone(), call_name.clone());
                                 tracing::debug!(
                                     tool_call_id = %call_id,
                                     tool_name = %call_name,
@@ -473,7 +471,7 @@ mod tests {
                     total_tokens: 30,
                 },
                 created: 1234567890,
-            metadata: HashMap::new(),
+                metadata: HashMap::new(),
             })
         }
 

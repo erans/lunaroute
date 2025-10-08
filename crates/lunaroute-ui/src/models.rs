@@ -33,6 +33,8 @@ pub struct ToolUsage {
     pub min_time_ms: f64,
     pub max_time_ms: f64,
     pub success_count: i64,
+    pub failure_count: i64,
+    pub success_rate: f64,
 }
 
 /// Cost statistics
@@ -116,6 +118,7 @@ pub struct TimelineEvent {
     pub event_type: String,
     pub description: String,
     pub metadata: Option<serde_json::Value>,
+    pub request_id: Option<String>,
 }
 
 /// Sessions by hour of day
@@ -156,4 +159,13 @@ pub struct ToolBreakdown {
     pub tool_name: String,
     pub call_count: i64,
     pub percentage: f64,
+}
+
+/// Raw request and response data from JSONL
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawRequestResponse {
+    pub request: Option<serde_json::Value>,
+    pub response: Option<serde_json::Value>,
+    pub request_id: String,
+    pub session_id: String,
 }

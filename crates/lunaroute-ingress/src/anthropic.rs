@@ -409,13 +409,18 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
                                     tool_call_id: tool_use_id,
                                     is_error: is_error.unwrap_or(false),
                                     content,
-                                    tool_name: None,  // Will be filled in by SessionRecorder
+                                    tool_name: None, // Will be filled in by SessionRecorder
                                 });
                             }
                         }
                     }
 
-                    (text_parts.join("\n"), tool_calls_vec, tool_result_id, tool_result_is_error)
+                    (
+                        text_parts.join("\n"),
+                        tool_calls_vec,
+                        tool_result_id,
+                        tool_result_is_error,
+                    )
                 }
             };
 
@@ -1070,12 +1075,11 @@ pub async fn messages_passthrough(
                     if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
                         for block in content {
                             if let Some("tool_result") = block.get("type").and_then(|t| t.as_str())
-                                && let Some(tool_use_id) = block.get("tool_use_id").and_then(|id| id.as_str())
+                                && let Some(tool_use_id) =
+                                    block.get("tool_use_id").and_then(|id| id.as_str())
                             {
-                                let content_text = block
-                                    .get("content")
-                                    .and_then(|c| c.as_str())
-                                    .unwrap_or("");
+                                let content_text =
+                                    block.get("content").and_then(|c| c.as_str()).unwrap_or("");
 
                                 // Anthropic has explicit is_error field
                                 let is_error = block
@@ -1092,7 +1096,7 @@ pub async fn messages_passthrough(
                                     tool_name: "unknown".to_string(), // Tool name not in result block
                                     tool_call_id: tool_use_id.to_string(),
                                     execution_time_ms: None, // Not available in passthrough mode
-                                    input_size_bytes: 0, // Input was in previous request
+                                    input_size_bytes: 0,     // Input was in previous request
                                     output_size_bytes: Some(output_size),
                                     success: Some(!is_error), // Inverted: true if no error
                                 });
@@ -1489,21 +1493,25 @@ pub async fn messages_passthrough(
 
                             // Emit ToolCallRecorded event for each tool call
                             if let Some(tool_id) = block.get("id").and_then(|id| id.as_str()) {
-                                let input_value = block.get("input").unwrap_or(&serde_json::Value::Null);
-                                let input_str = serde_json::to_string(input_value).unwrap_or_default();
+                                let input_value =
+                                    block.get("input").unwrap_or(&serde_json::Value::Null);
+                                let input_str =
+                                    serde_json::to_string(input_value).unwrap_or_default();
                                 let input_size = input_str.len();
 
-                                recorder.record_event(lunaroute_session::SessionEvent::ToolCallRecorded {
-                                    session_id: session_id.clone(),
-                                    request_id: request_id.clone(),
-                                    timestamp: chrono::Utc::now(),
-                                    tool_name: tool_name.to_string(),
-                                    tool_call_id: tool_id.to_string(),
-                                    execution_time_ms: None, // Model just requested the call
-                                    input_size_bytes: input_size,
-                                    output_size_bytes: None, // No result yet
-                                    success: None, // Unknown until client executes
-                                });
+                                recorder.record_event(
+                                    lunaroute_session::SessionEvent::ToolCallRecorded {
+                                        session_id: session_id.clone(),
+                                        request_id: request_id.clone(),
+                                        timestamp: chrono::Utc::now(),
+                                        tool_name: tool_name.to_string(),
+                                        tool_call_id: tool_id.to_string(),
+                                        execution_time_ms: None, // Model just requested the call
+                                        input_size_bytes: input_size,
+                                        output_size_bytes: None, // No result yet
+                                        success: None,           // Unknown until client executes
+                                    },
+                                );
                             }
                         }
                     }
@@ -2187,7 +2195,10 @@ mod tests {
         let normalized = to_normalized(req).unwrap();
         assert_eq!(normalized.tool_results.len(), 1);
         assert_eq!(normalized.tool_results[0].tool_call_id, "toolu_123");
-        assert_eq!(normalized.tool_results[0].content, "Data retrieved successfully");
+        assert_eq!(
+            normalized.tool_results[0].content,
+            "Data retrieved successfully"
+        );
         assert!(!normalized.tool_results[0].is_error); // Should not be an error
     }
 
@@ -2235,7 +2246,11 @@ mod tests {
         assert_eq!(normalized.tool_results.len(), 1);
         assert_eq!(normalized.tool_results[0].tool_call_id, "toolu_456");
         assert!(normalized.tool_results[0].is_error); // Should be detected as error
-        assert!(normalized.tool_results[0].content.contains("File not found"));
+        assert!(
+            normalized.tool_results[0]
+                .content
+                .contains("File not found")
+        );
     }
 
     #[test]
@@ -2245,7 +2260,9 @@ mod tests {
             messages: vec![
                 AnthropicMessage {
                     role: "user".to_string(),
-                    content: Some(AnthropicMessageContent::Text("Use multiple tools".to_string())),
+                    content: Some(AnthropicMessageContent::Text(
+                        "Use multiple tools".to_string(),
+                    )),
                 },
                 AnthropicMessage {
                     role: "assistant".to_string(),
@@ -2292,11 +2309,19 @@ mod tests {
         assert_eq!(normalized.tool_results.len(), 2);
 
         // First result should not be an error
-        let result_1 = normalized.tool_results.iter().find(|r| r.tool_call_id == "toolu_1").unwrap();
+        let result_1 = normalized
+            .tool_results
+            .iter()
+            .find(|r| r.tool_call_id == "toolu_1")
+            .unwrap();
         assert!(!result_1.is_error);
 
         // Second result should be an error
-        let result_2 = normalized.tool_results.iter().find(|r| r.tool_call_id == "toolu_2").unwrap();
+        let result_2 = normalized
+            .tool_results
+            .iter()
+            .find(|r| r.tool_call_id == "toolu_2")
+            .unwrap();
         assert!(result_2.is_error);
     }
 

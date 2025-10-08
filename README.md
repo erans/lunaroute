@@ -527,6 +527,35 @@ Like the moon 🌕 guides travelers at night, LunaRoute illuminates your AI inte
 
 ---
 
+## 🎨 Web UI
+
+LunaRoute includes a built-in web interface for browsing and analyzing sessions:
+
+```bash
+# The UI server starts automatically on port 8082
+lunaroute-server
+
+# Then open: http://localhost:8082
+```
+
+**Features:**
+- 📊 **Dashboard** - View all sessions with filtering and search
+- 🔍 **Session Details** - Inspect individual sessions with timeline view
+- 📄 **Raw Request/Response** - View the complete JSON data
+- 📈 **Analytics** - Token usage, tool statistics, and performance metrics
+- ⌨️ **Keyboard Shortcuts** - Press `ESC` to close dialogs
+
+**Configuration:**
+```yaml
+ui:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8082
+  refresh_interval: 5
+```
+
+---
+
 ## 🚀 Coming Soon
 
 We're focusing on local development first, but here's what's next:
@@ -535,7 +564,6 @@ We're focusing on local development first, but here's what's next:
 - **Cost Optimization** - Automatic routing to cheapest provider
 - **CI/CD Integration** - Test suite recording and playback
 - **Multi-Region** - Geo-routing and disaster recovery
-- **Web UI** - Browse and analyze sessions visually
 
 Want to help shape the roadmap? [Open an issue](https://github.com/yourusername/lunaroute/issues)!
 

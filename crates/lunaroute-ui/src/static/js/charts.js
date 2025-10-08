@@ -117,7 +117,7 @@ async function updateTokenChart() {
 }
 
 /**
- * Initialize tool usage chart
+ * Initialize tool usage chart with failure tracking
  */
 async function initToolChart() {
     const ctx = document.getElementById('toolChart');
@@ -141,10 +141,11 @@ async function initToolChart() {
                 label: 'Call Count',
                 data: top10.map(t => t.call_count),
                 backgroundColor: top10.map(t => {
-                    // Color by average execution time
-                    if (t.avg_time_ms < 100) return '#10b981'; // Fast - green
-                    if (t.avg_time_ms < 500) return '#f59e0b'; // Medium - yellow
-                    return '#ef4444'; // Slow - red
+                    // Color by success rate
+                    const rate = t.success_rate || 100;
+                    if (rate >= 95) return '#10b981'; // Excellent (≥95%) - green
+                    if (rate >= 80) return '#f59e0b'; // Warning (80-95%) - yellow
+                    return '#ef4444'; // Critical (<80%) - red
                 })
             }]
         },
@@ -155,6 +156,27 @@ async function initToolChart() {
             plugins: {
                 legend: {
                     display: false
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const tool = top10[context.dataIndex];
+                            const rate = tool.success_rate || 100;
+
+                            // Determine status indicator
+                            let indicator = '✓'; // Success
+                            if (rate < 95 && rate >= 80) indicator = '⚠'; // Warning
+                            if (rate < 80) indicator = '✗'; // Critical
+
+                            return [
+                                `${indicator} Success Rate: ${rate.toFixed(1)}%`,
+                                `Total Calls: ${tool.call_count}`,
+                                `Successes: ${tool.success_count}`,
+                                `Failures: ${tool.failure_count}`,
+                                `Avg Time: ${tool.avg_time_ms.toFixed(1)}ms`
+                            ];
+                        }
+                    }
                 }
             },
             scales: {
@@ -189,8 +211,9 @@ async function initToolChart() {
         toolChart.data.labels = top10.map(t => t.tool_name);
         toolChart.data.datasets[0].data = top10.map(t => t.call_count);
         toolChart.data.datasets[0].backgroundColor = top10.map(t => {
-            if (t.avg_time_ms < 100) return '#10b981';
-            if (t.avg_time_ms < 500) return '#f59e0b';
+            const rate = t.success_rate || 100;
+            if (rate >= 95) return '#10b981';
+            if (rate >= 80) return '#f59e0b';
             return '#ef4444';
         });
         toolChart.update('none');

@@ -92,6 +92,15 @@ lunaroute-server --config config.yaml --dialect anthropic
 | `LUNAROUTE_LOG_REQUESTS` | Log requests to stdout | false |
 | `LUNAROUTE_LOG_LEVEL` | Log level (trace/debug/info/warn/error) | info |
 
+#### Web UI Settings
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LUNAROUTE_UI_ENABLED` | Enable web UI server | true |
+| `LUNAROUTE_UI_HOST` | UI server bind address | 127.0.0.1 |
+| `LUNAROUTE_UI_PORT` | UI server port | 8082 |
+| `LUNAROUTE_UI_REFRESH_INTERVAL` | Auto-refresh interval (seconds) | 5 |
+
 #### HTTP Client Pool Settings (Per-Provider)
 
 Configure connection pooling for optimal performance. Replace `<PROVIDER>` with `OPENAI` or `ANTHROPIC`:
@@ -158,15 +167,31 @@ export ANTHROPIC_BASE_URL=http://localhost:3000
 
 Once running, the server exposes:
 
+### Main API
 - `POST /v1/messages` - Anthropic-compatible endpoint
 - `POST /v1/chat/completions` - OpenAI-compatible endpoint
 - `GET /healthz` - Liveness check
 - `GET /readyz` - Readiness check (includes provider status)
 - `GET /metrics` - Prometheus metrics
 
-If session recording is enabled:
+### Session API (when recording is enabled)
 - `GET /sessions` - List sessions (with filters)
 - `GET /sessions/:id` - Get session details
+- `GET /sessions/:id/timeline` - Get session timeline events
+- `GET /sessions/:id/raw/:request_id` - Get raw request/response JSON
+- `GET /sessions/:id/tools` - Get session tool usage statistics
+
+### Web UI
+The UI server runs on a separate port (default: 8082) and provides a web interface for:
+- Browsing sessions with filtering and search
+- Viewing session details, timelines, and analytics
+- Inspecting raw request/response data
+- Analyzing token usage and tool statistics
+
+Open http://localhost:8082 after starting the server.
+
+**Keyboard shortcuts:**
+- `ESC` - Close dialogs (e.g., raw request/response viewer)
 
 ## Features
 

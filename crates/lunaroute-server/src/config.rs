@@ -194,6 +194,10 @@ pub struct LoggingConfig {
 
     #[serde(default = "default_false")]
     pub log_requests: bool,
+
+    /// Enable SQL query logging (default: false to reduce noise)
+    #[serde(default = "default_false")]
+    pub log_sql_queries: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -234,6 +238,7 @@ impl Default for LoggingConfig {
         Self {
             level: default_log_level(),
             log_requests: false,
+            log_sql_queries: false,
         }
     }
 }
@@ -297,8 +302,7 @@ fn merge_http_client_env(provider: &mut ProviderSettings, prefix: &str) {
         }
 
         // LUNAROUTE_<PREFIX>_ENABLE_POOL_METRICS
-        if let Ok(val) = std::env::var(format!("LUNAROUTE_{}_ENABLE_POOL_METRICS", prefix))
-            && let Ok(enabled) = val.parse::<bool>()
+        if let Some(enabled) = parse_bool_env(&format!("LUNAROUTE_{}_ENABLE_POOL_METRICS", prefix))
         {
             http_client.enable_pool_metrics = Some(enabled);
         }
@@ -376,9 +380,7 @@ impl ServerConfig {
         }
 
         // Session recording settings
-        if let Ok(val) = std::env::var("LUNAROUTE_ENABLE_SESSION_RECORDING")
-            && let Ok(enabled) = val.parse::<bool>()
-        {
+        if let Some(enabled) = parse_bool_env("LUNAROUTE_ENABLE_SESSION_RECORDING") {
             self.session_recording.enabled = enabled;
         }
 
@@ -392,9 +394,7 @@ impl ServerConfig {
             }
         }
 
-        if let Ok(val) = std::env::var("LUNAROUTE_ENABLE_JSONL_WRITER")
-            && let Ok(enabled) = val.parse::<bool>()
-        {
+        if let Some(enabled) = parse_bool_env("LUNAROUTE_ENABLE_JSONL_WRITER") {
             if self.session_recording.jsonl.is_none() {
                 self.session_recording.jsonl = Some(lunaroute_session::JsonlConfig::default());
             }
@@ -413,9 +413,7 @@ impl ServerConfig {
             }
         }
 
-        if let Ok(val) = std::env::var("LUNAROUTE_ENABLE_SQLITE_WRITER")
-            && let Ok(enabled) = val.parse::<bool>()
-        {
+        if let Some(enabled) = parse_bool_env("LUNAROUTE_ENABLE_SQLITE_WRITER") {
             if self.session_recording.sqlite.is_none() {
                 self.session_recording.sqlite = Some(lunaroute_session::SqliteConfig::default());
             }
@@ -428,10 +426,12 @@ impl ServerConfig {
         self.session_recording.expand_paths();
 
         // Logging settings
-        if let Ok(val) = std::env::var("LUNAROUTE_LOG_REQUESTS")
-            && let Ok(enabled) = val.parse::<bool>()
-        {
+        if let Some(enabled) = parse_bool_env("LUNAROUTE_LOG_REQUESTS") {
             self.logging.log_requests = enabled;
+        }
+
+        if let Some(enabled) = parse_bool_env("LUNAROUTE_LOG_SQL_QUERIES") {
+            self.logging.log_sql_queries = enabled;
         }
 
         if let Ok(val) = std::env::var("LUNAROUTE_LOG_LEVEL") {
@@ -448,7 +448,44 @@ impl ServerConfig {
         if let Ok(val) = std::env::var("LUNAROUTE_HOST") {
             self.host = val;
         }
+
+        // UI server settings
+        if let Some(enabled) = parse_bool_env("LUNAROUTE_UI_ENABLED") {
+            self.ui.enabled = enabled;
+        }
+
+        if let Ok(val) = std::env::var("LUNAROUTE_UI_HOST") {
+            self.ui.host = val;
+        }
+
+        if let Ok(val) = std::env::var("LUNAROUTE_UI_PORT")
+            && let Ok(port) = val.parse::<u16>()
+        {
+            self.ui.port = port;
+        }
+
+        if let Some(enabled) = parse_bool_env("LUNAROUTE_UI_LOG_REQUESTS") {
+            self.ui.log_requests = enabled;
+        }
     }
+}
+
+/// Parse boolean from environment variable with flexible string matching
+/// Accepts: true/false, 1/0, yes/no, on/off (case-insensitive)
+fn parse_bool_env(var_name: &str) -> Option<bool> {
+    std::env::var(var_name)
+        .ok()
+        .and_then(|val| match val.to_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" => Some(false),
+            _ => {
+                eprintln!(
+                    "Warning: Invalid boolean value '{}' for {}, ignoring",
+                    val, var_name
+                );
+                None
+            }
+        })
 }
 
 fn default_host() -> String {

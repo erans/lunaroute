@@ -85,7 +85,7 @@ async fn test_custom_headers_with_template_substitution() {
         tools: vec![],
         tool_results: vec![],
         tool_choice: None,
-            metadata: HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     // Send request
@@ -166,7 +166,7 @@ async fn test_request_body_defaults() {
         tools: vec![],
         tool_results: vec![],
         tool_choice: None,
-            metadata: HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     let response = connector.send(request).await.unwrap();
@@ -240,7 +240,7 @@ async fn test_request_body_overrides() {
         tools: vec![],
         tool_results: vec![],
         tool_choice: None,
-            metadata: HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     let response = connector.send(request).await.unwrap();
@@ -313,7 +313,7 @@ async fn test_prepend_messages() {
         tools: vec![],
         tool_results: vec![],
         tool_choice: None,
-            metadata: HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     let response = connector.send(request).await.unwrap();

@@ -32,6 +32,9 @@ tracing = "0.1"
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
+# Utilities
+dirs = "5.0"
+
 # LunaRoute dependencies
 lunaroute-core = { path = "../lunaroute-core" }
 lunaroute-session = { path = "../lunaroute-session" }

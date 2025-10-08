@@ -72,7 +72,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{Level, debug, info, warn};
-use tracing_subscriber::FmtSubscriber;
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 const MOON: &str = r#"
          ___---___
@@ -350,7 +350,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Initialize tracing with configured level
+    // Initialize tracing with configured level and sqlx query control
     let log_level = match config.logging.level.to_lowercase().as_str() {
         "trace" => Level::TRACE,
         "debug" => Level::DEBUG,
@@ -359,7 +359,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "error" => Level::ERROR,
         _ => Level::INFO,
     };
-    let subscriber = FmtSubscriber::builder().with_max_level(log_level).finish();
+
+    // Build EnvFilter with base level
+    let mut filter = EnvFilter::new(format!("{}", log_level));
+
+    // By default, set sqlx to WARN to suppress query logs
+    // Only enable DEBUG for sqlx if log_sql_queries is true
+    if !config.logging.log_sql_queries {
+        match "sqlx=warn".parse() {
+            Ok(directive) => filter = filter.add_directive(directive),
+            Err(e) => tracing::warn!("Failed to set sqlx log filter: {}", e),
+        }
+    }
+
+    let subscriber = FmtSubscriber::builder().with_env_filter(filter).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
     // Print the moon

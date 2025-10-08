@@ -1049,7 +1049,7 @@ mod tests {
             tools: vec![],
             tool_results: vec![],
             tool_choice: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1090,7 +1090,7 @@ mod tests {
             tools: vec![],
             tool_results: vec![],
             tool_choice: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1178,7 +1178,7 @@ mod tests {
             tools: vec![],
             tool_results: vec![],
             tool_choice: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1233,7 +1233,7 @@ mod tests {
             tools: vec![],
             tool_results: vec![],
             tool_choice: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1459,7 +1459,7 @@ mod tests {
             tools: vec![],
             tool_results: vec![],
             tool_choice: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1501,7 +1501,7 @@ mod tests {
             tools: vec![],
             tool_results: vec![],
             tool_choice: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1591,7 +1591,7 @@ mod tests {
             tools: vec![],
             tool_results: vec![],
             tool_choice: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1638,7 +1638,7 @@ mod tests {
             tools: vec![],
             tool_results: vec![],
             tool_choice: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();

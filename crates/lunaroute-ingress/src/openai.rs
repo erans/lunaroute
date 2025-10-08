@@ -57,7 +57,9 @@ fn detect_tool_error(content: &str) -> bool {
         "runtime error",
     ];
 
-    error_keywords.iter().any(|keyword| content_lower.contains(keyword))
+    error_keywords
+        .iter()
+        .any(|keyword| content_lower.contains(keyword))
 }
 
 /// Validate tool parameter schema (must be valid JSON Schema)
@@ -1172,6 +1174,7 @@ pub struct OpenAIPassthroughState {
     pub stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
     pub metrics: Option<Arc<lunaroute_observability::Metrics>>,
     pub session_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>>,
+    pub tool_call_mapper: Arc<lunaroute_session::ToolCallMapper>,
 }
 
 /// Create OpenAI passthrough router (for OpenAI→OpenAI direct routing)
@@ -1186,6 +1189,7 @@ pub fn passthrough_router(
         stats_tracker,
         metrics,
         session_recorder,
+        tool_call_mapper: Arc::new(lunaroute_session::ToolCallMapper::new()),
     });
 
     Router::new()
@@ -1399,27 +1403,40 @@ pub async fn chat_completions_passthrough(
             for message in messages {
                 if let Some("tool") = message.get("role").and_then(|r| r.as_str()) {
                     // This is a tool result message
-                    if let Some(tool_call_id) = message.get("tool_call_id").and_then(|id| id.as_str()) {
+                    if let Some(tool_call_id) =
+                        message.get("tool_call_id").and_then(|id| id.as_str())
+                    {
                         let content = message
                             .get("content")
                             .and_then(|c| c.as_str())
                             .unwrap_or("");
 
                         let is_error = detect_tool_error(content);
-                        let tool_name = message.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
-                        let output_size = content.len();
 
-                        recorder.record_event(SessionEvent::ToolCallRecorded {
-                            session_id: session_id.clone(),
-                            request_id: request_id.clone(),
-                            timestamp: chrono::Utc::now(),
-                            tool_name: tool_name.to_string(),
-                            tool_call_id: tool_call_id.to_string(),
-                            execution_time_ms: None, // Not available in passthrough mode
-                            input_size_bytes: 0, // Input was in previous request
-                            output_size_bytes: Some(output_size),
-                            success: Some(!is_error), // Inverted: true if no error
-                        });
+                        // Look up tool name from mapper (tool result messages don't have "name" field)
+                        let tool_name = state.tool_call_mapper.lookup(tool_call_id);
+
+                        // Only record if we can determine the tool name
+                        if let Some(tool_name) = tool_name {
+                            let output_size = content.len();
+
+                            recorder.record_event(SessionEvent::ToolCallRecorded {
+                                session_id: session_id.clone(),
+                                request_id: request_id.clone(),
+                                timestamp: chrono::Utc::now(),
+                                tool_name,
+                                tool_call_id: tool_call_id.to_string(),
+                                execution_time_ms: None, // Not available in passthrough mode
+                                input_size_bytes: 0,     // Input was in previous request
+                                output_size_bytes: Some(output_size),
+                                success: Some(!is_error), // Inverted: true if no error
+                            });
+                        } else {
+                            tracing::warn!(
+                                "Tool result for unknown tool_call_id: {}",
+                                tool_call_id
+                            );
+                        }
                     }
                 }
             }
@@ -1712,24 +1729,33 @@ pub async fn chat_completions_passthrough(
                                     *tool_calls_map.entry(name.to_string()).or_insert(0u32) += 1;
 
                                     // Emit ToolCallRecorded event for each tool call
-                                    if let Some(tool_id) = tool_call.get("id").and_then(|id| id.as_str()) {
+                                    if let Some(tool_id) =
+                                        tool_call.get("id").and_then(|id| id.as_str())
+                                    {
+                                        // Record mapping of tool_call_id -> tool_name for later lookup
+                                        state
+                                            .tool_call_mapper
+                                            .record_call(tool_id.to_string(), name.to_string());
+
                                         let arguments = function
                                             .get("arguments")
                                             .and_then(|a| a.as_str())
                                             .unwrap_or("");
                                         let input_size = arguments.len();
 
-                                        recorder.record_event(lunaroute_session::SessionEvent::ToolCallRecorded {
-                                            session_id: session_id.clone(),
-                                            request_id: request_id.clone(),
-                                            timestamp: chrono::Utc::now(),
-                                            tool_name: name.to_string(),
-                                            tool_call_id: tool_id.to_string(),
-                                            execution_time_ms: None, // Model just requested the call
-                                            input_size_bytes: input_size,
-                                            output_size_bytes: None, // No result yet
-                                            success: None, // Unknown until client executes
-                                        });
+                                        recorder.record_event(
+                                            lunaroute_session::SessionEvent::ToolCallRecorded {
+                                                session_id: session_id.clone(),
+                                                request_id: request_id.clone(),
+                                                timestamp: chrono::Utc::now(),
+                                                tool_name: name.to_string(),
+                                                tool_call_id: tool_id.to_string(),
+                                                execution_time_ms: None, // Model just requested the call
+                                                input_size_bytes: input_size,
+                                                output_size_bytes: None, // No result yet
+                                                success: None, // Unknown until client executes
+                                            },
+                                        );
                                     }
                                 }
                             }
@@ -3428,7 +3454,10 @@ mod tests {
         let normalized = to_normalized(req).unwrap();
         assert_eq!(normalized.tool_results.len(), 1);
         assert_eq!(normalized.tool_results[0].tool_call_id, "call_123");
-        assert_eq!(normalized.tool_results[0].content, "Temperature: 72°F, Sunny");
+        assert_eq!(
+            normalized.tool_results[0].content,
+            "Temperature: 72°F, Sunny"
+        );
         assert!(!normalized.tool_results[0].is_error); // Should not detect error
     }
 
@@ -3483,7 +3512,11 @@ mod tests {
         assert_eq!(normalized.tool_results.len(), 1);
         assert_eq!(normalized.tool_results[0].tool_call_id, "call_456");
         assert!(normalized.tool_results[0].is_error); // Should detect error from "Error:" keyword
-        assert!(normalized.tool_results[0].content.contains("File not found"));
+        assert!(
+            normalized.tool_results[0]
+                .content
+                .contains("File not found")
+        );
     }
 
     #[test]
@@ -3554,11 +3587,19 @@ mod tests {
         assert_eq!(normalized.tool_results.len(), 2);
 
         // First result should not be an error
-        let result_1 = normalized.tool_results.iter().find(|r| r.tool_call_id == "call_1").unwrap();
+        let result_1 = normalized
+            .tool_results
+            .iter()
+            .find(|r| r.tool_call_id == "call_1")
+            .unwrap();
         assert!(!result_1.is_error);
 
         // Second result should be detected as error
-        let result_2 = normalized.tool_results.iter().find(|r| r.tool_call_id == "call_2").unwrap();
+        let result_2 = normalized
+            .tool_results
+            .iter()
+            .find(|r| r.tool_call_id == "call_2")
+            .unwrap();
         assert!(result_2.is_error);
     }
 }

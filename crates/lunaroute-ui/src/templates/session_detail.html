@@ -39,12 +39,45 @@
 
     <!-- Timeline -->
     <div class="card">
-        <h2>Timeline</h2>
+        <div class="timeline-header">
+            <h2>Timeline</h2>
+            <button id="reverse-timeline-btn" class="timeline-sort-btn" onclick="toggleTimelineOrder()" title="Toggle chronological order">
+                <span id="sort-icon">🔽</span> Chronological
+            </button>
+        </div>
         <div id="session-timeline">
             <p class="loading">Loading timeline...</p>
         </div>
     </div>
 </div>
+
+<!-- Raw Data Modal -->
+<div id="raw-modal" class="modal">
+    <div class="modal-dialog">
+        <div class="modal-header">
+            <h2>Raw Request/Response</h2>
+            <button class="modal-close" onclick="closeRawModal()">&times;</button>
+        </div>
+        <div class="modal-tabs">
+            <button id="tab-request-btn" class="tab-btn active" onclick="showRawTab('request')">Request</button>
+            <button id="tab-response-btn" class="tab-btn" onclick="showRawTab('response')">Response</button>
+        </div>
+        <div class="modal-toolbar">
+            <button onclick="copyRawJson()" title="Copy to clipboard">📋 Copy</button>
+            <button onclick="downloadRawJson()" title="Download as file">💾 Download</button>
+        </div>
+        <div id="raw-error" class="modal-error" style="display: none;"></div>
+        <div id="raw-modal-content" class="modal-content">
+            <!-- Content will be inserted here -->
+        </div>
+        <!-- Hidden elements to store tab data -->
+        <div style="display: none;">
+            <pre id="raw-request"></pre>
+            <pre id="raw-response"></pre>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -56,6 +89,7 @@
     let isLoadingTimeline = false;
     let hasMoreTimeline = true;
     let allEvents = [];
+    let reverseOrder = false; // Track timeline order
 
     document.addEventListener('DOMContentLoaded', () => {
         loadSessionDetail();
@@ -80,8 +114,10 @@
 
         isLoadingTimeline = true;
 
+        const order = reverseOrder ? 'desc' : 'asc';
+
         try {
-            const response = await fetch(`/api/sessions/${SESSION_ID}/timeline?offset=${timelineOffset}&limit=${timelineLimit}`);
+            const response = await fetch(`/api/sessions/${SESSION_ID}/timeline?offset=${timelineOffset}&limit=${timelineLimit}&order=${order}`);
             const events = await response.json();
 
             if (events.length < timelineLimit) {
@@ -230,9 +266,20 @@
             return;
         }
 
+        // Events are already in the correct order from the backend
         const timelineHtml = events.map(event => {
             const icon = event.event_type === 'request' ? '📨' : '🔧';
-            const time = new Date(event.timestamp).toLocaleTimeString();
+            const time = new Date(event.timestamp).toLocaleString();
+
+            // Add request_id and "View Raw" button if available
+            const requestIdHtml = event.request_id ? `
+                <div class="timeline-request-id">
+                    <span class="request-id-label">Request ID:</span>
+                    <code class="request-id-value">${event.request_id}</code>
+                    <button class="copy-btn" onclick="copyToClipboard('${event.request_id}')" title="Copy Request ID">📋</button>
+                    <button class="view-raw-btn" onclick="viewRawData('${event.request_id}')">📄 View Raw</button>
+                </div>
+            ` : '';
 
             return `
                 <div class="timeline-event">
@@ -240,6 +287,7 @@
                     <div class="timeline-content">
                         <div class="timeline-time">${time}</div>
                         <div class="timeline-description">${event.description}</div>
+                        ${requestIdHtml}
                         ${event.metadata ? `<details class="timeline-metadata">
                             <summary>Details</summary>
                             <pre>${JSON.stringify(event.metadata, null, 2)}</pre>
@@ -259,6 +307,158 @@
             container.appendChild(sentinel);
         }
     }
+
+    // Toggle timeline order - reload from database
+    function toggleTimelineOrder() {
+        reverseOrder = !reverseOrder;
+
+        const sortIcon = document.getElementById('sort-icon');
+        const button = document.getElementById('reverse-timeline-btn');
+
+        if (reverseOrder) {
+            sortIcon.textContent = '🔼';
+            button.innerHTML = '<span id="sort-icon">🔼</span> Reverse Chronological';
+        } else {
+            sortIcon.textContent = '🔽';
+            button.innerHTML = '<span id="sort-icon">🔽</span> Chronological';
+        }
+
+        // Reset and reload timeline from database
+        timelineOffset = 0;
+        hasMoreTimeline = true;
+        allEvents = [];
+        loadTimeline();
+    }
+
+    // Copy to clipboard function
+    function copyToClipboard(text) {
+        navigator.clipboard.writeText(text).then(() => {
+            // Show a brief success message
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.textContent = '✓';
+            setTimeout(() => {
+                btn.textContent = originalText;
+            }, 1000);
+        }).catch(err => {
+            console.error('Failed to copy:', err);
+            alert('Failed to copy to clipboard');
+        });
+    }
+
+    // View raw data function
+    async function viewRawData(requestId) {
+        const modal = document.getElementById('raw-modal');
+        const modalContent = document.getElementById('raw-modal-content');
+        const requestTab = document.getElementById('raw-request');
+        const responseTab = document.getElementById('raw-response');
+        const errorMsg = document.getElementById('raw-error');
+
+        // Clear old data first
+        requestTab.textContent = '';
+        responseTab.textContent = '';
+
+        // Show modal and loading state
+        modal.style.display = 'flex';
+        modalContent.innerHTML = '<p>Loading...</p>';
+        errorMsg.style.display = 'none';
+
+        try {
+            const response = await fetch(`/api/sessions/${SESSION_ID}/raw/${requestId}`);
+            const data = await response.json();
+
+            if (!response.ok || data.error) {
+                throw new Error(data.error || 'Failed to load raw data');
+            }
+
+            // Update tabs with data
+            if (data.request) {
+                requestTab.textContent = JSON.stringify(data.request, null, 2);
+            } else {
+                requestTab.textContent = 'No request data available';
+            }
+
+            if (data.response) {
+                responseTab.textContent = JSON.stringify(data.response, null, 2);
+            } else {
+                responseTab.textContent = 'No response data available';
+            }
+
+            // Show content
+            modalContent.innerHTML = '';
+            showRawTab('request');
+        } catch (error) {
+            errorMsg.textContent = error.message;
+            errorMsg.style.display = 'block';
+            modalContent.innerHTML = '';
+        }
+    }
+
+    // Show specific tab in raw modal
+    function showRawTab(tab) {
+        const requestTab = document.getElementById('raw-request');
+        const responseTab = document.getElementById('raw-response');
+        const requestBtn = document.getElementById('tab-request-btn');
+        const responseBtn = document.getElementById('tab-response-btn');
+        const modalContent = document.getElementById('raw-modal-content');
+
+        if (tab === 'request') {
+            requestBtn.classList.add('active');
+            responseBtn.classList.remove('active');
+            modalContent.innerHTML = `<pre class="raw-json">${requestTab.textContent}</pre>`;
+        } else {
+            responseBtn.classList.add('active');
+            requestBtn.classList.remove('active');
+            modalContent.innerHTML = `<pre class="raw-json">${responseTab.textContent}</pre>`;
+        }
+    }
+
+    // Copy raw JSON
+    function copyRawJson() {
+        const modalContent = document.getElementById('raw-modal-content');
+        const pre = modalContent.querySelector('pre');
+        if (pre) {
+            copyToClipboard(pre.textContent);
+        }
+    }
+
+    // Download raw JSON
+    function downloadRawJson() {
+        const modalContent = document.getElementById('raw-modal-content');
+        const pre = modalContent.querySelector('pre');
+        if (pre) {
+            const blob = new Blob([pre.textContent], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${SESSION_ID}-raw.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+    }
+
+    // Close modal
+    function closeRawModal() {
+        document.getElementById('raw-modal').style.display = 'none';
+    }
+
+    // Close modal on outside click
+    window.addEventListener('click', (event) => {
+        const modal = document.getElementById('raw-modal');
+        if (event.target === modal) {
+            closeRawModal();
+        }
+    });
+
+    // Close modal on ESC key
+    window.addEventListener('keydown', (event) => {
+        const modal = document.getElementById('raw-modal');
+        if (event.key === 'Escape' && modal.style.display === 'flex') {
+            closeRawModal();
+        }
+    });
 </script>
 
 <style>
@@ -275,6 +475,37 @@
     .info-grid .error {
         grid-column: 1 / -1;
         color: var(--danger);
+    }
+
+    .timeline-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+
+    .timeline-header h2 {
+        margin: 0;
+    }
+
+    .timeline-sort-btn {
+        padding: 8px 16px;
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        color: var(--text);
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.9em;
+        transition: all 0.2s;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .timeline-sort-btn:hover {
+        background: var(--primary);
+        color: white;
+        border-color: var(--primary);
     }
 
     .timeline {
@@ -406,6 +637,190 @@
         background: linear-gradient(90deg, var(--primary), var(--success));
         border-radius: 3px;
         transition: width 0.3s ease;
+    }
+
+    /* Timeline request ID styling */
+    .timeline-request-id {
+        margin-top: 8px;
+        padding: 8px;
+        background: var(--bg);
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .request-id-label {
+        color: var(--text-muted);
+        font-size: 0.85em;
+        font-weight: 600;
+    }
+
+    .request-id-value {
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        font-size: 0.8em;
+        background: var(--card-bg);
+        padding: 2px 6px;
+        border-radius: 3px;
+        color: var(--primary);
+    }
+
+    .copy-btn, .view-raw-btn {
+        padding: 4px 8px;
+        font-size: 0.85em;
+        border: 1px solid var(--border);
+        background: var(--card-bg);
+        color: var(--text);
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .copy-btn:hover, .view-raw-btn:hover {
+        background: var(--primary);
+        color: white;
+        border-color: var(--primary);
+    }
+
+    /* Modal styling */
+    .modal {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.75);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+        backdrop-filter: blur(4px);
+    }
+
+    .modal-dialog {
+        background: var(--card-bg);
+        border-radius: 8px;
+        width: 90%;
+        max-width: 1000px;
+        max-height: 90vh;
+        display: flex;
+        flex-direction: column;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 20px;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .modal-header h2 {
+        margin: 0;
+        font-size: 1.5em;
+    }
+
+    .modal-close {
+        font-size: 2em;
+        background: none;
+        border: none;
+        color: var(--text);
+        cursor: pointer;
+        padding: 0;
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+        transition: background 0.2s;
+    }
+
+    .modal-close:hover {
+        background: var(--danger);
+        color: white;
+    }
+
+    .modal-tabs {
+        display: flex;
+        border-bottom: 1px solid var(--border);
+        padding: 0 20px;
+        background: var(--bg);
+    }
+
+    .tab-btn {
+        padding: 12px 24px;
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 1em;
+        font-weight: 600;
+        border-bottom: 3px solid transparent;
+        transition: all 0.2s;
+    }
+
+    .tab-btn:hover {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.05);
+    }
+
+    .tab-btn.active {
+        color: var(--primary);
+        border-bottom-color: var(--primary);
+    }
+
+    .modal-toolbar {
+        display: flex;
+        gap: 8px;
+        padding: 12px 20px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg);
+    }
+
+    .modal-toolbar button {
+        padding: 8px 16px;
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        color: var(--text);
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.9em;
+        transition: all 0.2s;
+    }
+
+    .modal-toolbar button:hover {
+        background: var(--primary);
+        color: white;
+        border-color: var(--primary);
+    }
+
+    .modal-content {
+        flex: 1;
+        overflow: auto;
+        padding: 20px;
+    }
+
+    .modal-error {
+        background: rgba(239, 68, 68, 0.1);
+        color: var(--danger);
+        padding: 12px 20px;
+        margin: 0;
+        border-left: 4px solid var(--danger);
+    }
+
+    .raw-json {
+        background: var(--bg);
+        padding: 16px;
+        border-radius: 4px;
+        overflow-x: auto;
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        font-size: 0.85em;
+        line-height: 1.5;
+        margin: 0;
+        color: var(--text);
     }
 </style>
 {% endblock %}
