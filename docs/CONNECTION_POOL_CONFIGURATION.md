@@ -268,7 +268,20 @@ backends:
 
 ### Prometheus Metrics
 
-Metrics are emitted **per-provider** when `enable_pool_metrics: true`:
+⚠️ **IMPORTANT LIMITATION**: These metrics are defined but not currently populated in production.
+
+The underlying HTTP client (`reqwest`) doesn't expose connection pool lifecycle events. The infrastructure is ready (definitions, methods, tests), but instrumentation is not possible without upstream changes.
+
+**Options for future implementation:**
+1. Wait for reqwest to add pool metrics API (upstream feature request needed)
+2. Migrate to hyper with custom Connector implementation (major refactoring)
+3. Switch to different HTTP client that exposes pool metrics (disruptive)
+
+See [`crates/lunaroute-observability/src/metrics.rs`](../crates/lunaroute-observability/src/metrics.rs) for implementation details.
+
+**Example metrics (when/if implemented):**
+
+Metrics would be emitted **per-provider** when `enable_pool_metrics: true`:
 
 ```promql
 # Connection creation rate (should be low if pooling works)
@@ -284,7 +297,7 @@ http_pool_connections_idle{provider="openai", dialect="openai_compatible"}
 # Connection lifetime distribution
 http_pool_connection_lifetime_seconds{provider="openai", dialect="openai_compatible"}
 
-# Pool configuration (gauge)
+# Pool configuration (gauge) - THIS could be implemented
 http_pool_config{provider="openai", setting="max_idle_per_host"} 32
 http_pool_config{provider="groq", setting="max_idle_per_host"} 64
 ```
@@ -546,11 +559,14 @@ export LUNAROUTE_OPENAI_GROQ_TIMEOUT_SECS=30
 - [ ] Add connection reuse detection (timing-based)
 - [ ] Add debug logging for pool creation/reuse
 
-### Phase 3: Observability (Priority: Medium)
-- [ ] Add Prometheus metrics (connection created/reused/idle)
-- [ ] Add per-provider metric labels
+### Phase 3: Observability (Priority: Medium) ⚠️ BLOCKED
+- [x] Metrics infrastructure (definitions, methods, tests)
+- [ ] **BLOCKED**: Prometheus metrics population (reqwest limitation)
+  - [ ] Option 1: Wait for reqwest pool metrics API
+  - [ ] Option 2: Migrate to hyper with custom Connector
+  - [ ] Option 3: Switch to different HTTP client
+- [ ] Static pool config metrics (could be implemented)
 - [ ] Extend `/health` endpoint with pool info
-- [ ] Add connection lifetime tracking
 - [ ] Document Grafana dashboard queries
 
 ### Phase 4: Routing (Priority: Low)

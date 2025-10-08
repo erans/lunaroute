@@ -145,7 +145,22 @@ export LUNAROUTE_OPENAI_MAX_RETRIES=1
 
 ## Monitoring
 
-With `enable_pool_metrics: true`, Prometheus metrics are exposed at `/metrics`:
+### Pool Metrics (Currently Not Populated)
+
+⚠️ **IMPORTANT LIMITATION**: Pool metrics are defined but not currently populated in production.
+
+The underlying HTTP client (`reqwest`) doesn't expose connection pool lifecycle events needed to track:
+- Connection creation/reuse
+- Idle connection counts
+- Connection lifetimes
+
+**Metrics Infrastructure Ready:**
+- ✅ Metric definitions: `http_pool_connections_created_total`, `http_pool_connections_reused_total`, etc.
+- ✅ Recording methods: `record_pool_connection_created()`, etc.
+- ✅ Comprehensive test coverage (6 tests)
+- ❌ Production instrumentation: Not possible without reqwest changes
+
+**Example metrics (when/if implemented):**
 
 ```promql
 # Connection reuse ratio (higher is better)
@@ -158,7 +173,17 @@ rate(http_pool_connections_created_total[5m])
 
 # Idle connections gauge
 http_pool_connections_idle
+
+# Connection lifetime distribution
+histogram_quantile(0.95, rate(http_pool_connection_lifetime_seconds_bucket[5m]))
 ```
+
+**Options for Future Implementation:**
+1. Wait for reqwest to add pool metrics API (upstream feature request needed)
+2. Migrate to hyper with custom Connector implementation (major refactoring)
+3. Switch to different HTTP client that exposes pool metrics (disruptive)
+
+For now, rely on debug logging and application-level metrics (request latency, success rate) to monitor pool health.
 
 ## Debug Logging
 
@@ -200,9 +225,14 @@ Output:
 - All settings configurable via YAML
 - All settings configurable via environment variables
 - Debug logging for connection behavior
-- Prometheus metrics ready
+- Prometheus metrics infrastructure ready (definitions, tests)
+
+⚠️ **Limitations:**
+- Pool metrics not populated (reqwest doesn't expose pool events)
+- Static pool config metrics could be added (TODO)
 
 🚧 **Phase 2 (Future):**
+- Pool metrics instrumentation (requires upstream changes or HTTP client migration)
 - Multi-provider per dialect support
 - Per-provider pool override
 - Connection rotation strategies
