@@ -92,6 +92,32 @@ lunaroute-server --config config.yaml --dialect anthropic
 | `LUNAROUTE_LOG_REQUESTS` | Log requests to stdout | false |
 | `LUNAROUTE_LOG_LEVEL` | Log level (trace/debug/info/warn/error) | info |
 
+#### HTTP Client Pool Settings (Per-Provider)
+
+Configure connection pooling for optimal performance. Replace `<PROVIDER>` with `OPENAI` or `ANTHROPIC`:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LUNAROUTE_<PROVIDER>_TIMEOUT_SECS` | Total request timeout (seconds) | 600 |
+| `LUNAROUTE_<PROVIDER>_CONNECT_TIMEOUT_SECS` | Connection establishment timeout | 10 |
+| `LUNAROUTE_<PROVIDER>_POOL_MAX_IDLE` | Max idle connections per host | 32 |
+| `LUNAROUTE_<PROVIDER>_POOL_IDLE_TIMEOUT_SECS` | Expire idle connections after N seconds | 90 |
+| `LUNAROUTE_<PROVIDER>_TCP_KEEPALIVE_SECS` | TCP keepalive interval | 60 |
+| `LUNAROUTE_<PROVIDER>_MAX_RETRIES` | Max retries for transient errors | 3 |
+| `LUNAROUTE_<PROVIDER>_ENABLE_POOL_METRICS` | Enable pool metrics | true |
+
+**Examples:**
+```bash
+# Increase OpenAI pool size for high traffic
+export LUNAROUTE_OPENAI_POOL_MAX_IDLE=64
+export LUNAROUTE_OPENAI_POOL_IDLE_TIMEOUT_SECS=120
+
+# Extend Anthropic timeout for extended thinking
+export LUNAROUTE_ANTHROPIC_TIMEOUT_SECS=900  # 15 minutes
+```
+
+See [Connection Pool Configuration](../../docs/CONNECTION_POOL_ENV_VARS.md) for complete tuning guide.
+
 **Note**: When `LUNAROUTE_LOG_LEVEL=debug`, HTTP request and response headers to/from providers will be logged, along with detailed timing metrics and session statistics on shutdown.
 
 ### Config File Format

@@ -83,6 +83,43 @@ pub struct Metrics {
     pub streaming_memory_bounds_hit: CounterVec,
     /// Total streaming duration (first to last chunk)
     pub streaming_duration_seconds: HistogramVec,
+
+    // Connection pool metrics
+    //
+    // IMPORTANT LIMITATION: These metrics are defined and tested, but currently NOT populated
+    // by production code. The underlying HTTP client (reqwest) does not expose connection pool
+    // lifecycle events (connection created/reused/closed/idle count).
+    //
+    // Metrics status:
+    // - pool_config: CAN be populated (static configuration at startup) - TODO: instrument
+    // - pool_connections_created_total: CANNOT be populated without reqwest hooks
+    // - pool_connections_reused_total: CANNOT be populated without reqwest hooks
+    // - pool_connections_idle: CANNOT be populated without reqwest hooks
+    // - pool_connection_lifetime_seconds: CANNOT be populated without reqwest hooks
+    //
+    // Options to populate dynamic metrics:
+    // 1. Wait for reqwest to expose pool events (upstream feature request needed)
+    // 2. Switch to hyper with custom Connector implementation (significant refactoring)
+    // 3. Use a different HTTP client that exposes pool metrics
+    // 4. Implement connection wrapper/middleware (complex, may not capture all events)
+    //
+    // See: https://github.com/seanmonstar/reqwest/issues - no existing issue for pool metrics
+    //
+    /// Total connections created (indicates pool churn)
+    /// NOTE: Currently not populated - reqwest doesn't expose this event
+    pub pool_connections_created_total: CounterVec,
+    /// Total connections reused from pool
+    /// NOTE: Currently not populated - reqwest doesn't expose this event
+    pub pool_connections_reused_total: CounterVec,
+    /// Current idle connections in pool
+    /// NOTE: Currently not populated - reqwest doesn't expose this metric
+    pub pool_connections_idle: GaugeVec,
+    /// Connection lifetime distribution
+    /// NOTE: Currently not populated - reqwest doesn't expose connection close events
+    pub pool_connection_lifetime_seconds: HistogramVec,
+    /// Pool configuration settings (max_idle_per_host, idle_timeout_secs, etc.)
+    /// NOTE: This CAN be populated at startup - instrumentation TODO
+    pub pool_config: GaugeVec,
 }
 
 impl Metrics {
@@ -294,6 +331,48 @@ impl Metrics {
             &["provider", "model"],
         )?;
 
+        // Connection pool metrics
+        let pool_connections_created_total = CounterVec::new(
+            Opts::new(
+                "http_pool_connections_created_total",
+                "Total number of new connections created (indicates pool churn)",
+            ),
+            &["provider", "dialect"],
+        )?;
+
+        let pool_connections_reused_total = CounterVec::new(
+            Opts::new(
+                "http_pool_connections_reused_total",
+                "Total number of connections reused from pool",
+            ),
+            &["provider", "dialect"],
+        )?;
+
+        let pool_connections_idle = GaugeVec::new(
+            Opts::new(
+                "http_pool_connections_idle",
+                "Current number of idle connections in pool",
+            ),
+            &["provider", "dialect"],
+        )?;
+
+        let pool_connection_lifetime_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "http_pool_connection_lifetime_seconds",
+                "Connection lifetime distribution in seconds",
+            )
+            .buckets(vec![1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0]),
+            &["provider", "dialect"],
+        )?;
+
+        let pool_config = GaugeVec::new(
+            Opts::new(
+                "http_pool_config",
+                "HTTP connection pool configuration settings",
+            ),
+            &["provider", "setting"],
+        )?;
+
         // Register all metrics
         registry.register(Box::new(requests_total.clone()))?;
         registry.register(Box::new(requests_success.clone()))?;
@@ -319,6 +398,11 @@ impl Metrics {
         registry.register(Box::new(streaming_chunks_total.clone()))?;
         registry.register(Box::new(streaming_memory_bounds_hit.clone()))?;
         registry.register(Box::new(streaming_duration_seconds.clone()))?;
+        registry.register(Box::new(pool_connections_created_total.clone()))?;
+        registry.register(Box::new(pool_connections_reused_total.clone()))?;
+        registry.register(Box::new(pool_connections_idle.clone()))?;
+        registry.register(Box::new(pool_connection_lifetime_seconds.clone()))?;
+        registry.register(Box::new(pool_config.clone()))?;
 
         Ok(Self {
             registry: Arc::new(registry),
@@ -346,6 +430,11 @@ impl Metrics {
             streaming_chunks_total,
             streaming_memory_bounds_hit,
             streaming_duration_seconds,
+            pool_connections_created_total,
+            pool_connections_reused_total,
+            pool_connections_idle,
+            pool_connection_lifetime_seconds,
+            pool_config,
         })
     }
 
@@ -501,6 +590,134 @@ impl Metrics {
             .with_label_values(&[provider, model, bound_type])
             .inc();
     }
+
+    /// Record a new connection creation (indicates pool churn)
+    ///
+    /// **NOTE**: This method is currently not called by production code.
+    /// reqwest doesn't expose connection lifecycle events.
+    /// See struct-level documentation for details and options.
+    pub fn record_pool_connection_created(&self, provider: &str, dialect: &str) {
+        self.pool_connections_created_total
+            .with_label_values(&[provider, dialect])
+            .inc();
+    }
+
+    /// Record a connection reused from the pool
+    ///
+    /// **NOTE**: This method is currently not called by production code.
+    /// reqwest doesn't expose connection lifecycle events.
+    /// See struct-level documentation for details and options.
+    pub fn record_pool_connection_reused(&self, provider: &str, dialect: &str) {
+        self.pool_connections_reused_total
+            .with_label_values(&[provider, dialect])
+            .inc();
+    }
+
+    /// Update the current number of idle connections in the pool
+    ///
+    /// **NOTE**: This method is currently not called by production code.
+    /// reqwest doesn't expose pool state.
+    /// See struct-level documentation for details and options.
+    pub fn update_pool_connections_idle(&self, provider: &str, dialect: &str, count: usize) {
+        self.pool_connections_idle
+            .with_label_values(&[provider, dialect])
+            .set(count as f64);
+    }
+
+    /// Record a connection's lifetime when it's closed
+    ///
+    /// **NOTE**: This method is currently not called by production code.
+    /// reqwest doesn't expose connection close events.
+    /// See struct-level documentation for details and options.
+    pub fn record_pool_connection_lifetime(
+        &self,
+        provider: &str,
+        dialect: &str,
+        lifetime_secs: f64,
+    ) {
+        self.pool_connection_lifetime_seconds
+            .with_label_values(&[provider, dialect])
+            .observe(lifetime_secs);
+    }
+
+    /// Set pool configuration gauge (called once during initialization)
+    ///
+    /// **NOTE**: This method is currently not called by production code.
+    /// This CAN be implemented - should be called when creating HTTP clients.
+    /// See `record_pool_configuration` for the convenience method.
+    pub fn set_pool_config(&self, provider: &str, setting: &str, value: f64) {
+        self.pool_config
+            .with_label_values(&[provider, setting])
+            .set(value);
+    }
+
+    /// Record HTTP client pool configuration for a provider
+    ///
+    /// **NOTE**: This method is currently not called by production code.
+    /// Unlike the dynamic pool metrics, this CAN be implemented easily.
+    /// Should be called in `OpenAIConnector::new()` and `AnthropicConnector::new()`.
+    ///
+    /// This records static pool configuration settings that don't change after initialization.
+    /// The `dialect` parameter should be the provider type (e.g., "openai_compatible", "anthropic").
+    ///
+    /// # Parameters
+    /// - `provider`: Provider name (e.g., "openai", "anthropic", "groq")
+    /// - `dialect`: Provider dialect/type (e.g., "openai_compatible", "anthropic")
+    /// - `max_idle_per_host`: Maximum idle connections per host
+    /// - `idle_timeout_secs`: Idle timeout in seconds
+    /// - `timeout_secs`: Request timeout in seconds
+    /// - `connect_timeout_secs`: Connection timeout in seconds
+    /// - `tcp_keepalive_secs`: TCP keepalive interval in seconds
+    ///
+    /// # Example
+    /// ```ignore
+    /// // In OpenAIConnector::new():
+    /// metrics.record_pool_configuration(
+    ///     "openai",
+    ///     "openai_compatible",
+    ///     config.client_config.pool_max_idle_per_host,
+    ///     config.client_config.pool_idle_timeout_secs,
+    ///     config.client_config.timeout_secs,
+    ///     config.client_config.connect_timeout_secs,
+    ///     config.client_config.tcp_keepalive_secs,
+    /// );
+    /// ```
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_pool_configuration(
+        &self,
+        provider: &str,
+        dialect: &str,
+        max_idle_per_host: usize,
+        idle_timeout_secs: u64,
+        timeout_secs: u64,
+        connect_timeout_secs: u64,
+        tcp_keepalive_secs: u64,
+    ) {
+        // Record each setting as a separate metric with provider+setting labels
+        // This matches the documented format: http_pool_config{provider="openai", setting="max_idle_per_host"}
+        let provider_dialect = format!("{}:{}", provider, dialect);
+        self.set_pool_config(
+            &provider_dialect,
+            "max_idle_per_host",
+            max_idle_per_host as f64,
+        );
+        self.set_pool_config(
+            &provider_dialect,
+            "idle_timeout_secs",
+            idle_timeout_secs as f64,
+        );
+        self.set_pool_config(&provider_dialect, "timeout_secs", timeout_secs as f64);
+        self.set_pool_config(
+            &provider_dialect,
+            "connect_timeout_secs",
+            connect_timeout_secs as f64,
+        );
+        self.set_pool_config(
+            &provider_dialect,
+            "tcp_keepalive_secs",
+            tcp_keepalive_secs as f64,
+        );
+    }
 }
 
 impl Default for Metrics {
@@ -556,10 +773,18 @@ mod tests {
         let gathered = metrics.registry().gather();
         let total_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_requests_total")
+            .find(|m| m.name() == "lunaroute_requests_total")
             .expect("requests_total metric not found");
 
-        assert_eq!(total_metric.get_metric()[0].get_counter().get_value(), 1.0);
+        assert_eq!(
+            total_metric.metric[0]
+                .counter
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
+            1.0
+        );
     }
 
     #[test]
@@ -570,11 +795,16 @@ mod tests {
         let gathered = metrics.registry().gather();
         let failure_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_requests_failure_total")
+            .find(|m| m.name() == "lunaroute_requests_failure_total")
             .expect("requests_failure_total metric not found");
 
         assert_eq!(
-            failure_metric.get_metric()[0].get_counter().get_value(),
+            failure_metric.metric[0]
+                .counter
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
             1.0
         );
     }
@@ -587,11 +817,16 @@ mod tests {
         let gathered = metrics.registry().gather();
         let prompt_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_tokens_prompt_total")
+            .find(|m| m.name() == "lunaroute_tokens_prompt_total")
             .expect("tokens_prompt_total metric not found");
 
         assert_eq!(
-            prompt_metric.get_metric()[0].get_counter().get_value(),
+            prompt_metric.metric[0]
+                .counter
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
             100.0
         );
     }
@@ -604,11 +839,16 @@ mod tests {
         let gathered = metrics.registry().gather();
         let fallback_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_fallback_triggered_total")
+            .find(|m| m.name() == "lunaroute_fallback_triggered_total")
             .expect("fallback_triggered_total metric not found");
 
         assert_eq!(
-            fallback_metric.get_metric()[0].get_counter().get_value(),
+            fallback_metric.metric[0]
+                .counter
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
             1.0
         );
     }
@@ -621,10 +861,18 @@ mod tests {
         let gathered = metrics.registry().gather();
         let state_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_circuit_breaker_state")
+            .find(|m| m.name() == "lunaroute_circuit_breaker_state")
             .expect("circuit_breaker_state metric not found");
 
-        assert_eq!(state_metric.get_metric()[0].get_gauge().get_value(), 1.0);
+        assert_eq!(
+            state_metric.metric[0]
+                .gauge
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
+            1.0
+        );
     }
 
     #[test]
@@ -635,17 +883,28 @@ mod tests {
         let gathered = metrics.registry().gather();
         let health_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_provider_health_status")
+            .find(|m| m.name() == "lunaroute_provider_health_status")
             .expect("provider_health_status metric not found");
 
-        assert_eq!(health_metric.get_metric()[0].get_gauge().get_value(), 1.0);
+        assert_eq!(
+            health_metric.metric[0]
+                .gauge
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
+            1.0
+        );
 
         let rate_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_provider_success_rate")
+            .find(|m| m.name() == "lunaroute_provider_success_rate")
             .expect("provider_success_rate metric not found");
 
-        assert_eq!(rate_metric.get_metric()[0].get_gauge().get_value(), 0.95);
+        assert_eq!(
+            rate_metric.metric[0].gauge.as_ref().unwrap().value.unwrap(),
+            0.95
+        );
     }
 
     #[test]
@@ -671,24 +930,24 @@ mod tests {
         let gathered = metrics.registry().gather();
         let tool_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_tool_calls_total")
+            .find(|m| m.name() == "lunaroute_tool_calls_total")
             .expect("tool_calls_total metric not found");
 
         // Should have 2 label sets (Read and Write)
-        assert_eq!(tool_metric.get_metric().len(), 2);
+        assert_eq!(tool_metric.metric.len(), 2);
 
         // Find the Read metric and verify count
         let read_metric = tool_metric
-            .get_metric()
+            .metric
             .iter()
             .find(|m| {
-                m.get_label()
+                m.label
                     .iter()
-                    .any(|l| l.get_name() == "tool_name" && l.get_value() == "Read")
+                    .any(|l| l.name() == "tool_name" && l.value() == "Read")
             })
             .expect("Read tool metric not found");
 
-        assert_eq!(read_metric.get_counter().get_value(), 2.0);
+        assert_eq!(read_metric.counter.as_ref().unwrap().value.unwrap(), 2.0);
     }
 
     #[test]
@@ -700,11 +959,11 @@ mod tests {
         let gathered = metrics.registry().gather();
         let post_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_post_processing_duration_seconds")
+            .find(|m| m.name() == "lunaroute_post_processing_duration_seconds")
             .expect("post_processing_duration_seconds metric not found");
 
-        let histogram = post_metric.get_metric()[0].get_histogram();
-        assert_eq!(histogram.get_sample_count(), 2);
+        let histogram = post_metric.metric[0].histogram.as_ref().unwrap();
+        assert_eq!(histogram.sample_count.unwrap(), 2);
     }
 
     #[test]
@@ -717,10 +976,204 @@ mod tests {
         let gathered = metrics.registry().gather();
         let overhead_metric = gathered
             .iter()
-            .find(|m| m.get_name() == "lunaroute_proxy_overhead_seconds")
+            .find(|m| m.name() == "lunaroute_proxy_overhead_seconds")
             .expect("proxy_overhead_seconds metric not found");
 
-        let histogram = overhead_metric.get_metric()[0].get_histogram();
-        assert_eq!(histogram.get_sample_count(), 3);
+        let histogram = overhead_metric.metric[0].histogram.as_ref().unwrap();
+        assert_eq!(histogram.sample_count.unwrap(), 3);
+    }
+
+    #[test]
+    fn test_record_pool_connection_created() {
+        let metrics = Metrics::new().unwrap();
+        metrics.record_pool_connection_created("openai", "openai_compatible");
+        metrics.record_pool_connection_created("openai", "openai_compatible");
+        metrics.record_pool_connection_created("anthropic", "anthropic");
+
+        let gathered = metrics.registry().gather();
+        let created_metric = gathered
+            .iter()
+            .find(|m| m.name() == "http_pool_connections_created_total")
+            .expect("pool_connections_created_total metric not found");
+
+        // Should have 2 label sets (openai:openai_compatible and anthropic:anthropic)
+        assert_eq!(created_metric.metric.len(), 2);
+
+        // Find openai metric and verify count
+        let openai_metric = created_metric
+            .metric
+            .iter()
+            .find(|m| {
+                m.label
+                    .iter()
+                    .any(|l| l.name() == "provider" && l.value() == "openai")
+            })
+            .expect("openai pool metric not found");
+
+        assert_eq!(openai_metric.counter.as_ref().unwrap().value.unwrap(), 2.0);
+    }
+
+    #[test]
+    fn test_record_pool_connection_reused() {
+        let metrics = Metrics::new().unwrap();
+        metrics.record_pool_connection_reused("openai", "openai_compatible");
+        metrics.record_pool_connection_reused("openai", "openai_compatible");
+        metrics.record_pool_connection_reused("openai", "openai_compatible");
+
+        let gathered = metrics.registry().gather();
+        let reused_metric = gathered
+            .iter()
+            .find(|m| m.name() == "http_pool_connections_reused_total")
+            .expect("pool_connections_reused_total metric not found");
+
+        assert_eq!(
+            reused_metric.metric[0]
+                .counter
+                .as_ref()
+                .unwrap()
+                .value
+                .unwrap(),
+            3.0
+        );
+    }
+
+    #[test]
+    fn test_update_pool_connections_idle() {
+        let metrics = Metrics::new().unwrap();
+        metrics.update_pool_connections_idle("openai", "openai_compatible", 5);
+        metrics.update_pool_connections_idle("anthropic", "anthropic", 3);
+
+        let gathered = metrics.registry().gather();
+        let idle_metric = gathered
+            .iter()
+            .find(|m| m.name() == "http_pool_connections_idle")
+            .expect("pool_connections_idle metric not found");
+
+        // Should have 2 providers
+        assert_eq!(idle_metric.metric.len(), 2);
+
+        // Check openai has 5 idle connections
+        let openai_metric = idle_metric
+            .metric
+            .iter()
+            .find(|m| {
+                m.label
+                    .iter()
+                    .any(|l| l.name() == "provider" && l.value() == "openai")
+            })
+            .expect("openai idle metric not found");
+
+        assert_eq!(openai_metric.gauge.as_ref().unwrap().value.unwrap(), 5.0);
+    }
+
+    #[test]
+    fn test_record_pool_connection_lifetime() {
+        let metrics = Metrics::new().unwrap();
+        metrics.record_pool_connection_lifetime("openai", "openai_compatible", 10.5);
+        metrics.record_pool_connection_lifetime("openai", "openai_compatible", 30.2);
+        metrics.record_pool_connection_lifetime("openai", "openai_compatible", 60.0);
+
+        let gathered = metrics.registry().gather();
+        let lifetime_metric = gathered
+            .iter()
+            .find(|m| m.name() == "http_pool_connection_lifetime_seconds")
+            .expect("pool_connection_lifetime_seconds metric not found");
+
+        let histogram = lifetime_metric.metric[0].histogram.as_ref().unwrap();
+        assert_eq!(histogram.sample_count.unwrap(), 3);
+
+        // Verify sum of observations
+        let expected_sum = 10.5 + 30.2 + 60.0;
+        assert!((histogram.sample_sum.unwrap() - expected_sum).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_set_pool_config() {
+        let metrics = Metrics::new().unwrap();
+        metrics.set_pool_config("openai:openai_compatible", "max_idle_per_host", 32.0);
+        metrics.set_pool_config("openai:openai_compatible", "idle_timeout_secs", 90.0);
+        metrics.set_pool_config("anthropic:anthropic", "max_idle_per_host", 16.0);
+
+        let gathered = metrics.registry().gather();
+        let config_metric = gathered
+            .iter()
+            .find(|m| m.name() == "http_pool_config")
+            .expect("pool_config metric not found");
+
+        // Should have 3 settings (2 for openai, 1 for anthropic)
+        assert_eq!(config_metric.metric.len(), 3);
+
+        // Find max_idle_per_host for openai
+        let openai_max_idle = config_metric
+            .metric
+            .iter()
+            .find(|m| {
+                m.label
+                    .iter()
+                    .any(|l| l.name() == "provider" && l.value() == "openai:openai_compatible")
+                    && m.label
+                        .iter()
+                        .any(|l| l.name() == "setting" && l.value() == "max_idle_per_host")
+            })
+            .expect("openai max_idle_per_host not found");
+
+        assert_eq!(openai_max_idle.gauge.as_ref().unwrap().value.unwrap(), 32.0);
+    }
+
+    #[test]
+    fn test_record_pool_configuration() {
+        let metrics = Metrics::new().unwrap();
+        metrics.record_pool_configuration(
+            "openai",
+            "openai_compatible",
+            32,  // max_idle_per_host
+            90,  // idle_timeout_secs
+            600, // timeout_secs
+            10,  // connect_timeout_secs
+            60,  // tcp_keepalive_secs
+        );
+
+        let gathered = metrics.registry().gather();
+        let config_metric = gathered
+            .iter()
+            .find(|m| m.name() == "http_pool_config")
+            .expect("pool_config metric not found");
+
+        // Should have 5 settings (all config params)
+        assert_eq!(config_metric.metric.len(), 5);
+
+        // Verify all settings are present
+        let settings: Vec<&str> = config_metric
+            .metric
+            .iter()
+            .filter_map(|m| {
+                m.label
+                    .iter()
+                    .find(|l| l.name() == "setting")
+                    .map(|l| l.value())
+            })
+            .collect();
+
+        assert!(settings.contains(&"max_idle_per_host"));
+        assert!(settings.contains(&"idle_timeout_secs"));
+        assert!(settings.contains(&"timeout_secs"));
+        assert!(settings.contains(&"connect_timeout_secs"));
+        assert!(settings.contains(&"tcp_keepalive_secs"));
+
+        // Verify timeout_secs value
+        let timeout_setting = config_metric
+            .metric
+            .iter()
+            .find(|m| {
+                m.label
+                    .iter()
+                    .any(|l| l.name() == "setting" && l.value() == "timeout_secs")
+            })
+            .expect("timeout_secs setting not found");
+
+        assert_eq!(
+            timeout_setting.gauge.as_ref().unwrap().value.unwrap(),
+            600.0
+        );
     }
 }

@@ -19,8 +19,21 @@ pub struct HttpClientConfig {
     /// Maximum number of idle connections per host
     pub pool_max_idle_per_host: usize,
 
+    /// Pool idle timeout in seconds
+    /// Connections idle for longer than this are removed from the pool.
+    /// Should be less than the upstream server's idle timeout (typically 60-120s).
+    pub pool_idle_timeout_secs: u64,
+
+    /// TCP keepalive interval in seconds
+    /// Prevents firewall/load balancer timeouts during long-running requests.
+    pub tcp_keepalive_secs: u64,
+
     /// Maximum number of retries for transient errors
     pub max_retries: u32,
+
+    /// Enable connection pool metrics
+    /// When true, exposes Prometheus metrics for pool behavior.
+    pub enable_pool_metrics: bool,
 
     /// User agent string
     pub user_agent: String,
@@ -47,7 +60,13 @@ impl Default for HttpClientConfig {
             timeout_secs: 600,
             connect_timeout_secs: 10,
             pool_max_idle_per_host: 32,
+            // CRITICAL: Expire idle connections before upstream servers close them
+            // OpenAI/Anthropic typically close idle connections after 60-120 seconds.
+            pool_idle_timeout_secs: 90,
+            // TCP keep-alive prevents firewall/load balancer timeouts during long requests
+            tcp_keepalive_secs: 60,
             max_retries: 3,
+            enable_pool_metrics: true,
             user_agent: format!("LunaRoute/{}", env!("CARGO_PKG_VERSION")),
         }
     }
@@ -55,6 +74,17 @@ impl Default for HttpClientConfig {
 
 /// Create a configured HTTP client with connection pooling
 pub fn create_client(config: &HttpClientConfig) -> Result<Client> {
+    debug!(
+        "Creating HTTP client: timeout={}s, connect_timeout={}s, pool_max_idle={}, \
+         pool_idle_timeout={}s, tcp_keepalive={}s, metrics_enabled={}",
+        config.timeout_secs,
+        config.connect_timeout_secs,
+        config.pool_max_idle_per_host,
+        config.pool_idle_timeout_secs,
+        config.tcp_keepalive_secs,
+        config.enable_pool_metrics
+    );
+
     ClientBuilder::new()
         .timeout(Duration::from_secs(config.timeout_secs))
         .connect_timeout(Duration::from_secs(config.connect_timeout_secs))
@@ -62,13 +92,12 @@ pub fn create_client(config: &HttpClientConfig) -> Result<Client> {
         // CRITICAL FIX: Expire idle connections before upstream servers close them
         // Without this, connections sit in pool forever and get closed by server,
         // causing "stuck" requests when client tries to reuse dead connections.
-        // OpenAI/Anthropic typically close idle connections after 60-120 seconds.
-        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_idle_timeout(Duration::from_secs(config.pool_idle_timeout_secs))
         .user_agent(&config.user_agent)
         // Use rustls for TLS (no openssl dependency)
         .use_rustls_tls()
         // TCP keep-alive prevents firewall/load balancer timeouts during long requests
-        .tcp_keepalive(Duration::from_secs(60))
+        .tcp_keepalive(Duration::from_secs(config.tcp_keepalive_secs))
         // Disable automatic decompression for true passthrough mode
         // In passthrough mode, we forward the exact response from upstream
         .no_gzip()
@@ -143,7 +172,10 @@ mod tests {
         assert_eq!(config.timeout_secs, 600); // 10 minutes for long-running streams
         assert_eq!(config.connect_timeout_secs, 10);
         assert_eq!(config.pool_max_idle_per_host, 32);
+        assert_eq!(config.pool_idle_timeout_secs, 90); // Expire before server closes
+        assert_eq!(config.tcp_keepalive_secs, 60); // Keep long requests alive
         assert_eq!(config.max_retries, 3);
+        assert!(config.enable_pool_metrics);
         assert!(config.user_agent.starts_with("LunaRoute/"));
     }
 
@@ -234,12 +266,18 @@ mod tests {
             timeout_secs: 30,
             connect_timeout_secs: 5,
             pool_max_idle_per_host: 16,
+            pool_idle_timeout_secs: 60,
+            tcp_keepalive_secs: 30,
             max_retries: 5,
+            enable_pool_metrics: false,
             user_agent: "CustomAgent/1.0".to_string(),
         };
 
         assert_eq!(config.timeout_secs, 30);
+        assert_eq!(config.pool_idle_timeout_secs, 60);
+        assert_eq!(config.tcp_keepalive_secs, 30);
         assert_eq!(config.max_retries, 5);
+        assert!(!config.enable_pool_metrics);
         assert_eq!(config.user_agent, "CustomAgent/1.0");
     }
 
@@ -249,7 +287,10 @@ mod tests {
             timeout_secs: 120,
             connect_timeout_secs: 20,
             pool_max_idle_per_host: 64,
+            pool_idle_timeout_secs: 45,
+            tcp_keepalive_secs: 90,
             max_retries: 5,
+            enable_pool_metrics: true,
             user_agent: "Test/1.0".to_string(),
         };
 

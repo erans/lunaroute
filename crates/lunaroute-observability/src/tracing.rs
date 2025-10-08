@@ -14,7 +14,7 @@ use opentelemetry::{
 };
 use opentelemetry_sdk::{
     Resource,
-    trace::{RandomIdGenerator, Sampler, TracerProvider},
+    trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
 };
 
 /// Tracer configuration
@@ -41,11 +41,13 @@ impl Default for TracerConfig {
 /// Initialize a tracer provider
 ///
 /// Returns a TracerProvider that can be used to create tracers
-pub fn init_tracer_provider(config: TracerConfig) -> TracerProvider {
-    let resource = Resource::new(vec![
-        KeyValue::new("service.name", config.service_name),
-        KeyValue::new("service.version", config.service_version),
-    ]);
+pub fn init_tracer_provider(config: TracerConfig) -> SdkTracerProvider {
+    let resource = Resource::builder_empty()
+        .with_attributes([
+            KeyValue::new("service.name", config.service_name),
+            KeyValue::new("service.version", config.service_version),
+        ])
+        .build();
 
     let sampler = if config.sampling_rate >= 1.0 {
         Sampler::AlwaysOn
@@ -55,13 +57,10 @@ pub fn init_tracer_provider(config: TracerConfig) -> TracerProvider {
         Sampler::TraceIdRatioBased(config.sampling_rate)
     };
 
-    TracerProvider::builder()
-        .with_config(
-            opentelemetry_sdk::trace::Config::default()
-                .with_resource(resource)
-                .with_id_generator(RandomIdGenerator::default())
-                .with_sampler(sampler),
-        )
+    SdkTracerProvider::builder()
+        .with_resource(resource)
+        .with_id_generator(RandomIdGenerator::default())
+        .with_sampler(sampler)
         .build()
 }
 

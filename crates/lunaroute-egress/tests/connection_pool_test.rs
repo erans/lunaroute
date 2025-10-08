@@ -26,7 +26,7 @@ async fn test_connection_pool_reuse() {
     // Make multiple requests to the same server
     for i in 0..5 {
         let response = client
-            .get(&format!("{}/test/{}", server.url(), i))
+            .get(format!("{}/test/{}", server.url(), i))
             .send()
             .await;
 
@@ -60,7 +60,7 @@ async fn test_connection_pool_idle_timeout() {
     let server = start_mock_server().await;
 
     // Make first request to establish connection
-    let response1 = client.get(&format!("{}/test/1", server.url())).send().await;
+    let response1 = client.get(format!("{}/test/1", server.url())).send().await;
     assert!(response1.is_ok(), "First request should succeed");
 
     // Wait for pool_idle_timeout (90 seconds) + buffer
@@ -68,7 +68,7 @@ async fn test_connection_pool_idle_timeout() {
     sleep(Duration::from_secs(95)).await;
 
     // Make second request - should create new connection, not reuse stale one
-    let response2 = client.get(&format!("{}/test/2", server.url())).send().await;
+    let response2 = client.get(format!("{}/test/2", server.url())).send().await;
     assert!(
         response2.is_ok(),
         "Second request should succeed after idle timeout"
@@ -96,7 +96,7 @@ async fn test_server_closes_idle_connection() {
     let server = start_mock_server_with_short_timeout().await;
 
     // Make first request
-    let response1 = client.get(&format!("{}/test/1", server.url())).send().await;
+    let response1 = client.get(format!("{}/test/1", server.url())).send().await;
     assert!(response1.is_ok(), "First request should succeed");
 
     // Wait for server to close idle connections (5 seconds)
@@ -104,7 +104,7 @@ async fn test_server_closes_idle_connection() {
 
     // Make second request - should handle closed connection gracefully
     let start = std::time::Instant::now();
-    let response2 = client.get(&format!("{}/test/2", server.url())).send().await;
+    let response2 = client.get(format!("{}/test/2", server.url())).send().await;
 
     // Request should either succeed (new connection) or fail fast (not hang)
     let elapsed = start.elapsed();
@@ -152,7 +152,7 @@ async fn start_mock_server_with_timeout(_idle_timeout: Duration) -> MockServer {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
-    let app = Router::new().route("/test/:id", get(|| async { "OK" }));
+    let app = Router::new().route("/test/{id}", get(|| async { "OK" }));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -198,7 +198,7 @@ async fn test_concurrent_requests() {
         let url = url.clone();
 
         let handle = tokio::spawn(async move {
-            let response = client.get(&format!("{}/test/{}", url, i)).send().await;
+            let response = client.get(format!("{}/test/{}", url, i)).send().await;
             assert!(response.is_ok(), "Concurrent request {} should succeed", i);
         });
 

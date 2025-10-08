@@ -1,0 +1,77 @@
+# Connection Pool Configuration Example
+# This example demonstrates configuring HTTP connection pooling for AI providers
+
+# Server configuration
+host: "0.0.0.0"
+port: 8081
+
+# Provider configuration with connection pool settings
+providers:
+  # OpenAI provider with custom connection pool settings
+  openai:
+    enabled: true
+    api_key: "${OPENAI_API_KEY}"  # Or set directly
+    base_url: "https://api.openai.com/v1"
+
+    # HTTP client / connection pool configuration
+    http_client:
+      # Total request timeout including streaming (default: 600s)
+      timeout_secs: 600
+
+      # Connection establishment timeout (default: 10s)
+      connect_timeout_secs: 10
+
+      # Maximum idle connections per host (default: 32)
+      # Higher values = more concurrent requests but more resources
+      pool_max_idle_per_host: 32
+
+      # Expire idle connections after N seconds (default: 90s)
+      # Should be less than upstream server timeout (60-120s)
+      pool_idle_timeout_secs: 90
+
+      # TCP keepalive interval (default: 60s)
+      # Prevents firewall/load balancer timeouts during long requests
+      tcp_keepalive_secs: 60
+
+      # Maximum retries for transient errors (default: 3)
+      max_retries: 3
+
+      # Enable Prometheus metrics for connection pool (default: true)
+      enable_pool_metrics: true
+
+  # Anthropic provider with extended thinking timeout
+  anthropic:
+    enabled: true
+    api_key: "${ANTHROPIC_API_KEY}"
+    base_url: "https://api.anthropic.com"
+
+    http_client:
+      # Longer timeout for extended thinking (default: 600s / 10 minutes)
+      timeout_secs: 600
+
+      # Same pool settings as OpenAI
+      pool_max_idle_per_host: 32
+      pool_idle_timeout_secs: 90
+      tcp_keepalive_secs: 60
+      max_retries: 3
+      enable_pool_metrics: true
+
+# Session recording (optional)
+session_recording:
+  jsonl:
+    enabled: true
+    directory: "~/.lunaroute/sessions"
+
+  sqlite:
+    enabled: true
+    path: "~/.lunaroute/sessions.db"
+
+# Logging
+logging:
+  level: "info"
+  log_requests: false
+
+# UI Server (optional)
+ui:
+  enabled: true
+  port: 8082

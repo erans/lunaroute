@@ -1,4 +1,4 @@
-# 🌙 LunaRoute
+# 🌕 LunaRoute
 
 **Your AI Coding Assistant's Best Friend**
 
@@ -373,11 +373,40 @@ LunaRoute is built as a modular Rust workspace:
 **Key Crates:**
 - `lunaroute-core` - Types and traits
 - `lunaroute-ingress` - HTTP endpoints (OpenAI, Anthropic)
-- `lunaroute-egress` - Provider connectors
+- `lunaroute-egress` - Provider connectors with connection pooling
 - `lunaroute-session` - Recording and search
 - `lunaroute-pii` - PII detection/redaction
 - `lunaroute-observability` - Metrics and health
 - `lunaroute-server` - Production binary
+
+### Connection Pooling
+
+LunaRoute uses HTTP connection pooling for optimal performance:
+
+**Default Settings:**
+- Request timeout: 600s (for long streaming sessions)
+- Connection timeout: 10s
+- Pool size per host: 32 idle connections
+- Idle timeout: 90s (expires before server timeout)
+- TCP keepalive: 60s (keeps long requests alive)
+
+**Tunable via YAML:**
+```yaml
+providers:
+  openai:
+    http_client:
+      timeout_secs: 300
+      pool_max_idle_per_host: 64
+      pool_idle_timeout_secs: 120
+```
+
+**Or Environment Variables:**
+```bash
+export LUNAROUTE_OPENAI_TIMEOUT_SECS=300
+export LUNAROUTE_OPENAI_POOL_MAX_IDLE=64
+```
+
+See [Connection Pool Configuration](docs/CONNECTION_POOL_ENV_VARS.md) for complete tuning guide.
 
 ---
 
@@ -386,6 +415,7 @@ LunaRoute is built as a modular Rust workspace:
 - **[Claude Code Guide](CLAUDE_CODE_GUIDE.md)** - Complete guide for local development
 - **[Server README](crates/lunaroute-server/README.md)** - Configuration reference
 - **[Config Examples](examples/configs/README.md)** - Pre-built configs for common scenarios
+- **[Connection Pool Configuration](docs/CONNECTION_POOL_ENV_VARS.md)** - HTTP client pool tuning
 - **[PII Detection](crates/lunaroute-pii/README.md)** - PII redaction details
 - **[TODO.md](TODO.md)** - Roadmap and implementation status
 
@@ -485,18 +515,13 @@ Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## 📝 License
 
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+Licensed under the Apache License, Version 2.0 ([LICENSE](LICENSE)).
 
 ---
 
 ## 🌟 Why "LunaRoute"?
 
-Like the moon 🌙 guides travelers at night, LunaRoute illuminates your AI interactions. Every request, every token, every decision - visible and trackable.
+Like the moon 🌕 guides travelers at night, LunaRoute illuminates your AI interactions. Every request, every token, every decision - visible and trackable.
 
 **Built with ❤️ for developers who want visibility, control, and performance.**
 

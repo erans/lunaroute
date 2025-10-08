@@ -72,49 +72,81 @@ async fn test_metrics_recording_workflow() {
     // Verify requests total
     let requests_total = gathered
         .iter()
-        .find(|m| m.get_name() == "lunaroute_requests_total")
+        .find(|m| m.name() == "lunaroute_requests_total")
         .expect("requests_total not found");
     assert_eq!(
-        requests_total.get_metric()[0].get_counter().get_value(),
+        requests_total.metric[0]
+            .counter
+            .as_ref()
+            .unwrap()
+            .value
+            .unwrap(),
         3.0
     );
 
     // Verify tokens
     let tokens_total = gathered
         .iter()
-        .find(|m| m.get_name() == "lunaroute_tokens_total")
+        .find(|m| m.name() == "lunaroute_tokens_total")
         .expect("tokens_total not found");
     assert_eq!(
-        tokens_total.get_metric()[0].get_counter().get_value(),
+        tokens_total.metric[0]
+            .counter
+            .as_ref()
+            .unwrap()
+            .value
+            .unwrap(),
         450.0
     );
 
     // Verify fallback
     let fallback = gathered
         .iter()
-        .find(|m| m.get_name() == "lunaroute_fallback_triggered_total")
+        .find(|m| m.name() == "lunaroute_fallback_triggered_total")
         .expect("fallback not found");
-    assert_eq!(fallback.get_metric()[0].get_counter().get_value(), 1.0);
+    assert_eq!(
+        fallback.metric[0].counter.as_ref().unwrap().value.unwrap(),
+        1.0
+    );
 
     // Verify circuit breaker state
     let cb_state = gathered
         .iter()
-        .find(|m| m.get_name() == "lunaroute_circuit_breaker_state")
+        .find(|m| m.name() == "lunaroute_circuit_breaker_state")
         .expect("circuit_breaker_state not found");
-    assert_eq!(cb_state.get_metric()[0].get_gauge().get_value(), 1.0); // Open = 1
+    assert_eq!(
+        cb_state.metric[0].gauge.as_ref().unwrap().value.unwrap(),
+        1.0
+    ); // Open = 1
 
     // Verify health status
     let health_status = gathered
         .iter()
-        .find(|m| m.get_name() == "lunaroute_provider_health_status")
+        .find(|m| m.name() == "lunaroute_provider_health_status")
         .expect("health_status not found");
-    assert_eq!(health_status.get_metric()[0].get_gauge().get_value(), 2.0); // Degraded = 2
+    assert_eq!(
+        health_status.metric[0]
+            .gauge
+            .as_ref()
+            .unwrap()
+            .value
+            .unwrap(),
+        2.0
+    ); // Degraded = 2
 
     let success_rate = gathered
         .iter()
-        .find(|m| m.get_name() == "lunaroute_provider_success_rate")
+        .find(|m| m.name() == "lunaroute_provider_success_rate")
         .expect("success_rate not found");
-    assert_eq!(success_rate.get_metric()[0].get_gauge().get_value(), 0.67);
+    assert_eq!(
+        success_rate.metric[0]
+            .gauge
+            .as_ref()
+            .unwrap()
+            .value
+            .unwrap(),
+        0.67
+    );
 }
 
 #[tokio::test]
@@ -232,13 +264,13 @@ async fn test_concurrent_metrics_recording() {
     let gathered = metrics.registry().gather();
     let requests_total = gathered
         .iter()
-        .find(|m| m.get_name() == "lunaroute_requests_total")
+        .find(|m| m.name() == "lunaroute_requests_total")
         .expect("requests_total not found");
 
     let total_requests: f64 = requests_total
-        .get_metric()
+        .metric
         .iter()
-        .map(|m| m.get_counter().get_value())
+        .map(|m| m.counter.as_ref().unwrap().value.unwrap())
         .sum();
 
     assert_eq!(total_requests, 50.0);
@@ -276,13 +308,13 @@ async fn test_circuit_breaker_state_transitions_tracked() {
     let gathered = metrics.registry().gather();
     let transitions = gathered
         .iter()
-        .find(|m| m.get_name() == "lunaroute_circuit_breaker_transitions_total")
+        .find(|m| m.name() == "lunaroute_circuit_breaker_transitions_total")
         .expect("transitions not found");
 
     let total_transitions: f64 = transitions
-        .get_metric()
+        .metric
         .iter()
-        .map(|m| m.get_counter().get_value())
+        .map(|m| m.counter.as_ref().unwrap().value.unwrap())
         .sum();
 
     assert_eq!(total_transitions, 3.0);
@@ -304,18 +336,34 @@ async fn test_health_status_changes_reflected() {
     let gathered = metrics.registry().gather();
     let health_status = gathered
         .iter()
-        .find(|m| m.get_name() == "lunaroute_provider_health_status")
+        .find(|m| m.name() == "lunaroute_provider_health_status")
         .expect("health_status not found");
 
     // Should be Unhealthy (3)
-    assert_eq!(health_status.get_metric()[0].get_gauge().get_value(), 3.0);
+    assert_eq!(
+        health_status.metric[0]
+            .gauge
+            .as_ref()
+            .unwrap()
+            .value
+            .unwrap(),
+        3.0
+    );
 
     let success_rate = gathered
         .iter()
-        .find(|m| m.get_name() == "lunaroute_provider_success_rate")
+        .find(|m| m.name() == "lunaroute_provider_success_rate")
         .expect("success_rate not found");
 
-    assert_eq!(success_rate.get_metric()[0].get_gauge().get_value(), 0.3);
+    assert_eq!(
+        success_rate.metric[0]
+            .gauge
+            .as_ref()
+            .unwrap()
+            .value
+            .unwrap(),
+        0.3
+    );
 }
 
 #[tokio::test]
@@ -332,19 +380,19 @@ async fn test_multiple_models_metrics_separation() {
     let gathered = metrics.registry().gather();
     let requests_total = gathered
         .iter()
-        .find(|m| m.get_name() == "lunaroute_requests_total")
+        .find(|m| m.name() == "lunaroute_requests_total")
         .expect("requests_total not found");
 
     // Should have 3 different label combinations
-    assert_eq!(requests_total.get_metric().len(), 3);
+    assert_eq!(requests_total.metric.len(), 3);
 
     // Verify each model has correct count
-    for metric in requests_total.get_metric() {
-        let labels = metric.get_label();
-        let model_label = labels.iter().find(|l| l.get_name() == "model").unwrap();
-        let count = metric.get_counter().get_value();
+    for metric in &requests_total.metric {
+        let labels = &metric.label;
+        let model_label = labels.iter().find(|l| l.name() == "model").unwrap();
+        let count = metric.counter.as_ref().unwrap().value.unwrap();
 
-        match model_label.get_value() {
+        match model_label.value() {
             "gpt-5-mini" => assert_eq!(count, 2.0),
             "gpt-4o" => assert_eq!(count, 1.0),
             "claude-sonnet-4-5" => assert_eq!(count, 1.0),
@@ -367,13 +415,13 @@ async fn test_latency_histogram_buckets() {
     let gathered = metrics.registry().gather();
     let duration = gathered
         .iter()
-        .find(|m| m.get_name() == "lunaroute_request_duration_seconds")
+        .find(|m| m.name() == "lunaroute_request_duration_seconds")
         .expect("duration not found");
 
-    let histogram = duration.get_metric()[0].get_histogram();
-    assert_eq!(histogram.get_sample_count(), 4);
+    let histogram = duration.metric[0].histogram.as_ref().unwrap();
+    assert_eq!(histogram.sample_count.unwrap(), 4);
 
     // Verify sum of observations
     let expected_sum = 0.01 + 0.1 + 1.0 + 5.0;
-    assert!((histogram.get_sample_sum() - expected_sum).abs() < 0.001);
+    assert!((histogram.sample_sum.unwrap() - expected_sum).abs() < 0.001);
 }

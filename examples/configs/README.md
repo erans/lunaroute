@@ -4,6 +4,26 @@ This directory contains example configurations for common LunaRoute deployment s
 
 ## Available Configurations
 
+### `connection-pool-example.yaml` ⭐ NEW
+HTTP client connection pool configuration for optimal performance.
+
+```bash
+export OPENAI_API_KEY=sk-...
+lunaroute-server --config examples/configs/connection-pool-example.yaml
+```
+
+**Features:**
+- **Configurable timeouts**: Request and connection timeouts
+- **Pool size tuning**: Max idle connections per host
+- **Idle connection management**: Automatic expiry before server timeout
+- **TCP keepalive**: Keep long-running requests alive
+- **Retry configuration**: Max retries for transient errors
+- **Metrics toggle**: Enable/disable pool metrics
+
+All settings also configurable via environment variables (`LUNAROUTE_<PROVIDER>_*`).
+
+See [Connection Pool Configuration](../../docs/CONNECTION_POOL_ENV_VARS.md) for complete guide.
+
 ### `routing-strategies.yaml` ⭐ NEW
 Intelligent routing with round-robin and weighted load balancing.
 
