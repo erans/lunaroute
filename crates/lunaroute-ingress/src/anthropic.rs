@@ -119,6 +119,8 @@ pub enum AnthropicContentBlock {
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(default)]
+        is_error: Option<bool>,
     },
 }
 
@@ -319,8 +321,13 @@ fn validate_request(req: &AnthropicMessagesRequest) -> IngressResult<()> {
 
 /// Convert Anthropic request to normalized request
 pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedRequest> {
+    use lunaroute_core::normalized::ToolResult;
+
     // Validate request parameters first
     validate_request(&req)?;
+
+    // Collect both messages and tool results
+    let mut tool_results = Vec::new();
 
     let messages: Result<Vec<Message>, IngressError> = req
         .messages
@@ -342,7 +349,7 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
                 .unwrap_or(AnthropicMessageContent::Text(String::new()));
 
             // Parse content and extract tool calls
-            let (text_content, tool_calls, tool_call_id) = match content {
+            let (text_content, tool_calls, tool_call_id, _tool_is_error) = match content {
                 AnthropicMessageContent::Text(text) => {
                     // Validate message content length
                     if text.len() > 1_000_000 {
@@ -351,12 +358,13 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
                             text.len()
                         )));
                     }
-                    (text, vec![], None)
+                    (text, vec![], None, None)
                 }
                 AnthropicMessageContent::Blocks(blocks) => {
                     let mut text_parts = Vec::new();
                     let mut tool_calls_vec = Vec::new();
                     let mut tool_result_id = None;
+                    let mut tool_result_is_error = None;
 
                     for block in blocks {
                         match block {
@@ -390,14 +398,24 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
                             AnthropicContentBlock::ToolResult {
                                 tool_use_id,
                                 content,
+                                is_error,
                             } => {
-                                tool_result_id = Some(tool_use_id);
-                                text_parts.push(content);
+                                tool_result_id = Some(tool_use_id.clone());
+                                tool_result_is_error = is_error;
+                                text_parts.push(content.clone());
+
+                                // Add to tool_results collection
+                                tool_results.push(ToolResult {
+                                    tool_call_id: tool_use_id,
+                                    is_error: is_error.unwrap_or(false),
+                                    content,
+                                    tool_name: None,  // Will be filled in by SessionRecorder
+                                });
                             }
                         }
                     }
 
-                    (text_parts.join("\n"), tool_calls_vec, tool_result_id)
+                    (text_parts.join("\n"), tool_calls_vec, tool_result_id, tool_result_is_error)
                 }
             };
 
@@ -461,6 +479,7 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
         stream: req.stream.unwrap_or(false),
         tools,
         tool_choice: None, // Anthropic doesn't have tool_choice in same way
+        tool_results,      // Tool results extracted from messages
         metadata: std::collections::HashMap::new(),
     })
 }
@@ -1042,6 +1061,47 @@ pub async fn messages_passthrough(
                 tool_count,
             },
         });
+
+        // Detect and record tool results from incoming messages
+        if let Some(messages) = req.get("messages").and_then(|m| m.as_array()) {
+            for message in messages {
+                if let Some("user") = message.get("role").and_then(|r| r.as_str()) {
+                    // Check content blocks for tool_result
+                    if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
+                        for block in content {
+                            if let Some("tool_result") = block.get("type").and_then(|t| t.as_str())
+                                && let Some(tool_use_id) = block.get("tool_use_id").and_then(|id| id.as_str())
+                            {
+                                let content_text = block
+                                    .get("content")
+                                    .and_then(|c| c.as_str())
+                                    .unwrap_or("");
+
+                                // Anthropic has explicit is_error field
+                                let is_error = block
+                                    .get("is_error")
+                                    .and_then(|e| e.as_bool())
+                                    .unwrap_or(false);
+
+                                let output_size = content_text.len();
+
+                                recorder.record_event(SessionEvent::ToolCallRecorded {
+                                    session_id: session_id.clone(),
+                                    request_id: request_id.clone(),
+                                    timestamp: chrono::Utc::now(),
+                                    tool_name: "unknown".to_string(), // Tool name not in result block
+                                    tool_call_id: tool_use_id.to_string(),
+                                    execution_time_ms: None, // Not available in passthrough mode
+                                    input_size_bytes: 0, // Input was in previous request
+                                    output_size_bytes: Some(output_size),
+                                    success: Some(!is_error), // Inverted: true if no error
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if is_streaming {
@@ -1426,6 +1486,25 @@ pub async fn messages_passthrough(
                             && let Some(tool_name) = block.get("name").and_then(|n| n.as_str())
                         {
                             *tool_calls_map.entry(tool_name.to_string()).or_insert(0u32) += 1;
+
+                            // Emit ToolCallRecorded event for each tool call
+                            if let Some(tool_id) = block.get("id").and_then(|id| id.as_str()) {
+                                let input_value = block.get("input").unwrap_or(&serde_json::Value::Null);
+                                let input_str = serde_json::to_string(input_value).unwrap_or_default();
+                                let input_size = input_str.len();
+
+                                recorder.record_event(lunaroute_session::SessionEvent::ToolCallRecorded {
+                                    session_id: session_id.clone(),
+                                    request_id: request_id.clone(),
+                                    timestamp: chrono::Utc::now(),
+                                    tool_name: tool_name.to_string(),
+                                    tool_call_id: tool_id.to_string(),
+                                    execution_time_ms: None, // Model just requested the call
+                                    input_size_bytes: input_size,
+                                    output_size_bytes: None, // No result yet
+                                    success: None, // Unknown until client executes
+                                });
+                            }
                         }
                     }
                 }
@@ -2062,5 +2141,216 @@ mod tests {
         let user_id = "user_session_old_session_new_session_final-uuid-123";
         let session_id = extract_and_validate_session_id(user_id);
         assert_eq!(session_id, Some("final-uuid-123".to_string()));
+    }
+
+    // Tool failure detection tests
+    #[test]
+    fn test_tool_result_extraction_with_success() {
+        let req = AnthropicMessagesRequest {
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            messages: vec![
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: Some(AnthropicMessageContent::Text("Use the tool".to_string())),
+                },
+                AnthropicMessage {
+                    role: "assistant".to_string(),
+                    content: Some(AnthropicMessageContent::Blocks(vec![
+                        AnthropicContentBlock::ToolUse {
+                            id: "toolu_123".to_string(),
+                            name: "get_data".to_string(),
+                            input: serde_json::json!({"key": "value"}),
+                        },
+                    ])),
+                },
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: Some(AnthropicMessageContent::Blocks(vec![
+                        AnthropicContentBlock::ToolResult {
+                            tool_use_id: "toolu_123".to_string(),
+                            content: "Data retrieved successfully".to_string(),
+                            is_error: None, // No error
+                        },
+                    ])),
+                },
+            ],
+            max_tokens: Some(1024),
+            system: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            tools: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.tool_results.len(), 1);
+        assert_eq!(normalized.tool_results[0].tool_call_id, "toolu_123");
+        assert_eq!(normalized.tool_results[0].content, "Data retrieved successfully");
+        assert!(!normalized.tool_results[0].is_error); // Should not be an error
+    }
+
+    #[test]
+    fn test_tool_result_extraction_with_explicit_error() {
+        let req = AnthropicMessagesRequest {
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            messages: vec![
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: Some(AnthropicMessageContent::Text("Use the tool".to_string())),
+                },
+                AnthropicMessage {
+                    role: "assistant".to_string(),
+                    content: Some(AnthropicMessageContent::Blocks(vec![
+                        AnthropicContentBlock::ToolUse {
+                            id: "toolu_456".to_string(),
+                            name: "read_file".to_string(),
+                            input: serde_json::json!({"path": "/tmp/test.txt"}),
+                        },
+                    ])),
+                },
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: Some(AnthropicMessageContent::Blocks(vec![
+                        AnthropicContentBlock::ToolResult {
+                            tool_use_id: "toolu_456".to_string(),
+                            content: "File not found: /tmp/test.txt".to_string(),
+                            is_error: Some(true), // Explicit error flag
+                        },
+                    ])),
+                },
+            ],
+            max_tokens: Some(1024),
+            system: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            tools: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.tool_results.len(), 1);
+        assert_eq!(normalized.tool_results[0].tool_call_id, "toolu_456");
+        assert!(normalized.tool_results[0].is_error); // Should be detected as error
+        assert!(normalized.tool_results[0].content.contains("File not found"));
+    }
+
+    #[test]
+    fn test_tool_result_extraction_multiple_results() {
+        let req = AnthropicMessagesRequest {
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            messages: vec![
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: Some(AnthropicMessageContent::Text("Use multiple tools".to_string())),
+                },
+                AnthropicMessage {
+                    role: "assistant".to_string(),
+                    content: Some(AnthropicMessageContent::Blocks(vec![
+                        AnthropicContentBlock::ToolUse {
+                            id: "toolu_1".to_string(),
+                            name: "tool_a".to_string(),
+                            input: serde_json::json!({}),
+                        },
+                        AnthropicContentBlock::ToolUse {
+                            id: "toolu_2".to_string(),
+                            name: "tool_b".to_string(),
+                            input: serde_json::json!({}),
+                        },
+                    ])),
+                },
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: Some(AnthropicMessageContent::Blocks(vec![
+                        AnthropicContentBlock::ToolResult {
+                            tool_use_id: "toolu_1".to_string(),
+                            content: "Success".to_string(),
+                            is_error: Some(false),
+                        },
+                        AnthropicContentBlock::ToolResult {
+                            tool_use_id: "toolu_2".to_string(),
+                            content: "Failed to execute".to_string(),
+                            is_error: Some(true),
+                        },
+                    ])),
+                },
+            ],
+            max_tokens: Some(1024),
+            system: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            tools: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.tool_results.len(), 2);
+
+        // First result should not be an error
+        let result_1 = normalized.tool_results.iter().find(|r| r.tool_call_id == "toolu_1").unwrap();
+        assert!(!result_1.is_error);
+
+        // Second result should be an error
+        let result_2 = normalized.tool_results.iter().find(|r| r.tool_call_id == "toolu_2").unwrap();
+        assert!(result_2.is_error);
+    }
+
+    #[test]
+    fn test_tool_result_extraction_mixed_content() {
+        let req = AnthropicMessagesRequest {
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            messages: vec![
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: Some(AnthropicMessageContent::Text("Test".to_string())),
+                },
+                AnthropicMessage {
+                    role: "assistant".to_string(),
+                    content: Some(AnthropicMessageContent::Blocks(vec![
+                        AnthropicContentBlock::ToolUse {
+                            id: "toolu_789".to_string(),
+                            name: "calculate".to_string(),
+                            input: serde_json::json!({"x": 10, "y": 20}),
+                        },
+                    ])),
+                },
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: Some(AnthropicMessageContent::Blocks(vec![
+                        AnthropicContentBlock::Text {
+                            text: "Here is some text".to_string(),
+                        },
+                        AnthropicContentBlock::ToolResult {
+                            tool_use_id: "toolu_789".to_string(),
+                            content: "30".to_string(),
+                            is_error: None,
+                        },
+                        AnthropicContentBlock::Text {
+                            text: "More text".to_string(),
+                        },
+                    ])),
+                },
+            ],
+            max_tokens: Some(1024),
+            system: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            tools: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        // Should extract tool result even when mixed with text blocks
+        assert_eq!(normalized.tool_results.len(), 1);
+        assert_eq!(normalized.tool_results[0].tool_call_id, "toolu_789");
+        assert_eq!(normalized.tool_results[0].content, "30");
+        assert!(!normalized.tool_results[0].is_error);
     }
 }

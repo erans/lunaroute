@@ -257,8 +257,9 @@ async fn test_e2e_streaming_multiple_chunks() {
         stop_sequences: vec![],
         stream: true,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     let mut stream = router.stream(request).await.unwrap();
@@ -398,7 +399,8 @@ async fn test_e2e_streaming_concurrent_clients() {
                 stream: true,
                 tools: vec![],
                 tool_choice: None,
-                metadata: HashMap::new(),
+                tool_results: vec![],
+            metadata: HashMap::new(),
             };
 
             let mut stream = router_clone.stream(request).await.unwrap();
@@ -444,7 +446,7 @@ async fn test_e2e_streaming_non_streaming_provider_error() {
                     total_tokens: 0,
                 },
                 created: 0,
-                metadata: HashMap::new(),
+            metadata: HashMap::new(),
             })
         }
 

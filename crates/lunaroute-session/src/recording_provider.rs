@@ -5,6 +5,7 @@
 
 use crate::recorder::SessionRecorder;
 use crate::session::SessionMetadata;
+use crate::tool_mapper::ToolCallMapper;
 use async_trait::async_trait;
 use futures::stream::Stream;
 use lunaroute_core::{
@@ -12,10 +13,14 @@ use lunaroute_core::{
     normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
     provider::{Provider, ProviderCapabilities},
 };
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
+
+#[cfg(feature = "metrics")]
+use lunaroute_observability::Metrics;
 
 /// Recording provider wrapper
 ///
@@ -25,6 +30,11 @@ pub struct RecordingProvider<P: Provider, R: SessionRecorder> {
     recorder: Arc<R>,
     provider_name: String,
     listener_name: String,
+    /// Tool call mapper for tracking tool_call_id -> tool_name
+    tool_mapper: Arc<RwLock<ToolCallMapper>>,
+    /// Optional metrics for recording tool failures
+    #[cfg(feature = "metrics")]
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl<P: Provider, R: SessionRecorder> RecordingProvider<P, R> {
@@ -40,6 +50,48 @@ impl<P: Provider, R: SessionRecorder> RecordingProvider<P, R> {
             recorder,
             provider_name,
             listener_name,
+            tool_mapper: Arc::new(RwLock::new(ToolCallMapper::new())),
+            #[cfg(feature = "metrics")]
+            metrics: None,
+        }
+    }
+
+    /// Create a new recording provider with a shared tool mapper
+    pub fn with_tool_mapper(
+        provider: Arc<P>,
+        recorder: Arc<R>,
+        provider_name: String,
+        listener_name: String,
+        tool_mapper: Arc<RwLock<ToolCallMapper>>,
+    ) -> Self {
+        Self {
+            provider,
+            recorder,
+            provider_name,
+            listener_name,
+            tool_mapper,
+            #[cfg(feature = "metrics")]
+            metrics: None,
+        }
+    }
+
+    /// Create a new recording provider with metrics support
+    #[cfg(feature = "metrics")]
+    pub fn with_metrics(
+        provider: Arc<P>,
+        recorder: Arc<R>,
+        provider_name: String,
+        listener_name: String,
+        tool_mapper: Arc<RwLock<ToolCallMapper>>,
+        metrics: Option<Arc<Metrics>>,
+    ) -> Self {
+        Self {
+            provider,
+            recorder,
+            provider_name,
+            listener_name,
+            tool_mapper,
+            metrics,
         }
     }
 }
@@ -52,10 +104,37 @@ impl<P: Provider + Send + Sync, R: SessionRecorder + Send + Sync + 'static> Prov
         // Generate session ID
         let session_id = self.recorder.generate_session_id();
 
+        // Enrich tool_results with tool names from mapper
+        let mut enriched_request = request.clone();
+        if !enriched_request.tool_results.is_empty() {
+            let mapper = self.tool_mapper.read().await;
+            for tool_result in &mut enriched_request.tool_results {
+                if tool_result.tool_name.is_none() {
+                    tool_result.tool_name = mapper.lookup(&tool_result.tool_call_id);
+                }
+            }
+        }
+
+        // Record tool failures to metrics
+        #[cfg(feature = "metrics")]
+        if let Some(ref metrics) = self.metrics {
+            for tool_result in &enriched_request.tool_results {
+                if tool_result.is_error
+                    && let Some(ref tool_name) = tool_result.tool_name
+                {
+                    metrics.record_tool_failure(
+                        &self.provider_name,
+                        &enriched_request.model,
+                        tool_name,
+                    );
+                }
+            }
+        }
+
         // Create initial metadata
         let mut metadata = SessionMetadata::new(
             session_id.clone(),
-            request.model.clone(),
+            enriched_request.model.clone(),
             self.provider_name.clone(),
             self.listener_name.clone(),
         )
@@ -65,18 +144,33 @@ impl<P: Provider + Send + Sync, R: SessionRecorder + Send + Sync + 'static> Prov
         let start = std::time::Instant::now();
         if let Err(e) = self
             .recorder
-            .start_session(session_id.clone(), &request, metadata.clone())
+            .start_session(session_id.clone(), &enriched_request, metadata.clone())
             .await
         {
             tracing::error!(error = %e, "Failed to start session recording");
         }
 
         // Execute request
-        let result = self.provider.send(request).await;
+        let result = self.provider.send(enriched_request).await;
         let latency = start.elapsed().as_secs_f64();
 
         match &result {
             Ok(response) => {
+                // Record tool call mappings from response
+                {
+                    let mut mapper = self.tool_mapper.write().await;
+                    for choice in &response.choices {
+                        for tool_call in &choice.message.tool_calls {
+                            mapper.record_call(tool_call.id.clone(), tool_call.function.name.clone());
+                            tracing::debug!(
+                                tool_call_id = %tool_call.id,
+                                tool_name = %tool_call.function.name,
+                                "Recorded tool call mapping"
+                            );
+                        }
+                    }
+                }
+
                 // Record successful response
                 if let Err(e) = self.recorder.record_response(&session_id, response).await {
                     tracing::error!(error = %e, "Failed to record response");
@@ -118,10 +212,37 @@ impl<P: Provider + Send + Sync, R: SessionRecorder + Send + Sync + 'static> Prov
         // Generate session ID
         let session_id = self.recorder.generate_session_id();
 
+        // Enrich tool_results with tool names from mapper
+        let mut enriched_request = request.clone();
+        if !enriched_request.tool_results.is_empty() {
+            let mapper = self.tool_mapper.read().await;
+            for tool_result in &mut enriched_request.tool_results {
+                if tool_result.tool_name.is_none() {
+                    tool_result.tool_name = mapper.lookup(&tool_result.tool_call_id);
+                }
+            }
+        }
+
+        // Record tool failures to metrics
+        #[cfg(feature = "metrics")]
+        if let Some(ref metrics) = self.metrics {
+            for tool_result in &enriched_request.tool_results {
+                if tool_result.is_error
+                    && let Some(ref tool_name) = tool_result.tool_name
+                {
+                    metrics.record_tool_failure(
+                        &self.provider_name,
+                        &enriched_request.model,
+                        tool_name,
+                    );
+                }
+            }
+        }
+
         // Create initial metadata
         let metadata = SessionMetadata::new(
             session_id.clone(),
-            request.model.clone(),
+            enriched_request.model.clone(),
             self.provider_name.clone(),
             self.listener_name.clone(),
         )
@@ -131,14 +252,14 @@ impl<P: Provider + Send + Sync, R: SessionRecorder + Send + Sync + 'static> Prov
         let start = std::time::Instant::now();
         if let Err(e) = self
             .recorder
-            .start_session(session_id.clone(), &request, metadata.clone())
+            .start_session(session_id.clone(), &enriched_request, metadata.clone())
             .await
         {
             tracing::error!(error = %e, "Failed to start session recording");
         }
 
         // Execute streaming request
-        let stream = self.provider.stream(request).await?;
+        let stream = self.provider.stream(enriched_request).await?;
 
         // Create channel for ordered event recording
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<NormalizedStreamEvent>();
@@ -169,6 +290,8 @@ impl<P: Provider + Send + Sync, R: SessionRecorder + Send + Sync + 'static> Prov
             finish_reason: None,
             had_error: false,
             event_tx,
+            tool_mapper: self.tool_mapper.clone(),
+            partial_tool_calls: HashMap::new(),
         };
 
         Ok(Box::new(recording_stream))
@@ -192,6 +315,10 @@ struct RecordingStream<R: SessionRecorder> {
     had_error: bool,
     // Channel for ordered event recording
     event_tx: mpsc::UnboundedSender<NormalizedStreamEvent>,
+    // Tool mapper for recording tool calls in streaming responses
+    tool_mapper: Arc<RwLock<ToolCallMapper>>,
+    // Track partial tool calls in streaming mode: (tool_call_index) -> (id, name)
+    partial_tool_calls: HashMap<u32, (Option<String>, Option<String>)>,
 }
 
 impl<R: SessionRecorder + 'static> Stream for RecordingStream<R> {
@@ -202,7 +329,7 @@ impl<R: SessionRecorder + 'static> Stream for RecordingStream<R> {
             Poll::Ready(Some(Ok(event))) => {
                 let event_clone = event.clone();
 
-                // Track usage and finish reason
+                // Track usage, finish reason, and tool calls
                 match &event {
                     NormalizedStreamEvent::Usage { usage } => {
                         self.prompt_tokens = usage.prompt_tokens;
@@ -210,6 +337,44 @@ impl<R: SessionRecorder + 'static> Stream for RecordingStream<R> {
                     }
                     NormalizedStreamEvent::End { finish_reason } => {
                         self.finish_reason = Some(format!("{:?}", finish_reason));
+                    }
+                    NormalizedStreamEvent::ToolCallDelta {
+                        tool_call_index,
+                        id,
+                        function,
+                        ..
+                    } => {
+                        // Track partial tool call data
+                        let entry = self.partial_tool_calls.entry(*tool_call_index).or_insert((None, None));
+
+                        // Update id if present
+                        if let Some(tool_id) = id {
+                            entry.0 = Some(tool_id.clone());
+                        }
+
+                        // Update name if present in function delta
+                        if let Some(func) = function
+                            && let Some(name) = &func.name
+                        {
+                            entry.1 = Some(name.clone());
+                        }
+
+                        // Check if we now have both id and name
+                        if let (Some(call_id), Some(call_name)) = entry.clone() {
+                            // Clone tool_mapper before spawning to avoid borrow checker issues
+                            let tool_mapper = self.tool_mapper.clone();
+
+                            // Record mapping asynchronously
+                            tokio::spawn(async move {
+                                let mut mapper = tool_mapper.write().await;
+                                mapper.record_call(call_id.clone(), call_name.clone());
+                                tracing::debug!(
+                                    tool_call_id = %call_id,
+                                    tool_name = %call_name,
+                                    "Recorded streaming tool call mapping"
+                                );
+                            });
+                        }
                     }
                     _ => {}
                 }
@@ -308,7 +473,7 @@ mod tests {
                     total_tokens: 30,
                 },
                 created: 1234567890,
-                metadata: HashMap::new(),
+            metadata: HashMap::new(),
             })
         }
 
@@ -370,6 +535,7 @@ mod tests {
             stop_sequences: vec![],
             stream: false,
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
             metadata: HashMap::new(),
         }

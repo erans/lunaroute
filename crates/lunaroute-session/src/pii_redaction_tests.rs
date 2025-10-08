@@ -71,10 +71,11 @@ fn test_redact_request_text() {
         top_p: None,
         stream: false,
         tools: Vec::new(),
+        tool_results: vec![],
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -116,10 +117,11 @@ fn test_redact_request_multimodal() {
         top_p: None,
         stream: false,
         tools: Vec::new(),
+        tool_results: vec![],
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -161,7 +163,7 @@ fn test_redact_response() {
             completion_tokens: 20,
             total_tokens: 30,
         },
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     redactor.redact_response(&mut response);
@@ -261,10 +263,11 @@ fn test_redact_tool_calls_in_request() {
         top_p: None,
         stream: false,
         tools: Vec::new(),
+        tool_results: vec![],
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -307,10 +310,11 @@ fn test_remove_mode() {
         top_p: None,
         stream: false,
         tools: Vec::new(),
+        tool_results: vec![],
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -355,10 +359,11 @@ fn test_tokenize_mode_with_hmac() {
         top_p: None,
         stream: false,
         tools: Vec::new(),
+        tool_results: vec![],
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -411,10 +416,11 @@ fn test_custom_pattern() {
         top_p: None,
         stream: false,
         tools: Vec::new(),
+        tool_results: vec![],
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -456,10 +462,11 @@ fn test_json_structure_preservation() {
         top_p: None,
         stream: false,
         tools: Vec::new(),
+        tool_results: vec![],
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -506,10 +513,11 @@ fn test_json_with_nested_structures() {
         top_p: None,
         stream: false,
         tools: Vec::new(),
+        tool_results: vec![],
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);
@@ -557,10 +565,11 @@ fn test_malformed_json_fallback() {
         top_p: None,
         stream: false,
         tools: Vec::new(),
+        tool_results: vec![],
         tool_choice: None,
         stop_sequences: Vec::new(),
         system: None,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     redactor.redact_request(&mut request);

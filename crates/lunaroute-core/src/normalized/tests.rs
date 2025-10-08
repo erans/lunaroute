@@ -21,8 +21,9 @@ fn test_normalized_request_text_message() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     // Test serialization
@@ -153,7 +154,7 @@ fn test_normalized_response() {
             total_tokens: 30,
         },
         created: 1234567890,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -287,8 +288,9 @@ fn test_empty_request() {
         stop_sequences: vec![],
         stream: false,
         tools: vec![],
+        tool_results: vec![],
         tool_choice: None,
-        metadata: HashMap::new(),
+            metadata: HashMap::new(),
     };
 
     let json = serde_json::to_string(&request).unwrap();

@@ -1344,6 +1344,56 @@ impl SessionWriter for SqliteWriter {
                     .await?;
                 }
 
+                SessionEvent::ToolCallRecorded {
+                    session_id,
+                    request_id,
+                    tool_name,
+                    tool_call_id,
+                    execution_time_ms,
+                    success,
+                    ..
+                } => {
+                    // Increment error_count if success is Some(false)
+                    let error_count = if matches!(success, Some(false)) { 1 } else { 0 };
+                    let exec_time = execution_time_ms
+                        .map(|t| Self::safe_u64_to_i64(t, "execution_time_ms"))
+                        .transpose()?;
+
+                    sqlx::query(
+                        r#"
+                        INSERT INTO tool_calls (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count)
+                        VALUES (?, ?, ?, 1, ?, ?)
+                        ON CONFLICT(session_id, request_id, tool_name)
+                        DO UPDATE SET
+                            call_count = call_count + 1,
+                            avg_execution_time_ms = COALESCE(excluded.avg_execution_time_ms, avg_execution_time_ms),
+                            error_count = error_count + excluded.error_count
+                        "#,
+                    )
+                    .bind(session_id)
+                    .bind(request_id)
+                    .bind(tool_name)
+                    .bind(exec_time)
+                    .bind(error_count)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Failed to record tool call {} for session {}: {}",
+                            tool_name, session_id, e
+                        ))
+                    })?;
+
+                    tracing::debug!(
+                        session_id = %session_id,
+                        tool_name = %tool_name,
+                        tool_call_id = %tool_call_id,
+                        success = ?success,
+                        error_count = error_count,
+                        "Recorded tool call with error tracking"
+                    );
+                }
+
                 SessionEvent::StatsUpdated {
                     session_id,
                     request_id,

@@ -1449,8 +1449,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let openai_req = to_openai_request(normalized).unwrap();
@@ -1522,6 +1523,7 @@ mod tests {
                     }),
                 },
             }],
+            tool_results: vec![],
             tool_choice: Some(ToolChoice::Auto),
             metadata: std::collections::HashMap::new(),
         };
@@ -1551,8 +1553,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: Some(ToolChoice::Auto),
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
         let openai = to_openai_request(req).unwrap();
         assert!(matches!(openai.tool_choice, Some(OpenAIToolChoice::String(ref s)) if s == "auto"));
@@ -1569,8 +1572,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: Some(ToolChoice::Required),
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
         let openai = to_openai_request(req).unwrap();
         assert!(
@@ -1589,8 +1593,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: Some(ToolChoice::None),
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
         let openai = to_openai_request(req).unwrap();
         assert!(matches!(openai.tool_choice, Some(OpenAIToolChoice::String(ref s)) if s == "none"));
@@ -1607,10 +1612,11 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: Some(ToolChoice::Specific {
                 name: "my_func".to_string(),
             }),
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
         let openai = to_openai_request(req).unwrap();
         match openai.tool_choice {
@@ -1656,8 +1662,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let openai_req = to_openai_request(normalized).unwrap();
@@ -1750,8 +1757,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let openai_req = to_openai_request(normalized).unwrap();
@@ -1829,8 +1837,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let openai_req = to_openai_request(normalized).unwrap();
@@ -1860,8 +1869,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let openai_req = to_openai_request(normalized).unwrap();
@@ -1887,8 +1897,9 @@ mod tests {
             stream: false,
             stop_sequences: vec!["STOP".to_string(), "END".to_string()],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let openai_req = to_openai_request(normalized).unwrap();

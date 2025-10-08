@@ -1047,8 +1047,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1087,8 +1088,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1133,6 +1135,7 @@ mod tests {
                     }),
                 },
             }],
+            tool_results: vec![],
             tool_choice: None,
             metadata: std::collections::HashMap::new(),
         };
@@ -1173,8 +1176,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1227,8 +1231,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1452,8 +1457,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1493,8 +1499,9 @@ mod tests {
             stream: false,
             stop_sequences: vec!["STOP".to_string(), "END".to_string()],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1582,8 +1589,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();
@@ -1628,8 +1636,9 @@ mod tests {
             stream: false,
             stop_sequences: vec![],
             tools: vec![],
+            tool_results: vec![],
             tool_choice: None,
-            metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
         };
 
         let anthropic_req = to_anthropic_request(normalized).unwrap();

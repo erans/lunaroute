@@ -17,7 +17,7 @@ use lunaroute_core::{
     normalized::{
         ContentPart, FinishReason, FunctionCall, FunctionDefinition, Message, MessageContent,
         NormalizedRequest, NormalizedResponse, NormalizedStreamEvent, Role, Tool, ToolCall,
-        ToolChoice,
+        ToolChoice, ToolResult,
     },
     provider::Provider,
 };
@@ -30,6 +30,35 @@ const MAX_TOOL_ARGS_SIZE: usize = 1_000_000;
 
 /// Maximum number of SSE events to collect for async parsing (prevents OOM on very long streams)
 const MAX_COLLECTED_EVENTS: usize = 10_000;
+
+/// Detect if a tool result content indicates an error using keyword heuristics.
+/// OpenAI doesn't have an explicit is_error field, so we use pattern matching.
+fn detect_tool_error(content: &str) -> bool {
+    let content_lower = content.to_lowercase();
+
+    // Common error indicators
+    let error_keywords = [
+        "error:",
+        "error occurred",
+        "failed:",
+        "failed to",
+        "failure:",
+        "exception:",
+        "exception occurred",
+        "traceback",
+        "stack trace",
+        "cannot",
+        "could not",
+        "unable to",
+        "permission denied",
+        "not found",
+        "invalid",
+        "syntax error",
+        "runtime error",
+    ];
+
+    error_keywords.iter().any(|keyword| content_lower.contains(keyword))
+}
 
 /// Validate tool parameter schema (must be valid JSON Schema)
 fn validate_tool_schema(schema: &serde_json::Value, tool_name: &str) -> IngressResult<()> {
@@ -402,6 +431,42 @@ pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest>
         })
         .collect();
 
+    let messages = messages?;
+
+    // Extract tool results from role="tool" messages
+    let tool_results: Vec<ToolResult> = messages
+        .iter()
+        .filter(|msg| msg.role == Role::Tool)
+        .filter_map(|msg| {
+            // Tool messages must have a tool_call_id
+            if let Some(ref tool_call_id) = msg.tool_call_id {
+                let content = match &msg.content {
+                    MessageContent::Text(text) => text.clone(),
+                    MessageContent::Parts(parts) => {
+                        // Concatenate all text parts
+                        parts
+                            .iter()
+                            .filter_map(|p| match p {
+                                ContentPart::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }
+                };
+
+                Some(ToolResult {
+                    tool_call_id: tool_call_id.clone(),
+                    is_error: detect_tool_error(&content),
+                    content,
+                    tool_name: None, // Will be filled in by SessionRecorder using tool_mapper
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+
     // Convert tools with validation
     let tools = if let Some(tools) = req.tools {
         let result: Result<Vec<Tool>, IngressError> = tools
@@ -439,7 +504,7 @@ pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest>
     });
 
     Ok(NormalizedRequest {
-        messages: messages?,
+        messages,
         system: None,
         model: req.model,
         max_tokens: req.max_tokens,
@@ -450,6 +515,7 @@ pub fn to_normalized(req: OpenAIChatRequest) -> IngressResult<NormalizedRequest>
         stream: req.stream.unwrap_or(false),
         tools,
         tool_choice,
+        tool_results,
         metadata: std::collections::HashMap::new(),
     })
 }
@@ -1327,6 +1393,37 @@ pub async fn chat_completions_passthrough(
                 tool_count,
             },
         });
+
+        // Detect and record tool results from incoming messages
+        if let Some(messages) = req.get("messages").and_then(|m| m.as_array()) {
+            for message in messages {
+                if let Some("tool") = message.get("role").and_then(|r| r.as_str()) {
+                    // This is a tool result message
+                    if let Some(tool_call_id) = message.get("tool_call_id").and_then(|id| id.as_str()) {
+                        let content = message
+                            .get("content")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("");
+
+                        let is_error = detect_tool_error(content);
+                        let tool_name = message.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                        let output_size = content.len();
+
+                        recorder.record_event(SessionEvent::ToolCallRecorded {
+                            session_id: session_id.clone(),
+                            request_id: request_id.clone(),
+                            timestamp: chrono::Utc::now(),
+                            tool_name: tool_name.to_string(),
+                            tool_call_id: tool_call_id.to_string(),
+                            execution_time_ms: None, // Not available in passthrough mode
+                            input_size_bytes: 0, // Input was in previous request
+                            output_size_bytes: Some(output_size),
+                            success: Some(!is_error), // Inverted: true if no error
+                        });
+                    }
+                }
+            }
+        }
     }
 
     if is_streaming {
@@ -1613,6 +1710,27 @@ pub async fn chat_completions_passthrough(
                                         function.get("name").and_then(|n| n.as_str())
                                 {
                                     *tool_calls_map.entry(name.to_string()).or_insert(0u32) += 1;
+
+                                    // Emit ToolCallRecorded event for each tool call
+                                    if let Some(tool_id) = tool_call.get("id").and_then(|id| id.as_str()) {
+                                        let arguments = function
+                                            .get("arguments")
+                                            .and_then(|a| a.as_str())
+                                            .unwrap_or("");
+                                        let input_size = arguments.len();
+
+                                        recorder.record_event(lunaroute_session::SessionEvent::ToolCallRecorded {
+                                            session_id: session_id.clone(),
+                                            request_id: request_id.clone(),
+                                            timestamp: chrono::Utc::now(),
+                                            tool_name: name.to_string(),
+                                            tool_call_id: tool_id.to_string(),
+                                            execution_time_ms: None, // Model just requested the call
+                                            input_size_bytes: input_size,
+                                            output_size_bytes: None, // No result yet
+                                            success: None, // Unknown until client executes
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -3219,5 +3337,228 @@ mod tests {
         assert_eq!(normalized.messages[1].tool_calls[0].function.name, "func1");
         assert_eq!(normalized.messages[1].tool_calls[1].function.name, "func2");
         assert_eq!(normalized.messages[1].tool_calls[2].function.name, "func3");
+    }
+
+    // Tool failure detection tests
+    #[test]
+    fn test_detect_tool_error_with_error_keyword() {
+        assert!(detect_tool_error("Error: File not found"));
+        assert!(detect_tool_error("error occurred while processing"));
+        assert!(detect_tool_error("Failed to connect to database"));
+        assert!(detect_tool_error("Operation failed: timeout"));
+        assert!(detect_tool_error("Failure: network unreachable"));
+        assert!(detect_tool_error("Exception: null pointer"));
+        assert!(detect_tool_error("exception occurred in handler"));
+        assert!(detect_tool_error("Traceback (most recent call last):"));
+        assert!(detect_tool_error("Stack trace:\n  at line 42"));
+        assert!(detect_tool_error("Cannot open file"));
+        assert!(detect_tool_error("Could not parse JSON"));
+        assert!(detect_tool_error("Unable to authenticate"));
+        assert!(detect_tool_error("Permission denied"));
+        assert!(detect_tool_error("File not found"));
+        assert!(detect_tool_error("Invalid input format"));
+        assert!(detect_tool_error("Syntax error at line 10"));
+        assert!(detect_tool_error("Runtime error: division by zero"));
+    }
+
+    #[test]
+    fn test_detect_tool_error_case_insensitive() {
+        assert!(detect_tool_error("ERROR: Something went wrong"));
+        assert!(detect_tool_error("FAILED TO PROCESS"));
+        assert!(detect_tool_error("Exception Occurred"));
+        assert!(detect_tool_error("TRACEBACK"));
+    }
+
+    #[test]
+    fn test_detect_tool_error_no_error() {
+        assert!(!detect_tool_error("Success: operation completed"));
+        assert!(!detect_tool_error("Result: 42"));
+        assert!(!detect_tool_error("Data retrieved successfully"));
+        assert!(!detect_tool_error("All systems operational"));
+        assert!(!detect_tool_error("The error handling was improved")); // "error" in context, not an error message
+    }
+
+    #[test]
+    fn test_tool_result_extraction_with_success() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                OpenAIMessage {
+                    role: "user".to_string(),
+                    content: Some("What's the weather?".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    name: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "call_123".to_string(),
+                        tool_type: "function".to_string(),
+                        function: OpenAIFunctionCall {
+                            name: "get_weather".to_string(),
+                            arguments: r#"{"location":"NYC"}"#.to_string(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "tool".to_string(),
+                    content: Some("Temperature: 72°F, Sunny".to_string()),
+                    name: Some("get_weather".to_string()),
+                    tool_calls: None,
+                    tool_call_id: Some("call_123".to_string()),
+                },
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.tool_results.len(), 1);
+        assert_eq!(normalized.tool_results[0].tool_call_id, "call_123");
+        assert_eq!(normalized.tool_results[0].content, "Temperature: 72°F, Sunny");
+        assert!(!normalized.tool_results[0].is_error); // Should not detect error
+    }
+
+    #[test]
+    fn test_tool_result_extraction_with_error() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                OpenAIMessage {
+                    role: "user".to_string(),
+                    content: Some("Read file".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    name: None,
+                    tool_calls: Some(vec![OpenAIToolCall {
+                        id: "call_456".to_string(),
+                        tool_type: "function".to_string(),
+                        function: OpenAIFunctionCall {
+                            name: "read_file".to_string(),
+                            arguments: r#"{"path":"/tmp/data.txt"}"#.to_string(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "tool".to_string(),
+                    content: Some("Error: File not found at /tmp/data.txt".to_string()),
+                    name: Some("read_file".to_string()),
+                    tool_calls: None,
+                    tool_call_id: Some("call_456".to_string()),
+                },
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.tool_results.len(), 1);
+        assert_eq!(normalized.tool_results[0].tool_call_id, "call_456");
+        assert!(normalized.tool_results[0].is_error); // Should detect error from "Error:" keyword
+        assert!(normalized.tool_results[0].content.contains("File not found"));
+    }
+
+    #[test]
+    fn test_tool_result_extraction_multiple_results() {
+        let req = OpenAIChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                OpenAIMessage {
+                    role: "user".to_string(),
+                    content: Some("test".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    name: None,
+                    tool_calls: Some(vec![
+                        OpenAIToolCall {
+                            id: "call_1".to_string(),
+                            tool_type: "function".to_string(),
+                            function: OpenAIFunctionCall {
+                                name: "tool_a".to_string(),
+                                arguments: "{}".to_string(),
+                            },
+                        },
+                        OpenAIToolCall {
+                            id: "call_2".to_string(),
+                            tool_type: "function".to_string(),
+                            function: OpenAIFunctionCall {
+                                name: "tool_b".to_string(),
+                                arguments: "{}".to_string(),
+                            },
+                        },
+                    ]),
+                    tool_call_id: None,
+                },
+                OpenAIMessage {
+                    role: "tool".to_string(),
+                    content: Some("Success".to_string()),
+                    name: Some("tool_a".to_string()),
+                    tool_calls: None,
+                    tool_call_id: Some("call_1".to_string()),
+                },
+                OpenAIMessage {
+                    role: "tool".to_string(),
+                    content: Some("Failed to execute".to_string()),
+                    name: Some("tool_b".to_string()),
+                    tool_calls: None,
+                    tool_call_id: Some("call_2".to_string()),
+                },
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let normalized = to_normalized(req).unwrap();
+        assert_eq!(normalized.tool_results.len(), 2);
+
+        // First result should not be an error
+        let result_1 = normalized.tool_results.iter().find(|r| r.tool_call_id == "call_1").unwrap();
+        assert!(!result_1.is_error);
+
+        // Second result should be detected as error
+        let result_2 = normalized.tool_results.iter().find(|r| r.tool_call_id == "call_2").unwrap();
+        assert!(result_2.is_error);
     }
 }

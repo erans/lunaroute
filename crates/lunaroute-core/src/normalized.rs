@@ -39,6 +39,10 @@ pub struct NormalizedRequest {
     /// Tool choice configuration
     pub tool_choice: Option<ToolChoice>,
 
+    /// Tool results from previous execution (if this is a follow-up)
+    #[serde(default)]
+    pub tool_results: Vec<ToolResult>,
+
     /// Additional metadata
     pub metadata: HashMap<String, serde_json::Value>,
 }
@@ -162,6 +166,23 @@ pub struct FunctionCall {
 
     /// Arguments as JSON string
     pub arguments: String,
+}
+
+/// Tool result from client execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolResult {
+    /// ID of the tool call this is a result for
+    pub tool_call_id: String,
+
+    /// Whether this tool execution failed
+    pub is_error: bool,
+
+    /// Result content (error message or success data)
+    pub content: String,
+
+    /// Optional: tool name if we can determine it
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
 }
 
 /// Normalized response structure
