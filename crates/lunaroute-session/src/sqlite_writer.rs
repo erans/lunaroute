@@ -125,7 +125,8 @@ impl SqliteWriter {
         .await
         .map_err(|e| WriterError::Database(e.to_string()))?;
 
-        sqlx::query("INSERT OR IGNORE INTO schema_version (version) VALUES (3)")
+        // For fresh databases, start at version 1 and let migrations handle the upgrade
+        sqlx::query("INSERT OR IGNORE INTO schema_version (version) VALUES (1)")
             .execute(pool)
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
@@ -289,10 +290,22 @@ impl SqliteWriter {
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
-        // Tool calls table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS tool_calls (
+        // Check if tool_calls table exists (indicates we're at version 4 and need migration)
+        // If it exists, we must NOT create tool_stats here - the migration will rename tool_calls to tool_stats
+        let tool_calls_exists: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tool_calls'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(false);
+
+        // Only create tool_stats and tool_call_executions if tool_calls doesn't exist
+        // (if tool_calls exists, migration 4->5 will handle renaming it to tool_stats)
+        if !tool_calls_exists {
+            // Tool stats table (aggregate summary by tool name)
+            sqlx::query(
+                r#"
+                CREATE TABLE IF NOT EXISTS tool_stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 request_id TEXT,
@@ -301,37 +314,89 @@ impl SqliteWriter {
                 call_count INTEGER DEFAULT 1,
                 avg_execution_time_ms INTEGER,
                 error_count INTEGER DEFAULT 0,
+                tool_arguments TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
             )
-            "#,
-        )
-        .execute(pool)
-        .await
-        .map_err(|e| WriterError::Database(e.to_string()))?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_calls_model ON tool_calls(model_name, created_at DESC)")
+                "#,
+            )
             .execute(pool)
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
-        // Index for looking up tool calls by session
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id)")
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_stats_model ON tool_stats(model_name, created_at DESC)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?;
+
+            // Index for looking up tool stats by session
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS idx_tool_stats_session ON tool_stats(session_id)",
+            )
             .execute(pool)
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
-        // Index for tool usage analysis
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_calls_name ON tool_calls(tool_name, created_at DESC)")
+            // Index for tool usage analysis
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_stats_name ON tool_stats(tool_name, created_at DESC)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?;
+
+            // Unique index for ON CONFLICT handling (prevents duplicate tool entries per session/request)
+            sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_stats_unique ON tool_stats(session_id, request_id, tool_name)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?;
+
+            // Tool call executions table (individual call tracking with arguments)
+            sqlx::query(
+                r#"
+                CREATE TABLE IF NOT EXISTS tool_call_executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    tool_call_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    tool_arguments TEXT,
+                    execution_time_ms INTEGER,
+                    input_size_bytes INTEGER,
+                    output_size_bytes INTEGER,
+                    success BOOLEAN,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+                )
+                "#,
+            )
             .execute(pool)
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
-        // Unique index for ON CONFLICT handling (prevents duplicate tool entries per session/request)
-        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_calls_unique ON tool_calls(session_id, request_id, tool_name)")
-            .execute(pool)
-            .await
-            .map_err(|e| WriterError::Database(e.to_string()))?;
+            // Unique index for tool_call_executions
+            sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_call_executions_unique ON tool_call_executions(session_id, request_id, tool_call_id)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?;
+
+            // Index for looking up executions by session
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_call_executions_session ON tool_call_executions(session_id, created_at DESC)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?;
+
+            // Index for looking up executions by tool name
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_call_executions_tool_name ON tool_call_executions(tool_name, created_at DESC)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?;
+
+            // Index for looking up executions by request
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_call_executions_request ON tool_call_executions(request_id)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?;
+        }
+        // End of version check - tool_stats and tool_call_executions created only if not version 4
 
         // Stream metrics table
         sqlx::query(
@@ -382,9 +447,52 @@ impl SqliteWriter {
         Ok(())
     }
 
+    /// Check if a column exists in a table
+    async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> WriterResult<bool> {
+        let query = format!("PRAGMA table_info({})", table);
+        let rows: Vec<(i32, String, String, i32, Option<String>, i32)> = sqlx::query_as(&query)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
+        Ok(rows.iter().any(|(_, name, _, _, _, _)| name == column))
+    }
+
+    /// Check if migration 2->3 has already been applied by examining the total_tokens column
+    async fn is_migration_2_to_3_applied(pool: &SqlitePool) -> WriterResult<bool> {
+        // Check if the sessions table has the updated total_tokens formula
+        // In version 3, total_tokens includes cache and audio tokens
+        let sql = "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'";
+        let schema: Option<String> = sqlx::query_scalar(sql)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
+        if let Some(schema) = schema {
+            // Check if the schema includes cache_read_tokens and audio_input_tokens in the GENERATED formula
+            Ok(schema.contains("cache_read_tokens") && schema.contains("audio_input_tokens"))
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Run schema migrations to bring database up to current version
     async fn run_migrations(pool: &SqlitePool) -> WriterResult<()> {
-        const CURRENT_VERSION: i32 = 3;
+        const CURRENT_VERSION: i32 = 5;
+
+        // Clean up any duplicate version entries (fix for previous bug where INSERT OR IGNORE could create duplicates)
+        // Keep only the minimum version (the one we need to migrate from)
+        sqlx::query(
+            r#"
+            DELETE FROM schema_version
+            WHERE version NOT IN (SELECT MIN(version) FROM schema_version)
+            "#,
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| {
+            WriterError::Database(format!("Failed to clean up schema_version table: {}", e))
+        })?;
 
         // Get current schema version
         let version: i32 = sqlx::query_scalar("SELECT version FROM schema_version")
@@ -404,27 +512,34 @@ impl SqliteWriter {
 
         // Migration 1 -> 2: Add new token columns to sessions table
         if current_version == 1 {
-            sqlx::query("ALTER TABLE sessions ADD COLUMN reasoning_tokens INTEGER DEFAULT 0")
-                .execute(pool)
-                .await
-                .map_err(|e| {
-                    WriterError::Database(format!(
-                        "Migration 1->2 failed (reasoning_tokens): {}",
-                        e
-                    ))
-                })?;
+            if !Self::column_exists(pool, "sessions", "reasoning_tokens").await? {
+                sqlx::query("ALTER TABLE sessions ADD COLUMN reasoning_tokens INTEGER DEFAULT 0")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 1->2 failed (reasoning_tokens): {}",
+                            e
+                        ))
+                    })?;
+            }
 
-            sqlx::query("ALTER TABLE sessions ADD COLUMN cache_read_tokens INTEGER DEFAULT 0")
-                .execute(pool)
-                .await
-                .map_err(|e| {
-                    WriterError::Database(format!(
-                        "Migration 1->2 failed (cache_read_tokens): {}",
-                        e
-                    ))
-                })?;
+            if !Self::column_exists(pool, "sessions", "cache_read_tokens").await? {
+                sqlx::query("ALTER TABLE sessions ADD COLUMN cache_read_tokens INTEGER DEFAULT 0")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 1->2 failed (cache_read_tokens): {}",
+                            e
+                        ))
+                    })?;
+            }
 
-            sqlx::query("ALTER TABLE sessions ADD COLUMN cache_creation_tokens INTEGER DEFAULT 0")
+            if !Self::column_exists(pool, "sessions", "cache_creation_tokens").await? {
+                sqlx::query(
+                    "ALTER TABLE sessions ADD COLUMN cache_creation_tokens INTEGER DEFAULT 0",
+                )
                 .execute(pool)
                 .await
                 .map_err(|e| {
@@ -433,18 +548,24 @@ impl SqliteWriter {
                         e
                     ))
                 })?;
+            }
 
-            sqlx::query("ALTER TABLE sessions ADD COLUMN audio_input_tokens INTEGER DEFAULT 0")
-                .execute(pool)
-                .await
-                .map_err(|e| {
-                    WriterError::Database(format!(
-                        "Migration 1->2 failed (audio_input_tokens): {}",
-                        e
-                    ))
-                })?;
+            if !Self::column_exists(pool, "sessions", "audio_input_tokens").await? {
+                sqlx::query("ALTER TABLE sessions ADD COLUMN audio_input_tokens INTEGER DEFAULT 0")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 1->2 failed (audio_input_tokens): {}",
+                            e
+                        ))
+                    })?;
+            }
 
-            sqlx::query("ALTER TABLE sessions ADD COLUMN audio_output_tokens INTEGER DEFAULT 0")
+            if !Self::column_exists(pool, "sessions", "audio_output_tokens").await? {
+                sqlx::query(
+                    "ALTER TABLE sessions ADD COLUMN audio_output_tokens INTEGER DEFAULT 0",
+                )
                 .execute(pool)
                 .await
                 .map_err(|e| {
@@ -453,6 +574,7 @@ impl SqliteWriter {
                         e
                     ))
                 })?;
+            }
 
             sqlx::query("UPDATE schema_version SET version = 2")
                 .execute(pool)
@@ -467,57 +589,9 @@ impl SqliteWriter {
         // Migration 2 -> 3: Update total_tokens GENERATED column to include cache and audio tokens
         // SQLite doesn't support ALTER COLUMN for generated columns, so we need to recreate the table
         if current_version == 2 {
-            // Check if sessions table still exists (might have been dropped in a previous failed migration)
-            let sessions_exists: bool = sqlx::query_scalar(
-                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='sessions'",
-            )
-            .fetch_one(pool)
-            .await
-            .map_err(|e| {
-                WriterError::Database(format!(
-                    "Migration 2->3 failed (check sessions exists): {}",
-                    e
-                ))
-            })?;
-
-            if !sessions_exists {
-                // Migration was partially completed, just rename sessions_new if it exists
-                let sessions_new_exists: bool = sqlx::query_scalar(
-                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='sessions_new'"
-                )
-                .fetch_one(pool)
-                .await
-                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (check sessions_new exists): {}", e)))?;
-
-                if sessions_new_exists {
-                    sqlx::query("ALTER TABLE sessions_new RENAME TO sessions")
-                        .execute(pool)
-                        .await
-                        .map_err(|e| {
-                            WriterError::Database(format!(
-                                "Migration 2->3 failed (rename table): {}",
-                                e
-                            ))
-                        })?;
-
-                    // Recreate indexes
-                    sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC)")
-                        .execute(pool)
-                        .await
-                        .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_created): {}", e)))?;
-
-                    sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_provider ON sessions(provider, created_at DESC)")
-                        .execute(pool)
-                        .await
-                        .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_provider): {}", e)))?;
-
-                    sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_user_agent ON sessions(user_agent, created_at DESC)")
-                        .execute(pool)
-                        .await
-                        .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_user_agent): {}", e)))?;
-                }
-
-                // Update schema version
+            // Check if this migration has already been applied (schema is already at v3)
+            if Self::is_migration_2_to_3_applied(pool).await? {
+                // Migration already applied, just update version
                 sqlx::query("UPDATE schema_version SET version = 3")
                     .execute(pool)
                     .await
@@ -532,24 +606,90 @@ impl SqliteWriter {
                 {
                     current_version = 3;
                 }
-
-                return Ok(());
-            }
-
-            // Drop sessions_new if it exists from a previous failed migration attempt
-            sqlx::query("DROP TABLE IF EXISTS sessions_new")
-                .execute(pool)
+            } else {
+                // Check if sessions table still exists (might have been dropped in a previous failed migration)
+                let sessions_exists: bool = sqlx::query_scalar(
+                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='sessions'",
+                )
+                .fetch_one(pool)
                 .await
                 .map_err(|e| {
                     WriterError::Database(format!(
-                        "Migration 2->3 failed (drop sessions_new): {}",
+                        "Migration 2->3 failed (check sessions exists): {}",
                         e
                     ))
                 })?;
 
-            // Create new table with updated formula
-            sqlx::query(
-                r#"
+                if !sessions_exists {
+                    // Migration was partially completed, just rename sessions_new if it exists
+                    let sessions_new_exists: bool = sqlx::query_scalar(
+                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='sessions_new'"
+                )
+                .fetch_one(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (check sessions_new exists): {}", e)))?;
+
+                    if sessions_new_exists {
+                        sqlx::query("ALTER TABLE sessions_new RENAME TO sessions")
+                            .execute(pool)
+                            .await
+                            .map_err(|e| {
+                                WriterError::Database(format!(
+                                    "Migration 2->3 failed (rename table): {}",
+                                    e
+                                ))
+                            })?;
+
+                        // Recreate indexes
+                        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC)")
+                        .execute(pool)
+                        .await
+                        .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_created): {}", e)))?;
+
+                        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_provider ON sessions(provider, created_at DESC)")
+                        .execute(pool)
+                        .await
+                        .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_provider): {}", e)))?;
+
+                        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_user_agent ON sessions(user_agent, created_at DESC)")
+                        .execute(pool)
+                        .await
+                        .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_user_agent): {}", e)))?;
+                    }
+
+                    // Update schema version
+                    sqlx::query("UPDATE schema_version SET version = 3")
+                        .execute(pool)
+                        .await
+                        .map_err(|e| {
+                            WriterError::Database(format!(
+                                "Migration 2->3 failed (version update): {}",
+                                e
+                            ))
+                        })?;
+
+                    #[allow(unused_assignments)]
+                    {
+                        current_version = 3;
+                    }
+
+                    return Ok(());
+                }
+
+                // Drop sessions_new if it exists from a previous failed migration attempt
+                sqlx::query("DROP TABLE IF EXISTS sessions_new")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 2->3 failed (drop sessions_new): {}",
+                            e
+                        ))
+                    })?;
+
+                // Create new table with updated formula
+                sqlx::query(
+                    r#"
                 CREATE TABLE sessions_new (
                     session_id TEXT PRIMARY KEY,
                     request_id TEXT,
@@ -592,16 +732,19 @@ impl SqliteWriter {
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 "#,
-            )
-            .execute(pool)
-            .await
-            .map_err(|e| {
-                WriterError::Database(format!("Migration 2->3 failed (create new table): {}", e))
-            })?;
+                )
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 2->3 failed (create new table): {}",
+                        e
+                    ))
+                })?;
 
-            // Copy data from old table to new table
-            sqlx::query(
-                r#"
+                // Copy data from old table to new table
+                sqlx::query(
+                    r#"
                 INSERT INTO sessions_new
                 SELECT session_id, request_id, started_at, completed_at, provider, listener,
                        model_requested, model_used, success, error_message, finish_reason,
@@ -612,71 +755,369 @@ impl SqliteWriter {
                        chunk_count, streaming_duration_ms, created_at
                 FROM sessions
                 "#,
+                )
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    WriterError::Database(format!("Migration 2->3 failed (copy data): {}", e))
+                })?;
+
+                // Drop old table
+                sqlx::query("DROP TABLE sessions")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 2->3 failed (drop old table): {}",
+                            e
+                        ))
+                    })?;
+
+                // Rename new table
+                sqlx::query("ALTER TABLE sessions_new RENAME TO sessions")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 2->3 failed (rename table): {}",
+                            e
+                        ))
+                    })?;
+
+                // Recreate indexes
+                sqlx::query(
+                    "CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC)",
+                )
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 2->3 failed (idx_sessions_created): {}",
+                        e
+                    ))
+                })?;
+
+                sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_provider ON sessions(provider, created_at DESC)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_provider): {}", e)))?;
+
+                sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_user_agent ON sessions(user_agent, created_at DESC)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_user_agent): {}", e)))?;
+
+                // Update schema version
+                sqlx::query("UPDATE schema_version SET version = 3")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 2->3 failed (version update): {}",
+                            e
+                        ))
+                    })?;
+
+                #[allow(unused_assignments)]
+                {
+                    current_version = 3;
+                }
+            }
+        }
+
+        // Migration 3 -> 4: Add tool_arguments column to tool_calls table
+        // Note: This migration is only needed for databases that were created with v3
+        // New databases skip directly to v5 with tool_stats table
+        if current_version == 3 {
+            // Check if tool_calls table exists (might have been renamed already)
+            let tool_calls_exists: bool = sqlx::query_scalar(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tool_calls'",
             )
-            .execute(pool)
+            .fetch_one(pool)
             .await
             .map_err(|e| {
-                WriterError::Database(format!("Migration 2->3 failed (copy data): {}", e))
+                WriterError::Database(format!(
+                    "Migration 3->4 failed (check tool_calls exists): {}",
+                    e
+                ))
             })?;
 
-            // Drop old table
-            sqlx::query("DROP TABLE sessions")
+            if tool_calls_exists
+                && !Self::column_exists(pool, "tool_calls", "tool_arguments").await?
+            {
+                sqlx::query("ALTER TABLE tool_calls ADD COLUMN tool_arguments TEXT")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 3->4 failed (tool_arguments): {}",
+                            e
+                        ))
+                    })?;
+            }
+
+            sqlx::query("UPDATE schema_version SET version = 4")
                 .execute(pool)
                 .await
                 .map_err(|e| {
-                    WriterError::Database(format!("Migration 2->3 failed (drop old table): {}", e))
+                    WriterError::Database(format!("Migration 3->4 failed (version update): {}", e))
                 })?;
 
-            // Rename new table
-            sqlx::query("ALTER TABLE sessions_new RENAME TO sessions")
+            current_version = 4;
+        }
+
+        // Migration 4 -> 5: Split tool tracking into aggregate (tool_stats) and detailed (tool_call_executions) tables
+        if current_version == 4 {
+            // Check if tool_calls table exists (to be renamed)
+            let tool_calls_exists: bool = sqlx::query_scalar(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tool_calls'",
+            )
+            .fetch_one(pool)
+            .await
+            .map_err(|e| {
+                WriterError::Database(format!(
+                    "Migration 4->5 failed (check tool_calls exists): {}",
+                    e
+                ))
+            })?;
+
+            if tool_calls_exists {
+                // Check if tool_stats already exists (from a failed migration attempt)
+                let tool_stats_exists: bool = sqlx::query_scalar(
+                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tool_stats'",
+                )
+                .fetch_one(pool)
+                .await
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 4->5 failed (check tool_stats exists): {}",
+                        e
+                    ))
+                })?;
+
+                if tool_stats_exists {
+                    // tool_stats exists - this is likely from a failed migration attempt
+                    // Drop it if it's empty, otherwise fail with a clear error
+                    let tool_stats_count: i64 =
+                        sqlx::query_scalar("SELECT COUNT(*) FROM tool_stats")
+                            .fetch_one(pool)
+                            .await
+                            .map_err(|e| {
+                                WriterError::Database(format!(
+                                    "Migration 4->5 failed (count tool_stats): {}",
+                                    e
+                                ))
+                            })?;
+
+                    if tool_stats_count == 0 {
+                        // Empty table from failed migration - safe to drop
+                        sqlx::query("DROP TABLE tool_stats")
+                            .execute(pool)
+                            .await
+                            .map_err(|e| {
+                                WriterError::Database(format!(
+                                    "Migration 4->5 failed (drop empty tool_stats): {}",
+                                    e
+                                ))
+                            })?;
+                    } else {
+                        return Err(WriterError::Database(format!(
+                            "Migration 4->5 failed: tool_stats already exists with {} records. \
+                            This indicates a migration conflict. Please backup your database and \
+                            contact support.",
+                            tool_stats_count
+                        )));
+                    }
+                }
+
+                // Rename tool_calls to tool_stats
+                sqlx::query("ALTER TABLE tool_calls RENAME TO tool_stats")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 4->5 failed (rename table): {}",
+                            e
+                        ))
+                    })?;
+
+                // Drop old indexes (they reference the old table name)
+                sqlx::query("DROP INDEX IF EXISTS idx_tool_calls_model")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 4->5 failed (drop idx_tool_calls_model): {}",
+                            e
+                        ))
+                    })?;
+
+                sqlx::query("DROP INDEX IF EXISTS idx_tool_calls_session")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 4->5 failed (drop idx_tool_calls_session): {}",
+                            e
+                        ))
+                    })?;
+
+                sqlx::query("DROP INDEX IF EXISTS idx_tool_calls_name")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 4->5 failed (drop idx_tool_calls_name): {}",
+                            e
+                        ))
+                    })?;
+
+                sqlx::query("DROP INDEX IF EXISTS idx_tool_calls_unique")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 4->5 failed (drop idx_tool_calls_unique): {}",
+                            e
+                        ))
+                    })?;
+
+                // Recreate indexes with new names
+                sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_stats_model ON tool_stats(model_name, created_at DESC)")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 4->5 failed (idx_tool_stats_model): {}",
+                            e
+                        ))
+                    })?;
+
+                sqlx::query(
+                    "CREATE INDEX IF NOT EXISTS idx_tool_stats_session ON tool_stats(session_id)",
+                )
                 .execute(pool)
                 .await
                 .map_err(|e| {
-                    WriterError::Database(format!("Migration 2->3 failed (rename table): {}", e))
+                    WriterError::Database(format!(
+                        "Migration 4->5 failed (idx_tool_stats_session): {}",
+                        e
+                    ))
                 })?;
 
-            // Recreate indexes
+                sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_stats_name ON tool_stats(tool_name, created_at DESC)")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 4->5 failed (idx_tool_stats_name): {}",
+                            e
+                        ))
+                    })?;
+
+                sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_stats_unique ON tool_stats(session_id, request_id, tool_name)")
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Migration 4->5 failed (idx_tool_stats_unique): {}",
+                            e
+                        ))
+                    })?;
+            }
+
+            // Create tool_call_executions table
             sqlx::query(
-                "CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC)",
+                r#"
+                CREATE TABLE IF NOT EXISTS tool_call_executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    tool_call_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    tool_arguments TEXT,
+                    execution_time_ms INTEGER,
+                    input_size_bytes INTEGER,
+                    output_size_bytes INTEGER,
+                    success BOOLEAN,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+                )
+                "#,
             )
             .execute(pool)
             .await
             .map_err(|e| {
                 WriterError::Database(format!(
-                    "Migration 2->3 failed (idx_sessions_created): {}",
+                    "Migration 4->5 failed (create tool_call_executions): {}",
                     e
                 ))
             })?;
 
-            sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_provider ON sessions(provider, created_at DESC)")
-                .execute(pool)
-                .await
-                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_provider): {}", e)))?;
-
-            sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_user_agent ON sessions(user_agent, created_at DESC)")
-                .execute(pool)
-                .await
-                .map_err(|e| WriterError::Database(format!("Migration 2->3 failed (idx_sessions_user_agent): {}", e)))?;
-
-            // Update schema version
-            sqlx::query("UPDATE schema_version SET version = 3")
+            // Create indexes for tool_call_executions
+            sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_call_executions_unique ON tool_call_executions(session_id, request_id, tool_call_id)")
                 .execute(pool)
                 .await
                 .map_err(|e| {
-                    WriterError::Database(format!("Migration 2->3 failed (version update): {}", e))
+                    WriterError::Database(format!(
+                        "Migration 4->5 failed (idx_tool_call_executions_unique): {}",
+                        e
+                    ))
+                })?;
+
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_call_executions_session ON tool_call_executions(session_id, created_at DESC)")
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 4->5 failed (idx_tool_call_executions_session): {}",
+                        e
+                    ))
+                })?;
+
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_call_executions_tool_name ON tool_call_executions(tool_name, created_at DESC)")
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 4->5 failed (idx_tool_call_executions_tool_name): {}",
+                        e
+                    ))
+                })?;
+
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_call_executions_request ON tool_call_executions(request_id)")
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 4->5 failed (idx_tool_call_executions_request): {}",
+                        e
+                    ))
+                })?;
+
+            // Clean up "unknown" tool entries from tool_stats
+            sqlx::query("DELETE FROM tool_stats WHERE tool_name = 'unknown'")
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    WriterError::Database(format!(
+                        "Migration 4->5 failed (cleanup unknown tools): {}",
+                        e
+                    ))
+                })?;
+
+            sqlx::query("UPDATE schema_version SET version = 5")
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    WriterError::Database(format!("Migration 4->5 failed (version update): {}", e))
                 })?;
 
             #[allow(unused_assignments)]
             {
-                current_version = 3;
+                current_version = 5;
             }
         }
-
-        // Future migrations go here
-        // if current_version == 3 {
-        //     // Migration 3 -> 4
-        //     current_version = 4;
-        // }
 
         Ok(())
     }
@@ -1350,7 +1791,10 @@ impl SessionWriter for SqliteWriter {
                     tool_name,
                     tool_call_id,
                     execution_time_ms,
+                    input_size_bytes,
+                    output_size_bytes,
                     success,
+                    tool_arguments,
                     ..
                 } => {
                     // Increment error_count if success is Some(false)
@@ -1358,16 +1802,23 @@ impl SessionWriter for SqliteWriter {
                     let exec_time = execution_time_ms
                         .map(|t| Self::safe_u64_to_i64(t, "execution_time_ms"))
                         .transpose()?;
+                    let input_size =
+                        Self::safe_usize_to_i64(*input_size_bytes, "input_size_bytes")?;
+                    let output_size = output_size_bytes
+                        .map(|s| Self::safe_usize_to_i64(s, "output_size_bytes"))
+                        .transpose()?;
 
+                    // Write to tool_stats (aggregate summary)
                     sqlx::query(
                         r#"
-                        INSERT INTO tool_calls (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count)
-                        VALUES (?, ?, ?, 1, ?, ?)
+                        INSERT INTO tool_stats (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count, tool_arguments)
+                        VALUES (?, ?, ?, 1, ?, ?, ?)
                         ON CONFLICT(session_id, request_id, tool_name)
                         DO UPDATE SET
                             call_count = call_count + 1,
                             avg_execution_time_ms = COALESCE(excluded.avg_execution_time_ms, avg_execution_time_ms),
-                            error_count = error_count + excluded.error_count
+                            error_count = error_count + excluded.error_count,
+                            tool_arguments = COALESCE(tool_arguments, excluded.tool_arguments)
                         "#,
                     )
                     .bind(session_id)
@@ -1375,12 +1826,46 @@ impl SessionWriter for SqliteWriter {
                     .bind(tool_name)
                     .bind(exec_time)
                     .bind(error_count)
+                    .bind(tool_arguments)
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| {
                         WriterError::Database(format!(
-                            "Failed to record tool call {} for session {}: {}",
+                            "Failed to record tool stats for {} in session {}: {}",
                             tool_name, session_id, e
+                        ))
+                    })?;
+
+                    // Write to tool_call_executions (individual call with full details)
+                    sqlx::query(
+                        r#"
+                        INSERT INTO tool_call_executions (
+                            session_id, request_id, tool_call_id, tool_name,
+                            tool_arguments, execution_time_ms, input_size_bytes, output_size_bytes, success
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(session_id, request_id, tool_call_id)
+                        DO UPDATE SET
+                            execution_time_ms = COALESCE(excluded.execution_time_ms, execution_time_ms),
+                            output_size_bytes = COALESCE(excluded.output_size_bytes, output_size_bytes),
+                            success = COALESCE(excluded.success, success)
+                        "#,
+                    )
+                    .bind(session_id)
+                    .bind(request_id)
+                    .bind(tool_call_id)
+                    .bind(tool_name)
+                    .bind(tool_arguments)
+                    .bind(exec_time)
+                    .bind(input_size)
+                    .bind(output_size)
+                    .bind(success)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        WriterError::Database(format!(
+                            "Failed to record tool call execution {} for session {}: {}",
+                            tool_call_id, session_id, e
                         ))
                     })?;
 
@@ -1390,7 +1875,7 @@ impl SessionWriter for SqliteWriter {
                         tool_call_id = %tool_call_id,
                         success = ?success,
                         error_count = error_count,
-                        "Recorded tool call with error tracking"
+                        "Recorded tool call in both tables"
                     );
                 }
 
@@ -1634,13 +2119,14 @@ impl SqliteWriter {
 
                 sqlx::query(
                     r#"
-                    INSERT INTO tool_calls (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO tool_stats (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count, tool_arguments)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(session_id, request_id, tool_name)
                     DO UPDATE SET
                         call_count = MAX(call_count, excluded.call_count),
                         avg_execution_time_ms = excluded.avg_execution_time_ms,
-                        error_count = MAX(error_count, excluded.error_count)
+                        error_count = MAX(error_count, excluded.error_count),
+                        tool_arguments = COALESCE(tool_arguments, excluded.tool_arguments)
                     "#,
                 )
                 .bind(session_id)
@@ -1649,6 +2135,7 @@ impl SqliteWriter {
                 .bind(call_count)
                 .bind(avg_time)
                 .bind(error_count)
+                .bind(None::<String>)
                 .execute(&mut **tx)
                 .await
                 .map_err(|e| {
@@ -1813,13 +2300,14 @@ impl SqliteWriter {
 
             sqlx::query(
                 r#"
-                INSERT INTO tool_calls (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO tool_stats (session_id, request_id, tool_name, call_count, avg_execution_time_ms, error_count, tool_arguments)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id, request_id, tool_name)
                 DO UPDATE SET
                     call_count = excluded.call_count,
                     avg_execution_time_ms = excluded.avg_execution_time_ms,
-                    error_count = excluded.error_count
+                    error_count = excluded.error_count,
+                    tool_arguments = COALESCE(tool_arguments, excluded.tool_arguments)
                 "#,
             )
             .bind(session_id)
@@ -1828,6 +2316,7 @@ impl SqliteWriter {
             .bind(call_count)
             .bind(avg_time)
             .bind(error_count)
+            .bind(None::<String>)
             .execute(&mut **tx)
             .await
             .map_err(|e| {
@@ -2007,7 +2496,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(version, 3);
+        assert_eq!(version, 5);
     }
 
     #[tokio::test]
@@ -3658,7 +4147,7 @@ mod tests {
 
         // Verify tool calls are written to tool_calls table
         let tool_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls WHERE session_id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM tool_stats WHERE session_id = ?")
                 .bind(session_id)
                 .fetch_one(&writer.pool)
                 .await
@@ -3668,7 +4157,7 @@ mod tests {
 
         // Verify Read tool call
         let (tool_name, call_count, avg_time, errors): (String, i64, i64, i64) = sqlx::query_as(
-            "SELECT tool_name, call_count, avg_execution_time_ms, error_count FROM tool_calls WHERE session_id = ? AND tool_name = 'Read'",
+            "SELECT tool_name, call_count, avg_execution_time_ms, error_count FROM tool_stats WHERE session_id = ? AND tool_name = 'Read'",
         )
         .bind(session_id)
         .fetch_one(&writer.pool)
@@ -3682,7 +4171,7 @@ mod tests {
 
         // Verify Bash tool call
         let (tool_name, call_count, avg_time, errors): (String, i64, i64, i64) = sqlx::query_as(
-            "SELECT tool_name, call_count, avg_execution_time_ms, error_count FROM tool_calls WHERE session_id = ? AND tool_name = 'Bash'",
+            "SELECT tool_name, call_count, avg_execution_time_ms, error_count FROM tool_stats WHERE session_id = ? AND tool_name = 'Bash'",
         )
         .bind(session_id)
         .fetch_one(&writer.pool)
@@ -3793,7 +4282,7 @@ mod tests {
 
         // Verify initial state
         let (call_count, avg_time): (i64, i64) = sqlx::query_as(
-            "SELECT call_count, avg_execution_time_ms FROM tool_calls WHERE session_id = ? AND tool_name = 'Read'",
+            "SELECT call_count, avg_execution_time_ms FROM tool_stats WHERE session_id = ? AND tool_name = 'Read'",
         )
         .bind(session_id)
         .fetch_one(&writer.pool)
@@ -3856,7 +4345,7 @@ mod tests {
 
         // Verify ON CONFLICT updated the values
         let (call_count, avg_time, errors): (i64, i64, i64) = sqlx::query_as(
-            "SELECT call_count, avg_execution_time_ms, error_count FROM tool_calls WHERE session_id = ? AND tool_name = 'Read'",
+            "SELECT call_count, avg_execution_time_ms, error_count FROM tool_stats WHERE session_id = ? AND tool_name = 'Read'",
         )
         .bind(session_id)
         .fetch_one(&writer.pool)
@@ -3869,7 +4358,7 @@ mod tests {
 
         // Verify we still only have one row
         let row_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM tool_calls WHERE session_id = ? AND tool_name = 'Read'",
+            "SELECT COUNT(*) FROM tool_stats WHERE session_id = ? AND tool_name = 'Read'",
         )
         .bind(session_id)
         .fetch_one(&writer.pool)
@@ -4141,7 +4630,7 @@ mod tests {
         writer.write_batch(&events).await.unwrap();
 
         // Verify no tool calls
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls WHERE session_id = ?")
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_stats WHERE session_id = ?")
             .bind(session_id)
             .fetch_one(&writer.pool)
             .await
@@ -4192,7 +4681,7 @@ mod tests {
         writer.write_event(&update_event).await.unwrap();
 
         // Verify tool calls are inserted
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls WHERE session_id = ?")
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_stats WHERE session_id = ?")
             .bind(session_id)
             .fetch_one(&writer.pool)
             .await
@@ -4202,7 +4691,7 @@ mod tests {
 
         // Verify specific tool counts
         let weather_count: i64 = sqlx::query_scalar(
-            "SELECT call_count FROM tool_calls WHERE session_id = ? AND tool_name = 'get_weather'",
+            "SELECT call_count FROM tool_stats WHERE session_id = ? AND tool_name = 'get_weather'",
         )
         .bind(session_id)
         .fetch_one(&writer.pool)
@@ -4212,7 +4701,7 @@ mod tests {
         assert_eq!(weather_count, 2);
 
         let search_count: i64 = sqlx::query_scalar(
-            "SELECT call_count FROM tool_calls WHERE session_id = ? AND tool_name = 'search'",
+            "SELECT call_count FROM tool_stats WHERE session_id = ? AND tool_name = 'search'",
         )
         .bind(session_id)
         .fetch_one(&writer.pool)
@@ -4363,6 +4852,211 @@ mod tests {
         assert_eq!(input, Some(150)); // Updated to higher value
         assert_eq!(output, Some(250)); // Updated to higher value
         assert_eq!(thinking, Some(50)); // Updated to higher value
+    }
+
+    /// Test that tool_arguments from ToolCallRecorded are preserved even when
+    /// Completed events arrive first (with None arguments)
+    #[tokio::test]
+    async fn test_tool_arguments_preserved_across_events() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let writer = SqliteWriter::new(&db_path).await.unwrap();
+
+        let session_id = "tool-args-preservation-test";
+        let request_id = "req-1";
+
+        // Scenario 1: Completed event arrives first (with None tool_arguments)
+        let events = vec![
+            SessionEvent::Started {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                model_requested: "claude-sonnet-4".to_string(),
+                provider: "anthropic".to_string(),
+                listener: "anthropic".to_string(),
+                is_streaming: false,
+                metadata: SessionMetadata {
+                    client_ip: None,
+                    user_agent: None,
+                    api_version: None,
+                    request_headers: HashMap::new(),
+                    session_tags: vec![],
+                },
+            },
+            SessionEvent::Completed {
+                session_id: session_id.to_string(),
+                request_id: request_id.to_string(),
+                timestamp: Utc::now(),
+                success: true,
+                error: None,
+                finish_reason: Some("end_turn".to_string()),
+                final_stats: Box::new(FinalSessionStats {
+                    total_duration_ms: 1000,
+                    provider_time_ms: 900,
+                    proxy_overhead_ms: 100.0,
+                    total_tokens: TokenTotals {
+                        total_input: 100,
+                        total_output: 200,
+                        total_thinking: 0,
+                        total_cached: 0,
+                        grand_total: 300,
+                        total_reasoning: 0,
+                        total_cache_read: 0,
+                        total_cache_creation: 0,
+                        total_audio_input: 0,
+                        total_audio_output: 0,
+                        by_model: HashMap::new(),
+                    },
+                    tool_summary: ToolUsageSummary {
+                        total_tool_calls: 1,
+                        unique_tool_count: 1,
+                        by_tool: {
+                            let mut by_tool = HashMap::new();
+                            by_tool.insert(
+                                "Read".to_string(),
+                                ToolStats {
+                                    call_count: 1,
+                                    total_execution_time_ms: 50,
+                                    avg_execution_time_ms: 50,
+                                    error_count: 0,
+                                },
+                            );
+                            by_tool
+                        },
+                        total_tool_time_ms: 50,
+                        tool_error_count: 0,
+                    },
+                    performance: PerformanceMetrics::default(),
+                    streaming_stats: None,
+                    estimated_cost: None,
+                }),
+            },
+        ];
+
+        writer.write_batch(&events).await.unwrap();
+
+        // Verify tool_calls entry exists but has None for tool_arguments
+        let tool_args: Option<String> = sqlx::query_scalar(
+            "SELECT tool_arguments FROM tool_stats WHERE session_id = ? AND tool_name = 'Read'",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            tool_args, None,
+            "Initial insert from Completed should have None"
+        );
+
+        // Now emit ToolCallRecorded event with actual arguments
+        let tool_event = SessionEvent::ToolCallRecorded {
+            session_id: session_id.to_string(),
+            request_id: request_id.to_string(),
+            timestamp: Utc::now(),
+            tool_name: "Read".to_string(),
+            tool_call_id: "call-123".to_string(),
+            execution_time_ms: Some(50),
+            input_size_bytes: 42,
+            output_size_bytes: None,
+            success: Some(true),
+            tool_arguments: Some(r#"{"file_path":"/home/user/test.rs"}"#.to_string()),
+        };
+
+        writer.write_event(&tool_event).await.unwrap();
+
+        // Verify tool_arguments are now set (COALESCE should preserve the new value)
+        let tool_args: Option<String> = sqlx::query_scalar(
+            "SELECT tool_arguments FROM tool_stats WHERE session_id = ? AND tool_name = 'Read'",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            tool_args,
+            Some(r#"{"file_path":"/home/user/test.rs"}"#.to_string()),
+            "ToolCallRecorded should set tool_arguments even if Completed came first"
+        );
+
+        // Scenario 2: Another Completed event arrives (should NOT overwrite existing arguments)
+        let update_event = SessionEvent::Completed {
+            session_id: session_id.to_string(),
+            request_id: request_id.to_string(),
+            timestamp: Utc::now(),
+            success: true,
+            error: None,
+            finish_reason: Some("end_turn".to_string()),
+            final_stats: Box::new(FinalSessionStats {
+                total_duration_ms: 1200,
+                provider_time_ms: 1000,
+                proxy_overhead_ms: 100.0,
+                total_tokens: TokenTotals {
+                    total_input: 120,
+                    total_output: 250,
+                    total_thinking: 0,
+                    total_cached: 0,
+                    grand_total: 370,
+                    total_reasoning: 0,
+                    total_cache_read: 0,
+                    total_cache_creation: 0,
+                    total_audio_input: 0,
+                    total_audio_output: 0,
+                    by_model: HashMap::new(),
+                },
+                tool_summary: ToolUsageSummary {
+                    total_tool_calls: 2,
+                    unique_tool_count: 1,
+                    by_tool: {
+                        let mut by_tool = HashMap::new();
+                        by_tool.insert(
+                            "Read".to_string(),
+                            ToolStats {
+                                call_count: 2,
+                                total_execution_time_ms: 100,
+                                avg_execution_time_ms: 50,
+                                error_count: 0,
+                            },
+                        );
+                        by_tool
+                    },
+                    total_tool_time_ms: 100,
+                    tool_error_count: 0,
+                },
+                performance: PerformanceMetrics::default(),
+                streaming_stats: None,
+                estimated_cost: None,
+            }),
+        };
+
+        writer.write_event(&update_event).await.unwrap();
+
+        // Verify tool_arguments are STILL preserved (COALESCE should keep existing value)
+        let tool_args: Option<String> = sqlx::query_scalar(
+            "SELECT tool_arguments FROM tool_stats WHERE session_id = ? AND tool_name = 'Read'",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            tool_args,
+            Some(r#"{"file_path":"/home/user/test.rs"}"#.to_string()),
+            "Subsequent Completed event with None should NOT overwrite existing tool_arguments"
+        );
+
+        // Verify call_count was updated to 2
+        let call_count: i64 = sqlx::query_scalar(
+            "SELECT call_count FROM tool_stats WHERE session_id = ? AND tool_name = 'Read'",
+        )
+        .bind(session_id)
+        .fetch_one(&writer.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(call_count, 2, "Call count should be updated");
     }
 
     #[tokio::test]

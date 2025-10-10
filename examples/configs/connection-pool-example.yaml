@@ -25,9 +25,11 @@ providers:
       # Higher values = more concurrent requests but more resources
       pool_max_idle_per_host: 32
 
-      # Expire idle connections after N seconds (default: 90s)
-      # Should be less than upstream server timeout (60-120s)
-      pool_idle_timeout_secs: 90
+      # Expire idle connections after N seconds (default: 50s)
+      # CRITICAL: Must be LOWER than upstream server timeout to prevent stale connections
+      # OpenAI/Anthropic close idle connections after 60-120s (often 60s in practice)
+      # Using 50s ensures safe margin to avoid connection reuse failures
+      pool_idle_timeout_secs: 50
 
       # TCP keepalive interval (default: 60s)
       # Prevents firewall/load balancer timeouts during long requests
@@ -51,7 +53,7 @@ providers:
 
       # Same pool settings as OpenAI
       pool_max_idle_per_host: 32
-      pool_idle_timeout_secs: 90
+      pool_idle_timeout_secs: 50  # Expire well before server closes (60s+)
       tcp_keepalive_secs: 60
       max_retries: 3
       enable_pool_metrics: true

@@ -90,7 +90,8 @@ pub struct HttpClientSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pool_max_idle_per_host: Option<usize>,
 
-    /// Pool idle timeout in seconds (default: 90)
+    /// Pool idle timeout in seconds (default: 50)
+    /// Must be LOWER than upstream server timeout to prevent stale connections
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pool_idle_timeout_secs: Option<u64>,
 
@@ -540,7 +541,7 @@ mod tests {
         assert_eq!(config.timeout_secs, 600);
         assert_eq!(config.connect_timeout_secs, 10);
         assert_eq!(config.pool_max_idle_per_host, 32);
-        assert_eq!(config.pool_idle_timeout_secs, 90);
+        assert_eq!(config.pool_idle_timeout_secs, 50);
         assert_eq!(config.tcp_keepalive_secs, 60);
         assert_eq!(config.max_retries, 3);
         assert!(config.enable_pool_metrics);
@@ -586,7 +587,7 @@ mod tests {
         assert_eq!(config.timeout_secs, 300); // Custom
         assert_eq!(config.connect_timeout_secs, 10); // Default
         assert_eq!(config.pool_max_idle_per_host, 64); // Custom
-        assert_eq!(config.pool_idle_timeout_secs, 90); // Default
+        assert_eq!(config.pool_idle_timeout_secs, 50); // Default
     }
 
     #[test]

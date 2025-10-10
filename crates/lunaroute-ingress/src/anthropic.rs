@@ -1067,45 +1067,10 @@ pub async fn messages_passthrough(
             },
         });
 
-        // Detect and record tool results from incoming messages
-        if let Some(messages) = req.get("messages").and_then(|m| m.as_array()) {
-            for message in messages {
-                if let Some("user") = message.get("role").and_then(|r| r.as_str()) {
-                    // Check content blocks for tool_result
-                    if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
-                        for block in content {
-                            if let Some("tool_result") = block.get("type").and_then(|t| t.as_str())
-                                && let Some(tool_use_id) =
-                                    block.get("tool_use_id").and_then(|id| id.as_str())
-                            {
-                                let content_text =
-                                    block.get("content").and_then(|c| c.as_str()).unwrap_or("");
-
-                                // Anthropic has explicit is_error field
-                                let is_error = block
-                                    .get("is_error")
-                                    .and_then(|e| e.as_bool())
-                                    .unwrap_or(false);
-
-                                let output_size = content_text.len();
-
-                                recorder.record_event(SessionEvent::ToolCallRecorded {
-                                    session_id: session_id.clone(),
-                                    request_id: request_id.clone(),
-                                    timestamp: chrono::Utc::now(),
-                                    tool_name: "unknown".to_string(), // Tool name not in result block
-                                    tool_call_id: tool_use_id.to_string(),
-                                    execution_time_ms: None, // Not available in passthrough mode
-                                    input_size_bytes: 0,     // Input was in previous request
-                                    output_size_bytes: Some(output_size),
-                                    success: Some(!is_error), // Inverted: true if no error
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Note: Tool results from incoming messages are not recorded in passthrough mode
+        // because the Anthropic API's tool_result block doesn't include the tool name.
+        // Tool calls are recorded from the model's response (which does include the name).
+        // This avoids creating "unknown" entries in the database for tool results.
     }
 
     if is_streaming {
@@ -1510,6 +1475,7 @@ pub async fn messages_passthrough(
                                         input_size_bytes: input_size,
                                         output_size_bytes: None, // No result yet
                                         success: None,           // Unknown until client executes
+                                        tool_arguments: Some(input_str.clone()), // Store arguments
                                     },
                                 );
                             }

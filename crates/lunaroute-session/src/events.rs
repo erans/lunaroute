@@ -60,6 +60,8 @@ pub enum SessionEvent {
         input_size_bytes: usize,
         output_size_bytes: Option<usize>,
         success: Option<bool>,
+        /// JSON-serialized tool arguments (truncated if exceeds limit)
+        tool_arguments: Option<String>,
     },
 
     StatsSnapshot {

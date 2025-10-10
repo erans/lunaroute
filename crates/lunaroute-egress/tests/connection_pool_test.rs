@@ -44,10 +44,10 @@ async fn test_connection_pool_reuse() {
 ///
 /// This simulates the scenario where:
 /// 1. A connection is used and returned to pool
-/// 2. The connection sits idle beyond pool_idle_timeout (90s)
+/// 2. The connection sits idle beyond pool_idle_timeout (50s)
 /// 3. Next request creates a new connection instead of using stale one
 ///
-/// Note: This test is marked #[ignore] because it takes 90+ seconds to run.
+/// Note: This test is marked #[ignore] because it takes 50+ seconds to run.
 /// Run with: cargo test --package lunaroute-egress --test connection_pool_test -- --ignored
 #[tokio::test]
 #[ignore]
@@ -63,9 +63,9 @@ async fn test_connection_pool_idle_timeout() {
     let response1 = client.get(format!("{}/test/1", server.url())).send().await;
     assert!(response1.is_ok(), "First request should succeed");
 
-    // Wait for pool_idle_timeout (90 seconds) + buffer
-    eprintln!("Waiting 95 seconds for pool idle timeout...");
-    sleep(Duration::from_secs(95)).await;
+    // Wait for pool_idle_timeout (50 seconds) + buffer
+    eprintln!("Waiting 55 seconds for pool idle timeout...");
+    sleep(Duration::from_secs(55)).await;
 
     // Make second request - should create new connection, not reuse stale one
     let response2 = client.get(format!("{}/test/2", server.url())).send().await;
