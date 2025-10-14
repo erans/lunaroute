@@ -15,7 +15,7 @@ use lunaroute_core::{
     Error, Result,
     normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
 };
-use rand::RngCore;
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -25,7 +25,8 @@ use tokio::io::AsyncWriteExt;
 /// Format: 32 hex characters (128 bits of entropy)
 fn generate_secure_session_id() -> String {
     let mut bytes = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    use rand::TryRngCore;
+    OsRng.try_fill_bytes(&mut bytes).expect("OsRng failed");
     hex::encode(bytes)
 }
 

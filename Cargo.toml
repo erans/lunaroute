@@ -65,7 +65,7 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 sha2 = "0.10"
 hmac = "0.12"
-rand = "0.8"
+rand = "0.9"
 
 # Utilities
 anyhow = "1.0"

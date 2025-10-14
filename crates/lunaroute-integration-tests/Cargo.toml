@@ -26,7 +26,6 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
 tempfile = { workspace = true }
-rusqlite = "0.32"
 
 [dev-dependencies]
 dotenv = "0.15"

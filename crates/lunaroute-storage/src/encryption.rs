@@ -3,10 +3,9 @@
 use crate::traits::{StorageError, StorageResult};
 use aes_gcm::{
     Aes256Gcm, Nonce,
-    aead::{Aead, KeyInit, OsRng},
+    aead::{Aead, KeyInit, OsRng, rand_core::RngCore},
 };
 use argon2::{Argon2, ParamsBuilder, Version};
-use rand::RngCore;
 
 /// Key derivation parameters for Argon2id
 #[derive(Debug, Clone)]
