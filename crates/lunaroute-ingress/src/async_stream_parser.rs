@@ -25,6 +25,14 @@ use lunaroute_session::events::{TokenTotals, ToolStats, ToolUsageSummary};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+/// Information about a tool call extracted from stream
+#[derive(Debug, Clone)]
+pub struct ToolCallInfo {
+    pub tool_name: String,
+    pub tool_call_id: String,
+    pub tool_arguments: String,
+}
+
 /// Result of async stream parsing
 #[derive(Debug, Clone, Default)]
 pub struct ParsedStreamData {
@@ -34,6 +42,7 @@ pub struct ParsedStreamData {
     pub response_size_bytes: usize,
     pub content_blocks: usize,
     pub has_refusal: bool,
+    pub tool_calls: Vec<ToolCallInfo>,
 }
 
 /// Parse Anthropic SSE stream to extract tokens and tool calls
@@ -52,6 +61,11 @@ where
     let mut tool_calls: HashMap<String, u32> = HashMap::new();
     let mut seen_tool_ids: HashSet<String> = HashSet::new(); // Prevent duplicate counting
     let mut seen_content_block_ids: HashSet<String> = HashSet::new(); // Track unique content blocks
+
+    // Track tool arguments by content block index
+    let mut tool_id_by_index: HashMap<u32, String> = HashMap::new();
+    let mut tool_name_by_id: HashMap<String, String> = HashMap::new();
+    let mut tool_args_by_id: HashMap<String, String> = HashMap::new();
 
     while let Some(event_result) = stream.next().await {
         if let Ok(event) = event_result {
@@ -95,6 +109,7 @@ where
 
                 // Extract content blocks from content_block_start
                 if let Some("content_block_start") = json.get("type").and_then(|t| t.as_str())
+                    && let Some(index) = json.get("index").and_then(|i| i.as_u64())
                     && let Some(block) = json.get("content_block")
                 {
                     // Count unique content blocks
@@ -115,10 +130,31 @@ where
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| format!("{}_{}", name, seen_tool_ids.len()));
 
+                        // Track tool ID by index for input_json_delta events
+                        tool_id_by_index.insert(index as u32, tool_id.clone());
+                        tool_name_by_id.insert(tool_id.clone(), name.to_string());
+
                         // Only count if we haven't seen this tool ID before
                         if seen_tool_ids.insert(tool_id) {
                             *tool_calls.entry(name.to_string()).or_insert(0) += 1;
                         }
+                    }
+                }
+
+                // Extract tool arguments from content_block_delta
+                if let Some("content_block_delta") = json.get("type").and_then(|t| t.as_str())
+                    && let Some(index) = json.get("index").and_then(|i| i.as_u64())
+                    && let Some(delta) = json.get("delta")
+                    && let Some("input_json_delta") = delta.get("type").and_then(|t| t.as_str())
+                    && let Some(partial_json) = delta.get("partial_json").and_then(|p| p.as_str())
+                {
+                    // Look up tool ID by index
+                    if let Some(tool_id) = tool_id_by_index.get(&(index as u32)) {
+                        // Append partial JSON to build complete arguments
+                        tool_args_by_id
+                            .entry(tool_id.clone())
+                            .or_default()
+                            .push_str(partial_json);
                     }
                 }
             }
@@ -141,6 +177,16 @@ where
                 },
             );
         }
+    }
+
+    // Build tool_calls list with arguments
+    for (tool_id, tool_name) in tool_name_by_id {
+        let tool_arguments = tool_args_by_id.get(&tool_id).cloned().unwrap_or_default();
+        data.tool_calls.push(ToolCallInfo {
+            tool_name,
+            tool_call_id: tool_id,
+            tool_arguments,
+        });
     }
 
     // Calculate grand total
@@ -302,12 +348,29 @@ pub fn spawn_anthropic_parser<E>(
         let result = std::panic::AssertUnwindSafe(async {
             let parsed = parse_anthropic_stream::<_, E>(stream).await;
 
-            // Only record if we found meaningful data
+            // Emit ToolCallRecorded events for each tool call with arguments
+            for tool_call in &parsed.tool_calls {
+                recorder.record_event(lunaroute_session::SessionEvent::ToolCallRecorded {
+                    session_id: session_id.clone(),
+                    request_id: request_id.clone(),
+                    timestamp: chrono::Utc::now(),
+                    tool_name: tool_call.tool_name.clone(),
+                    tool_call_id: tool_call.tool_call_id.clone(),
+                    execution_time_ms: None,
+                    input_size_bytes: tool_call.tool_arguments.len(),
+                    output_size_bytes: None,
+                    success: None,
+                    tool_arguments: Some(tool_call.tool_arguments.clone()),
+                });
+            }
+
+            // Only record StatsUpdated if we found meaningful data
             if parsed.tokens.grand_total > 0 || parsed.tool_summary.total_tool_calls > 0 {
                 tracing::debug!(
-                    "Async parsed Anthropic stream: tokens={}, tools={}",
+                    "Async parsed Anthropic stream: tokens={}, tools={}, tool_calls_with_args={}",
                     parsed.tokens.grand_total,
-                    parsed.tool_summary.total_tool_calls
+                    parsed.tool_summary.total_tool_calls,
+                    parsed.tool_calls.len()
                 );
 
                 recorder.record_event(lunaroute_session::SessionEvent::StatsUpdated {
@@ -443,13 +506,13 @@ mod tests {
         let events: Vec<Result<eventsource_stream::Event, eventsource_stream::EventStreamError<std::convert::Infallible>>> = vec![
             Ok(eventsource_stream::Event {
                 event: "content_block_start".to_string(),
-                data: r#"{"type":"content_block_start","content_block":{"type":"tool_use","name":"get_weather"}}"#.to_string(),
+                data: r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather"}}"#.to_string(),
                 id: String::new(),
                 retry: None,
             }),
             Ok(eventsource_stream::Event {
                 event: "content_block_start".to_string(),
-                data: r#"{"type":"content_block_start","content_block":{"type":"tool_use","name":"search"}}"#.to_string(),
+                data: r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_2","name":"search"}}"#.to_string(),
                 id: String::new(),
                 retry: None,
             }),

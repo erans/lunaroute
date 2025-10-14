@@ -1430,6 +1430,7 @@ pub async fn chat_completions_passthrough(
                                 input_size_bytes: 0,     // Input was in previous request
                                 output_size_bytes: Some(output_size),
                                 success: Some(!is_error), // Inverted: true if no error
+                                tool_arguments: None,     // Not available for tool results
                             });
                         } else {
                             tracing::warn!(
@@ -1754,6 +1755,7 @@ pub async fn chat_completions_passthrough(
                                                 input_size_bytes: input_size,
                                                 output_size_bytes: None, // No result yet
                                                 success: None, // Unknown until client executes
+                                                tool_arguments: Some(arguments.to_string()), // Store arguments
                                             },
                                         );
                                     }

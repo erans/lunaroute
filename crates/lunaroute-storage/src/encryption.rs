@@ -70,11 +70,11 @@ pub fn encrypt(data: &[u8], key: &[u8; 32]) -> StorageResult<Vec<u8>> {
     // Generate random nonce
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
 
     // Encrypt the data
     let ciphertext = cipher
-        .encrypt(nonce, data)
+        .encrypt(&nonce, data)
         .map_err(|e| StorageError::Serialization(format!("Encryption error: {}", e)))?;
 
     // Prepend nonce to ciphertext
@@ -96,11 +96,14 @@ pub fn decrypt(encrypted_data: &[u8], key: &[u8; 32]) -> StorageResult<Vec<u8>> 
 
     // Extract nonce from the beginning
     let (nonce_bytes, ciphertext) = encrypted_data.split_at(12);
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce_array: &[u8; 12] = nonce_bytes
+        .try_into()
+        .map_err(|_| StorageError::InvalidData("Invalid nonce size".to_string()))?;
+    let nonce = Nonce::from(*nonce_array);
 
     // Decrypt the data
     let plaintext = cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|e| StorageError::Serialization(format!("Decryption error: {}", e)))?;
 
     Ok(plaintext)

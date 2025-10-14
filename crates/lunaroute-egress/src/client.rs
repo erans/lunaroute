@@ -60,9 +60,12 @@ impl Default for HttpClientConfig {
             timeout_secs: 600,
             connect_timeout_secs: 10,
             pool_max_idle_per_host: 32,
-            // CRITICAL: Expire idle connections before upstream servers close them
-            // OpenAI/Anthropic typically close idle connections after 60-120 seconds.
-            pool_idle_timeout_secs: 90,
+            // CRITICAL: Expire idle connections WELL BEFORE upstream servers close them
+            // OpenAI/Anthropic close idle connections after 60-120s (often 60s in practice).
+            // Using 50s ensures a safe margin to prevent connection reuse failures.
+            // Without this, connections idle for 60-90s appear valid but are actually dead,
+            // causing intermittent failures that require retry (adding latency).
+            pool_idle_timeout_secs: 50,
             // TCP keep-alive prevents firewall/load balancer timeouts during long requests
             tcp_keepalive_secs: 60,
             max_retries: 3,
@@ -172,7 +175,7 @@ mod tests {
         assert_eq!(config.timeout_secs, 600); // 10 minutes for long-running streams
         assert_eq!(config.connect_timeout_secs, 10);
         assert_eq!(config.pool_max_idle_per_host, 32);
-        assert_eq!(config.pool_idle_timeout_secs, 90); // Expire before server closes
+        assert_eq!(config.pool_idle_timeout_secs, 50); // Expire well before server closes
         assert_eq!(config.tcp_keepalive_secs, 60); // Keep long requests alive
         assert_eq!(config.max_retries, 3);
         assert!(config.enable_pool_metrics);
@@ -192,6 +195,9 @@ mod tests {
     /// When upstream servers (OpenAI/Anthropic) close idle connections after 60-120s,
     /// the client tries to reuse dead connections, causing requests to hang.
     ///
+    /// The timeout must be LOWER than the server's timeout to prevent this race condition.
+    /// We use 50s to safely stay below the 60s minimum observed from providers.
+    ///
     /// This test ensures the fix remains in place by verifying the client is built
     /// with the necessary configuration. While we can't directly assert the internal
     /// reqwest settings, building the client validates the configuration is valid.
@@ -208,11 +214,11 @@ mod tests {
 
         // Document the expected behavior for future maintainers
         // The client MUST have:
-        // - pool_idle_timeout(90s) to expire connections before server closes them
+        // - pool_idle_timeout(50s) to expire connections well before server closes them (60s+)
         // - tcp_keepalive(60s) to keep long-running requests alive
         //
         // If this test starts failing, check that create_client() includes:
-        //   .pool_idle_timeout(Duration::from_secs(90))
+        //   .pool_idle_timeout(Duration::from_secs(50))
         //   .tcp_keepalive(Duration::from_secs(60))
     }
 

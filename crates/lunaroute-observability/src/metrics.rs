@@ -1110,7 +1110,7 @@ mod tests {
     fn test_set_pool_config() {
         let metrics = Metrics::new().unwrap();
         metrics.set_pool_config("openai:openai_compatible", "max_idle_per_host", 32.0);
-        metrics.set_pool_config("openai:openai_compatible", "idle_timeout_secs", 90.0);
+        metrics.set_pool_config("openai:openai_compatible", "idle_timeout_secs", 50.0);
         metrics.set_pool_config("anthropic:anthropic", "max_idle_per_host", 16.0);
 
         let gathered = metrics.registry().gather();
@@ -1146,7 +1146,7 @@ mod tests {
             "openai",
             "openai_compatible",
             32,  // max_idle_per_host
-            90,  // idle_timeout_secs
+            50,  // idle_timeout_secs (updated from 90 to prevent stale connections)
             600, // timeout_secs
             10,  // connect_timeout_secs
             60,  // tcp_keepalive_secs
