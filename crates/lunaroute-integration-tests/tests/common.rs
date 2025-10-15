@@ -6,16 +6,14 @@ use lunaroute_session::SessionEvent;
 use std::sync::{Arc, Mutex};
 
 /// In-memory session store for testing
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct InMemorySessionStore {
     events: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
 impl InMemorySessionStore {
     pub fn new() -> Self {
-        Self {
-            events: Arc::new(Mutex::new(Vec::new())),
-        }
+        Self::default()
     }
 
     /// Get all recorded events as SessionEvent enum
@@ -26,11 +24,6 @@ impl InMemorySessionStore {
             .iter()
             .filter_map(|v| serde_json::from_value(v.clone()).ok())
             .collect()
-    }
-
-    /// Get raw JSON events
-    pub fn get_raw_events(&self) -> Vec<serde_json::Value> {
-        self.events.lock().unwrap().clone()
     }
 }
 

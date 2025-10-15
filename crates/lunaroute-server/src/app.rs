@@ -106,8 +106,6 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Placeholder tests - full tests would require mock implementations
     #[test]
     fn test_app_state_tenant_id() {
