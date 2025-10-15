@@ -26,7 +26,4 @@ mod sqlite_session_store;
 pub use sqlite_session_store::SqliteSessionStore;
 
 // Re-export for convenience
-pub use lunaroute_session::{
-    sqlite_writer::SqliteWriter,
-    jsonl_writer::JsonlWriter,
-};
+pub use lunaroute_session::{jsonl_writer::JsonlWriter, sqlite_writer::SqliteWriter};
