@@ -31,7 +31,9 @@
 //! ```
 
 mod config;
+mod migrations;
 mod postgres_session_store;
 
 pub use config::PostgresSessionStoreConfig;
+pub use migrations::{MIGRATIONS, Migration, get_current_version, run_migrations};
 pub use postgres_session_store::PostgresSessionStore;
