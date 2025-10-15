@@ -30,6 +30,9 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 
+# Metrics
+prometheus = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio-test = "0.4"

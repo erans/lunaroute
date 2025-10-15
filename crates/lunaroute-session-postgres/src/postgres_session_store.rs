@@ -7,8 +7,10 @@ use async_trait::async_trait;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::config::PostgresSessionStoreConfig;
+use crate::metrics::SessionStoreMetrics;
 use lunaroute_core::{
     Error, Result,
     events::SessionEvent,
@@ -31,6 +33,8 @@ use lunaroute_core::{
 pub struct PostgresSessionStore {
     /// PostgreSQL connection pool
     pool: Arc<PgPool>,
+    /// Optional metrics collector
+    metrics: Option<Arc<SessionStoreMetrics>>,
 }
 
 impl PostgresSessionStore {
@@ -76,6 +80,25 @@ impl PostgresSessionStore {
         database_url: &str,
         config: PostgresSessionStoreConfig,
     ) -> Result<Self> {
+        Self::with_config_and_metrics(database_url, config, None).await
+    }
+
+    /// Create a new PostgreSQL session store with custom configuration and metrics
+    ///
+    /// Automatically detects and enables TimescaleDB features if available.
+    ///
+    /// # Arguments
+    /// * `database_url` - PostgreSQL connection string
+    /// * `config` - Connection pool configuration
+    /// * `metrics` - Optional metrics collector
+    ///
+    /// # Errors
+    /// - `Error::Database` if connection fails or schema migration fails
+    pub async fn with_config_and_metrics(
+        database_url: &str,
+        config: PostgresSessionStoreConfig,
+        metrics: Option<SessionStoreMetrics>,
+    ) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
             .min_connections(config.min_connections)
@@ -88,10 +111,18 @@ impl PostgresSessionStore {
 
         let store = Self {
             pool: Arc::new(pool),
+            metrics: metrics.map(Arc::new),
         };
 
         // Run schema migrations
         store.run_migrations().await?;
+
+        // Update pool metrics if metrics are enabled
+        if let Some(ref m) = store.metrics {
+            let size = store.pool.size() as usize;
+            let idle = store.pool.num_idle();
+            m.update_pool_metrics("postgres", size, idle);
+        }
 
         Ok(store)
     }
@@ -100,6 +131,7 @@ impl PostgresSessionStore {
     pub fn from_pool(pool: PgPool) -> Self {
         Self {
             pool: Arc::new(pool),
+            metrics: None,
         }
     }
 
@@ -113,8 +145,27 @@ impl PostgresSessionStore {
         .await
         .unwrap_or(false);
 
+        // Record TimescaleDB availability
+        if let Some(ref m) = self.metrics {
+            m.set_timescaledb_enabled("postgres", timescale_available);
+        }
+
         // Run versioned migrations
-        crate::migrations::run_migrations(&self.pool, timescale_available).await
+        let migration_result =
+            crate::migrations::run_migrations(&self.pool, timescale_available).await;
+
+        // Update migration metrics
+        if let Some(ref m) = self.metrics
+            && let Ok(Some(version)) = crate::migrations::get_current_version(&self.pool).await
+        {
+            m.update_migration_metrics(
+                "postgres",
+                crate::migrations::MIGRATIONS.len(),
+                Some(version),
+            );
+        }
+
+        migration_result
     }
 
     /// Get the underlying connection pool
@@ -452,6 +503,8 @@ impl SessionStore for PostgresSessionStore {
         tenant_id: Option<TenantId>,
         event: serde_json::Value,
     ) -> Result<()> {
+        let start = Instant::now();
+
         // Multi-tenant mode only - require tenant_id
         let tenant_id = tenant_id.ok_or_else(|| {
             Error::TenantRequired(
@@ -463,8 +516,20 @@ impl SessionStore for PostgresSessionStore {
         let event: SessionEvent = serde_json::from_value(event)
             .map_err(|e| Error::SessionStore(format!("Failed to deserialize event: {}", e)))?;
 
+        // Determine event type for metrics
+        let event_type = match &event {
+            SessionEvent::Started { .. } => "Started",
+            SessionEvent::StreamStarted { .. } => "StreamStarted",
+            SessionEvent::RequestRecorded { .. } => "RequestRecorded",
+            SessionEvent::ResponseRecorded { .. } => "ResponseRecorded",
+            SessionEvent::ToolCallRecorded { .. } => "ToolCallRecorded",
+            SessionEvent::Completed { .. } => "Completed",
+            SessionEvent::StatsUpdated { .. } => "StatsUpdated",
+            SessionEvent::StatsSnapshot { .. } => "StatsSnapshot",
+        };
+
         // Handle event based on type
-        match &event {
+        let result = match &event {
             SessionEvent::Started { .. } => self.handle_started_event(tenant_id, &event).await,
             SessionEvent::StreamStarted { .. } => {
                 self.handle_stream_started_event(tenant_id, &event).await
@@ -487,7 +552,25 @@ impl SessionStore for PostgresSessionStore {
                 // Stats snapshots are not persisted to PostgreSQL (only final stats matter)
                 Ok(())
             }
+        };
+
+        // Record metrics
+        if let Some(ref m) = self.metrics {
+            let duration = start.elapsed().as_secs_f64();
+            match &result {
+                Ok(_) => m.record_event_written(&tenant_id.to_string(), event_type, duration),
+                Err(e) => {
+                    let error_type = match e {
+                        Error::Database(_) => "database_error",
+                        Error::SessionStore(_) => "session_store_error",
+                        _ => "unknown_error",
+                    };
+                    m.record_event_write_error(&tenant_id.to_string(), event_type, error_type);
+                }
+            }
         }
+
+        result
     }
 
     async fn search(
@@ -495,6 +578,8 @@ impl SessionStore for PostgresSessionStore {
         tenant_id: Option<TenantId>,
         _query: SearchQuery,
     ) -> Result<SearchResults> {
+        let start = Instant::now();
+
         // Multi-tenant mode only - require tenant_id
         let tenant_id = tenant_id.ok_or_else(|| {
             Error::TenantRequired(
@@ -504,62 +589,74 @@ impl SessionStore for PostgresSessionStore {
 
         // For now, implement basic search
         // TODO: Add filters, pagination, sorting
-        let rows = sqlx::query(
-            r#"
-            SELECT
-                session_id, request_id, started_at, completed_at,
-                provider, model_requested, model_used, success,
-                error_message, finish_reason, total_duration_ms,
-                input_tokens, output_tokens, total_tokens, is_streaming,
-                client_ip::TEXT as client_ip
-            FROM sessions
-            WHERE tenant_id = $1
-            ORDER BY created_at DESC
-            LIMIT 50
-            "#,
-        )
-        .bind(tenant_id.as_uuid())
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| Error::SessionStore(format!("Search failed: {}", e)))?;
+        let result = async {
+            let rows = sqlx::query(
+                r#"
+                SELECT
+                    session_id, request_id, started_at, completed_at,
+                    provider, model_requested, model_used, success,
+                    error_message, finish_reason, total_duration_ms,
+                    input_tokens, output_tokens, total_tokens, is_streaming,
+                    client_ip::TEXT as client_ip
+                FROM sessions
+                WHERE tenant_id = $1
+                ORDER BY created_at DESC
+                LIMIT 50
+                "#,
+            )
+            .bind(tenant_id.as_uuid())
+            .fetch_all(&*self.pool)
+            .await
+            .map_err(|e| Error::SessionStore(format!("Search failed: {}", e)))?;
 
-        // Convert rows to session records
-        let items: Vec<serde_json::Value> = rows
-            .into_iter()
-            .map(|row| {
-                serde_json::json!({
-                    "session_id": row.get::<String, _>("session_id"),
-                    "request_id": row.get::<Option<String>, _>("request_id"),
-                    "started_at": row.get::<chrono::DateTime<chrono::Utc>, _>("started_at").to_rfc3339(),
-                    "completed_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("completed_at").map(|dt| dt.to_rfc3339()),
-                    "provider": row.get::<String, _>("provider"),
-                    "model_requested": row.get::<String, _>("model_requested"),
-                    "model_used": row.get::<Option<String>, _>("model_used"),
-                    "success": row.get::<Option<bool>, _>("success"),
-                    "error_message": row.get::<Option<String>, _>("error_message"),
-                    "finish_reason": row.get::<Option<String>, _>("finish_reason"),
-                    "total_duration_ms": row.get::<Option<i64>, _>("total_duration_ms"),
-                    "input_tokens": row.get::<i32, _>("input_tokens"),
-                    "output_tokens": row.get::<i32, _>("output_tokens"),
-                    "total_tokens": row.get::<i32, _>("total_tokens"),
-                    "is_streaming": row.get::<bool, _>("is_streaming"),
-                    "client_ip": row.get::<Option<String>, _>("client_ip"),
+            // Convert rows to session records
+            let items: Vec<serde_json::Value> = rows
+                .into_iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "session_id": row.get::<String, _>("session_id"),
+                        "request_id": row.get::<Option<String>, _>("request_id"),
+                        "started_at": row.get::<chrono::DateTime<chrono::Utc>, _>("started_at").to_rfc3339(),
+                        "completed_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("completed_at").map(|dt| dt.to_rfc3339()),
+                        "provider": row.get::<String, _>("provider"),
+                        "model_requested": row.get::<String, _>("model_requested"),
+                        "model_used": row.get::<Option<String>, _>("model_used"),
+                        "success": row.get::<Option<bool>, _>("success"),
+                        "error_message": row.get::<Option<String>, _>("error_message"),
+                        "finish_reason": row.get::<Option<String>, _>("finish_reason"),
+                        "total_duration_ms": row.get::<Option<i64>, _>("total_duration_ms"),
+                        "input_tokens": row.get::<i32, _>("input_tokens"),
+                        "output_tokens": row.get::<i32, _>("output_tokens"),
+                        "total_tokens": row.get::<i32, _>("total_tokens"),
+                        "is_streaming": row.get::<bool, _>("is_streaming"),
+                        "client_ip": row.get::<Option<String>, _>("client_ip"),
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
-        let results = serde_json::json!({
-            "items": items,
-            "total_count": items.len(),
-            "page": 0,
-            "page_size": 50,
-            "total_pages": 1,
-        });
+            let results = serde_json::json!({
+                "items": items,
+                "total_count": items.len(),
+                "page": 0,
+                "page_size": 50,
+                "total_pages": 1,
+            });
 
-        Ok(results)
+            Ok(results)
+        }.await;
+
+        // Record metrics
+        if let Some(ref m) = self.metrics {
+            let duration = start.elapsed().as_secs_f64();
+            m.record_search(&tenant_id.to_string(), duration, result.is_ok());
+        }
+
+        result
     }
 
     async fn get_session(&self, tenant_id: Option<TenantId>, session_id: &str) -> Result<Session> {
+        let start = Instant::now();
+
         // Multi-tenant mode only - require tenant_id
         let tenant_id = tenant_id.ok_or_else(|| {
             Error::TenantRequired(
@@ -567,52 +664,73 @@ impl SessionStore for PostgresSessionStore {
             )
         })?;
 
-        let row = sqlx::query(
-            r#"
-            SELECT
-                session_id, request_id, started_at, completed_at,
-                provider, model_requested, model_used, success,
-                error_message, finish_reason, total_duration_ms,
-                input_tokens, output_tokens, total_tokens, is_streaming,
-                client_ip::TEXT as client_ip
-            FROM sessions
-            WHERE tenant_id = $1 AND session_id = $2
-            LIMIT 1
-            "#,
-        )
-        .bind(tenant_id.as_uuid())
-        .bind(session_id)
-        .fetch_optional(&*self.pool)
-        .await
-        .map_err(|e| Error::SessionStore(format!("Failed to get session: {}", e)))?;
+        let result = async {
+            let row = sqlx::query(
+                r#"
+                SELECT
+                    session_id, request_id, started_at, completed_at,
+                    provider, model_requested, model_used, success,
+                    error_message, finish_reason, total_duration_ms,
+                    input_tokens, output_tokens, total_tokens, is_streaming,
+                    client_ip::TEXT as client_ip
+                FROM sessions
+                WHERE tenant_id = $1 AND session_id = $2
+                LIMIT 1
+                "#,
+            )
+            .bind(tenant_id.as_uuid())
+            .bind(session_id)
+            .fetch_optional(&*self.pool)
+            .await
+            .map_err(|e| Error::SessionStore(format!("Failed to get session: {}", e)))?;
 
-        match row {
-            Some(row) => {
-                let session = serde_json::json!({
-                    "session_id": row.get::<String, _>("session_id"),
-                    "request_id": row.get::<Option<String>, _>("request_id"),
-                    "started_at": row.get::<chrono::DateTime<chrono::Utc>, _>("started_at").to_rfc3339(),
-                    "completed_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("completed_at").map(|dt| dt.to_rfc3339()),
-                    "provider": row.get::<String, _>("provider"),
-                    "model_requested": row.get::<String, _>("model_requested"),
-                    "model_used": row.get::<Option<String>, _>("model_used"),
-                    "success": row.get::<Option<bool>, _>("success"),
-                    "error_message": row.get::<Option<String>, _>("error_message"),
-                    "finish_reason": row.get::<Option<String>, _>("finish_reason"),
-                    "total_duration_ms": row.get::<Option<i64>, _>("total_duration_ms"),
-                    "input_tokens": row.get::<i32, _>("input_tokens"),
-                    "output_tokens": row.get::<i32, _>("output_tokens"),
-                    "total_tokens": row.get::<i32, _>("total_tokens"),
-                    "is_streaming": row.get::<bool, _>("is_streaming"),
-                    "client_ip": row.get::<Option<String>, _>("client_ip"),
-                });
-                Ok(session)
+            match row {
+                Some(row) => {
+                    let session = serde_json::json!({
+                        "session_id": row.get::<String, _>("session_id"),
+                        "request_id": row.get::<Option<String>, _>("request_id"),
+                        "started_at": row.get::<chrono::DateTime<chrono::Utc>, _>("started_at").to_rfc3339(),
+                        "completed_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("completed_at").map(|dt| dt.to_rfc3339()),
+                        "provider": row.get::<String, _>("provider"),
+                        "model_requested": row.get::<String, _>("model_requested"),
+                        "model_used": row.get::<Option<String>, _>("model_used"),
+                        "success": row.get::<Option<bool>, _>("success"),
+                        "error_message": row.get::<Option<String>, _>("error_message"),
+                        "finish_reason": row.get::<Option<String>, _>("finish_reason"),
+                        "total_duration_ms": row.get::<Option<i64>, _>("total_duration_ms"),
+                        "input_tokens": row.get::<i32, _>("input_tokens"),
+                        "output_tokens": row.get::<i32, _>("output_tokens"),
+                        "total_tokens": row.get::<i32, _>("total_tokens"),
+                        "is_streaming": row.get::<bool, _>("is_streaming"),
+                        "client_ip": row.get::<Option<String>, _>("client_ip"),
+                    });
+                    Ok(session)
+                }
+                None => Err(Error::SessionNotFound(format!(
+                    "Session not found: {}",
+                    session_id
+                ))),
             }
-            None => Err(Error::SessionNotFound(format!(
-                "Session not found: {}",
-                session_id
-            ))),
+        }.await;
+
+        // Record metrics
+        if let Some(ref m) = self.metrics {
+            let duration = start.elapsed().as_secs_f64();
+            let found = result.is_ok();
+            m.record_session_retrieved(&tenant_id.to_string(), duration, found);
+
+            if let Err(ref e) = result {
+                let error_type = match e {
+                    Error::SessionNotFound(_) => "not_found",
+                    Error::Database(_) => "database_error",
+                    Error::SessionStore(_) => "session_store_error",
+                    _ => "unknown_error",
+                };
+                m.record_session_retrieval_error(&tenant_id.to_string(), error_type);
+            }
         }
+
+        result
     }
 
     async fn cleanup(
@@ -675,6 +793,8 @@ impl SessionStore for PostgresSessionStore {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<Session>> {
+        let start = Instant::now();
+
         // Multi-tenant mode only - require tenant_id
         let tenant_id = tenant_id.ok_or_else(|| {
             Error::TenantRequired(
@@ -682,52 +802,62 @@ impl SessionStore for PostgresSessionStore {
             )
         })?;
 
-        let rows = sqlx::query(
-            r#"
-            SELECT
-                session_id, request_id, started_at, completed_at,
-                provider, model_requested, model_used, success,
-                error_message, finish_reason, total_duration_ms,
-                input_tokens, output_tokens, total_tokens, is_streaming,
-                client_ip::TEXT as client_ip
-            FROM sessions
-            WHERE tenant_id = $1
-            ORDER BY created_at DESC
-            LIMIT $2 OFFSET $3
-            "#,
-        )
-        .bind(tenant_id.as_uuid())
-        .bind(limit as i64)
-        .bind(offset as i64)
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| Error::SessionStore(format!("Failed to list sessions: {}", e)))?;
+        let result = async {
+            let rows = sqlx::query(
+                r#"
+                SELECT
+                    session_id, request_id, started_at, completed_at,
+                    provider, model_requested, model_used, success,
+                    error_message, finish_reason, total_duration_ms,
+                    input_tokens, output_tokens, total_tokens, is_streaming,
+                    client_ip::TEXT as client_ip
+                FROM sessions
+                WHERE tenant_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2 OFFSET $3
+                "#,
+            )
+            .bind(tenant_id.as_uuid())
+            .bind(limit as i64)
+            .bind(offset as i64)
+            .fetch_all(&*self.pool)
+            .await
+            .map_err(|e| Error::SessionStore(format!("Failed to list sessions: {}", e)))?;
 
-        let sessions: Vec<serde_json::Value> = rows
-            .into_iter()
-            .map(|row| {
-                serde_json::json!({
-                    "session_id": row.get::<String, _>("session_id"),
-                    "request_id": row.get::<Option<String>, _>("request_id"),
-                    "started_at": row.get::<chrono::DateTime<chrono::Utc>, _>("started_at").to_rfc3339(),
-                    "completed_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("completed_at").map(|dt| dt.to_rfc3339()),
-                    "provider": row.get::<String, _>("provider"),
-                    "model_requested": row.get::<String, _>("model_requested"),
-                    "model_used": row.get::<Option<String>, _>("model_used"),
-                    "success": row.get::<Option<bool>, _>("success"),
-                    "error_message": row.get::<Option<String>, _>("error_message"),
-                    "finish_reason": row.get::<Option<String>, _>("finish_reason"),
-                    "total_duration_ms": row.get::<Option<i64>, _>("total_duration_ms"),
-                    "input_tokens": row.get::<i32, _>("input_tokens"),
-                    "output_tokens": row.get::<i32, _>("output_tokens"),
-                    "total_tokens": row.get::<i32, _>("total_tokens"),
-                    "is_streaming": row.get::<bool, _>("is_streaming"),
-                    "client_ip": row.get::<Option<String>, _>("client_ip"),
+            let sessions: Vec<serde_json::Value> = rows
+                .into_iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "session_id": row.get::<String, _>("session_id"),
+                        "request_id": row.get::<Option<String>, _>("request_id"),
+                        "started_at": row.get::<chrono::DateTime<chrono::Utc>, _>("started_at").to_rfc3339(),
+                        "completed_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("completed_at").map(|dt| dt.to_rfc3339()),
+                        "provider": row.get::<String, _>("provider"),
+                        "model_requested": row.get::<String, _>("model_requested"),
+                        "model_used": row.get::<Option<String>, _>("model_used"),
+                        "success": row.get::<Option<bool>, _>("success"),
+                        "error_message": row.get::<Option<String>, _>("error_message"),
+                        "finish_reason": row.get::<Option<String>, _>("finish_reason"),
+                        "total_duration_ms": row.get::<Option<i64>, _>("total_duration_ms"),
+                        "input_tokens": row.get::<i32, _>("input_tokens"),
+                        "output_tokens": row.get::<i32, _>("output_tokens"),
+                        "total_tokens": row.get::<i32, _>("total_tokens"),
+                        "is_streaming": row.get::<bool, _>("is_streaming"),
+                        "client_ip": row.get::<Option<String>, _>("client_ip"),
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
-        Ok(sessions)
+            Ok(sessions)
+        }.await;
+
+        // Record metrics
+        if let Some(ref m) = self.metrics {
+            let duration = start.elapsed().as_secs_f64();
+            m.record_list(&tenant_id.to_string(), duration, result.is_ok());
+        }
+
+        result
     }
 }
 

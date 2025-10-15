@@ -243,7 +243,23 @@ impl ConfigStore for PostgresConfigStore {
 ```rust
 pub struct PostgresSessionStore {
     pool: PgPool,
+    metrics: Option<Arc<SessionStoreMetrics>>,  // Optional Prometheus metrics
 }
+
+// Features:
+// - Works with vanilla PostgreSQL (no TimescaleDB required)
+// - Automatically enables TimescaleDB hypertables if available
+// - Configurable connection pool settings
+// - Versioned schema migrations
+// - Comprehensive Prometheus metrics for observability
+//
+// Metrics provided:
+// - Event write operations (count, latency, errors by event type)
+// - Session retrieval operations (success/failure, latency)
+// - Search and list operations (count, latency)
+// - Connection pool health (total, idle, active connections)
+// - Migration tracking (applied count, current schema version)
+// - TimescaleDB availability and hypertable conversions
 
 // Schema with tenant_id partitioning and time-series optimization:
 //
