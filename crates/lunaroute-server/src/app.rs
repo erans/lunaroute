@@ -4,7 +4,7 @@
 //! SessionStore trait implementations. This enables dependency injection,
 //! allowing the same business logic to work with both single-tenant
 //! (file-based config, SQLite sessions) and multi-tenant (PostgreSQL config,
-//! TimescaleDB sessions) deployments.
+//! PostgreSQL sessions) deployments.
 
 use std::sync::Arc;
 
@@ -40,7 +40,7 @@ pub struct AppState {
     /// Configuration store (file-based or database-backed)
     config_store: Arc<dyn ConfigStore>,
 
-    /// Session store (SQLite or TimescaleDB)
+    /// Session store (SQLite or PostgreSQL)
     session_store: Arc<dyn SessionStore>,
 
     /// Tenant ID (None for single-tenant mode)

@@ -5,8 +5,10 @@
 
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
+use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 
+use crate::config::PostgresSessionStoreConfig;
 use lunaroute_core::{
     Error, Result,
     events::SessionEvent,
@@ -32,7 +34,7 @@ pub struct PostgresSessionStore {
 }
 
 impl PostgresSessionStore {
-    /// Create a new PostgreSQL session store
+    /// Create a new PostgreSQL session store with default configuration
     ///
     /// Automatically detects and enables TimescaleDB features if available.
     ///
@@ -42,7 +44,42 @@ impl PostgresSessionStore {
     /// # Errors
     /// - `Error::Database` if connection fails or schema migration fails
     pub async fn new(database_url: &str) -> Result<Self> {
-        let pool = PgPool::connect(database_url)
+        Self::with_config(database_url, PostgresSessionStoreConfig::default()).await
+    }
+
+    /// Create a new PostgreSQL session store with custom configuration
+    ///
+    /// Automatically detects and enables TimescaleDB features if available.
+    ///
+    /// # Arguments
+    /// * `database_url` - PostgreSQL connection string
+    /// * `config` - Connection pool configuration
+    ///
+    /// # Errors
+    /// - `Error::Database` if connection fails or schema migration fails
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use lunaroute_session_postgres::{PostgresSessionStore, PostgresSessionStoreConfig};
+    /// # async fn example() -> lunaroute_core::Result<()> {
+    /// let config = PostgresSessionStoreConfig::default()
+    ///     .with_max_connections(50)
+    ///     .with_min_connections(10);
+    /// let store = PostgresSessionStore::with_config(
+    ///     "postgres://localhost/lunaroute",
+    ///     config
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn with_config(database_url: &str, config: PostgresSessionStoreConfig) -> Result<Self> {
+        let pool = PgPoolOptions::new()
+            .max_connections(config.max_connections)
+            .min_connections(config.min_connections)
+            .acquire_timeout(config.acquire_timeout)
+            .idle_timeout(Some(config.idle_timeout))
+            .max_lifetime(Some(config.max_lifetime))
+            .connect(database_url)
             .await
             .map_err(|e| Error::Database(format!("Failed to connect to PostgreSQL: {}", e)))?;
 
