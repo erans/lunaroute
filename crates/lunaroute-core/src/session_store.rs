@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 
-use crate::{tenant::TenantId, Result};
+use crate::{Result, tenant::TenantId};
 
 // Placeholder types - will be properly defined in types.rs
 pub type SessionEvent = serde_json::Value;
@@ -83,8 +83,7 @@ pub trait SessionStore: Send + Sync {
     /// - `Error::SessionNotFound` if session doesn't exist
     /// - `Error::TenantRequired` if tenant_id is None in multi-tenant mode
     /// - `Error::SessionStore` for read errors
-    async fn get_session(&self, tenant_id: Option<TenantId>, session_id: &str)
-        -> Result<Session>;
+    async fn get_session(&self, tenant_id: Option<TenantId>, session_id: &str) -> Result<Session>;
 
     /// Apply retention policies
     ///

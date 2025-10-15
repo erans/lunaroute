@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
-use crate::{tenant::TenantId, Error, Result};
+use crate::{Error, Result, tenant::TenantId};
 
 /// Type alias for configuration change streams
 pub type ConfigChangeStream<'a> = BoxStream<'a, Result<ConfigChange>>;

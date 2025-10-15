@@ -33,9 +33,8 @@ impl TenantId {
 
     /// Parse a tenant ID from a string
     pub fn from_string(s: &str) -> Result<Self> {
-        let uuid = Uuid::parse_str(s).map_err(|e| {
-            Error::InvalidTenant(format!("Invalid tenant ID format: {}", e))
-        })?;
+        let uuid = Uuid::parse_str(s)
+            .map_err(|e| Error::InvalidTenant(format!("Invalid tenant ID format: {}", e)))?;
         Ok(Self(uuid))
     }
 
@@ -83,7 +82,7 @@ impl FromStr for TenantId {
 /// ```no_run
 /// # use lunaroute_core::tenant::{TenantContext, TenantId};
 /// # use std::sync::Arc;
-/// # fn get_stores() -> (Arc<dyn std::any::Any>, Arc<dyn std::any::Any>) { todo!() }
+/// # fn get_stores() -> (Arc<dyn std::any::Any + Send + Sync>, Arc<dyn std::any::Any + Send + Sync>) { todo!() }
 /// let (config_store, session_store) = get_stores();
 /// let context = TenantContext {
 ///     tenant_id: None,  // Single-tenant mode
@@ -96,7 +95,7 @@ impl FromStr for TenantId {
 /// ```no_run
 /// # use lunaroute_core::tenant::{TenantContext, TenantId};
 /// # use std::sync::Arc;
-/// # fn get_stores() -> (Arc<dyn std::any::Any>, Arc<dyn std::any::Any>) { todo!() }
+/// # fn get_stores() -> (Arc<dyn std::any::Any + Send + Sync>, Arc<dyn std::any::Any + Send + Sync>) { todo!() }
 /// # fn extract_tenant_from_request() -> TenantId { todo!() }
 /// let tenant_id = extract_tenant_from_request();
 /// let (config_store, session_store) = get_stores();
@@ -171,6 +170,9 @@ mod tests {
     fn test_tenant_id_display() {
         let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let tenant_id = TenantId::from_uuid(uuid);
-        assert_eq!(tenant_id.to_string(), "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(
+            tenant_id.to_string(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
     }
 }

@@ -49,9 +49,9 @@
 
 // Multi-tenancy modules
 pub mod config_store;
+pub mod events;
 pub mod session_store;
 pub mod tenant;
-pub mod events;
 pub mod types;
 
 // Existing modules
@@ -61,7 +61,7 @@ pub mod provider;
 pub mod template;
 
 // Re-exports
-pub use error::{Error, Result};
-pub use tenant::{TenantId, TenantContext};
 pub use config_store::ConfigStore;
+pub use error::{Error, Result};
 pub use session_store::SessionStore;
+pub use tenant::{TenantContext, TenantId};
