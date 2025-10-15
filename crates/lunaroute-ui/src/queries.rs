@@ -829,9 +829,26 @@ pub async fn get_sessions_by_hour(pool: &SqlitePool, hours: i64) -> Result<Vec<H
 }
 
 /// Get spending statistics with breakdown by model
-pub async fn get_spending_stats(pool: &SqlitePool, hours: i64) -> Result<SpendingStats> {
-    // Fetch all session_stats with cost-relevant data for the time period
-    let stats_rows = sqlx::query(
+pub async fn get_spending_stats(pool: &SqlitePool, hours: Option<i64>) -> Result<SpendingStats> {
+    // Build query with optional time filter
+    let query = if let Some(h) = hours {
+        format!(
+            r#"
+            SELECT
+                s.session_id,
+                ss.model_name,
+                ss.input_tokens,
+                ss.output_tokens,
+                ss.thinking_tokens
+            FROM session_stats ss
+            INNER JOIN sessions s ON ss.session_id = s.session_id
+            WHERE s.started_at >= datetime('now', '-{} hours')
+                AND ss.model_name IS NOT NULL
+            "#,
+            h
+        )
+    } else {
+        // All-time query (no time filter)
         r#"
         SELECT
             s.session_id,
@@ -841,13 +858,12 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: i64) -> Result<Spendin
             ss.thinking_tokens
         FROM session_stats ss
         INNER JOIN sessions s ON ss.session_id = s.session_id
-        WHERE s.started_at >= datetime('now', '-' || ? || ' hours')
-            AND ss.model_name IS NOT NULL
-        "#,
-    )
-    .bind(hours)
-    .fetch_all(pool)
-    .await?;
+        WHERE ss.model_name IS NOT NULL
+        "#
+        .to_string()
+    };
+
+    let stats_rows = sqlx::query(&query).fetch_all(pool).await?;
 
     // Calculate total cost and per-model breakdown
     let mut total_cost = 0.0;
@@ -883,17 +899,26 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: i64) -> Result<Spendin
         }
     }
 
-    // Get total unique sessions count
-    let session_count_row = sqlx::query(
+    // Get total unique sessions count with optional time filter
+    let count_query = if let Some(h) = hours {
+        format!(
+            r#"
+            SELECT COUNT(DISTINCT session_id) as count
+            FROM sessions
+            WHERE started_at >= datetime('now', '-{} hours')
+            "#,
+            h
+        )
+    } else {
+        // All-time query
         r#"
         SELECT COUNT(DISTINCT session_id) as count
         FROM sessions
-        WHERE started_at >= datetime('now', '-' || ? || ' hours')
-        "#,
-    )
-    .bind(hours)
-    .fetch_one(pool)
-    .await?;
+        "#
+        .to_string()
+    };
+
+    let session_count_row = sqlx::query(&count_query).fetch_one(pool).await?;
 
     let total_sessions: i64 = session_count_row.try_get("count").unwrap_or(1).max(1);
     let avg_cost_per_session = total_cost / total_sessions as f64;

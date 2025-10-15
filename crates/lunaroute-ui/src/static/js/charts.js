@@ -335,10 +335,8 @@ async function initCallsPerModelChart() {
     const ctx = document.getElementById('callsPerModelChart');
     if (!ctx) return;
 
-    const hours = typeof currentTimeRangeHours !== 'undefined' ? currentTimeRangeHours : 24;
-
-    // Fetch initial data
-    const response = await fetch(`/api/stats/spending?hours=${hours}`);
+    // NO hours parameter - we want all-time cumulative data
+    const response = await fetch('/api/stats/spending');
     const data = await response.json();
 
     // Take top 10 models by call count (session count)
@@ -401,10 +399,9 @@ async function initCallsPerModelChart() {
         }
     });
 
-    // Auto-update chart
+    // Auto-update chart (no hours parameter - all-time data)
     setInterval(async () => {
-        const hours = typeof currentTimeRangeHours !== 'undefined' ? currentTimeRangeHours : 24;
-        const response = await fetch(`/api/stats/spending?hours=${hours}`);
+        const response = await fetch('/api/stats/spending');
         const data = await response.json();
         const sorted = [...data.by_model].sort((a, b) => b.session_count - a.session_count);
         const top10 = sorted.slice(0, 10);
@@ -421,8 +418,9 @@ async function initCallsPerModelChart() {
 async function updateCallsPerModelChart() {
     if (!callsPerModelChart) return;
 
-    const hours = typeof currentTimeRangeHours !== 'undefined' ? currentTimeRangeHours : 24;
-    const response = await fetch(`/api/stats/spending?hours=${hours}`);
+    // NO hours parameter - we want all-time cumulative data
+    // This chart should NOT be affected by the time range selector
+    const response = await fetch('/api/stats/spending');
     const data = await response.json();
     const sorted = [...data.by_model].sort((a, b) => b.session_count - a.session_count);
     const top10 = sorted.slice(0, 10);
