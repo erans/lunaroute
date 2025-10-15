@@ -20,7 +20,6 @@ pub mod tool_mapper;
 pub mod cleanup;
 pub mod config;
 pub mod events;
-pub mod factory;
 pub mod jsonl_writer;
 pub mod search;
 pub mod writer;
@@ -46,7 +45,6 @@ pub use config::{
     SessionRecordingConfig, SqliteConfig, WorkerConfig,
 };
 pub use events::{FinalSessionStats, SessionEvent, SessionStats};
-pub use factory::create_session_store;
 pub use jsonl_writer::{JsonlConfig as JsonlWriterConfig, JsonlWriter};
 pub use pii_redaction::SessionPIIRedactor;
 pub use search::{

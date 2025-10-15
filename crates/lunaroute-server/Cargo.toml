@@ -15,6 +15,7 @@ path = "src/main.rs"
 lunaroute-core = { path = "../lunaroute-core" }
 lunaroute-config-file = { path = "../lunaroute-config-file" }
 lunaroute-session-sqlite = { path = "../lunaroute-session-sqlite" }
+lunaroute-session-postgres = { path = "../lunaroute-session-postgres", optional = true }
 lunaroute-ingress = { path = "../lunaroute-ingress" }
 lunaroute-egress = { path = "../lunaroute-egress" }
 lunaroute-routing = { path = "../lunaroute-routing" }
@@ -39,3 +40,7 @@ shellexpand = "3.1"
 
 [dev-dependencies]
 serial_test = "3.2"
+
+[features]
+default = []
+postgres = ["lunaroute-session-postgres"]

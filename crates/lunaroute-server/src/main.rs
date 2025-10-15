@@ -50,6 +50,7 @@
 
 mod app;
 mod config;
+mod session_factory;
 mod session_stats;
 
 use clap::{Parser, Subcommand};
@@ -70,7 +71,6 @@ use lunaroute_egress::{
 use lunaroute_ingress::{anthropic as anthropic_ingress, openai};
 use lunaroute_observability::{HealthState, Metrics, health_router};
 use lunaroute_routing::{RouteTable, Router, RoutingRule, RuleMatcher};
-use lunaroute_session_sqlite::SqliteSessionStore;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -374,37 +374,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Try to create SqliteSessionStore if session recording is enabled
+    // Try to create SessionStore using factory
     let session_store: Option<Arc<dyn SessionStore>> = if config.session_recording.enabled
-        && (config.session_recording.is_sqlite_enabled()
-            || config.session_recording.is_jsonl_enabled())
+        && config.session_recording.has_writers()
     {
-        // Determine paths from config
-        let db_path = config
-            .session_recording
-            .sqlite
-            .as_ref()
-            .map(|s| s.path.clone())
-            .unwrap_or_else(|| PathBuf::from("~/.lunaroute/sessions.db"));
-
-        let jsonl_dir = config
-            .session_recording
-            .jsonl
-            .as_ref()
-            .map(|j| j.directory.clone())
-            .unwrap_or_else(|| PathBuf::from("~/.lunaroute/sessions"));
-
-        match SqliteSessionStore::new(&db_path, &jsonl_dir).await {
+        match session_factory::create_session_store(&config.session_recording).await {
             Ok(store) => {
-                info!(
-                    "✓ Initialized SqliteSessionStore (db={:?}, jsonl={:?})",
-                    db_path, jsonl_dir
-                );
-                Some(Arc::new(store))
+                info!("✓ Initialized session store");
+                Some(store)
             }
             Err(e) => {
                 warn!(
-                    "Failed to create SqliteSessionStore: {}. Falling back to legacy session recording.",
+                    "Failed to create session store: {}. Session recording will not be available.",
                     e
                 );
                 None
