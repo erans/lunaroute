@@ -39,8 +39,8 @@ impl Default for PostgresSessionStoreConfig {
             max_connections: 20,
             min_connections: 5,
             acquire_timeout: Duration::from_secs(5),
-            idle_timeout: Duration::from_secs(600),  // 10 minutes
-            max_lifetime: Duration::from_secs(1800),  // 30 minutes
+            idle_timeout: Duration::from_secs(600), // 10 minutes
+            max_lifetime: Duration::from_secs(1800), // 30 minutes
         }
     }
 }

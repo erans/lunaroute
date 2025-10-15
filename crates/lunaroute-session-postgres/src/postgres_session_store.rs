@@ -4,8 +4,8 @@
 //! TimescaleDB features (hypertables, compression, etc.) are automatically enabled if available.
 
 use async_trait::async_trait;
-use sqlx::{PgPool, Row};
 use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgPool, Row};
 use std::sync::Arc;
 
 use crate::config::PostgresSessionStoreConfig;
@@ -72,7 +72,10 @@ impl PostgresSessionStore {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn with_config(database_url: &str, config: PostgresSessionStoreConfig) -> Result<Self> {
+    pub async fn with_config(
+        database_url: &str,
+        config: PostgresSessionStoreConfig,
+    ) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
             .min_connections(config.min_connections)

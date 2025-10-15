@@ -34,3 +34,5 @@ uuid = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = "0.4"
 serial_test = { workspace = true }
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
