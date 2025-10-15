@@ -49,6 +49,7 @@
 //! ```
 
 mod app;
+mod bootstrap;
 mod config;
 mod session_factory;
 mod session_stats;
@@ -106,7 +107,19 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
+    /// Path to bootstrap configuration file (YAML or TOML)
+    /// Determines whether to use file-based or database-backed configuration
+    #[arg(
+        short = 'b',
+        long,
+        value_name = "FILE",
+        env = "LUNAROUTE_BOOTSTRAP",
+        global = true
+    )]
+    bootstrap: Option<String>,
+
     /// Path to configuration file (YAML or TOML)
+    /// Only used in file-based mode (ignored if bootstrap specifies database mode)
     #[arg(
         short,
         long,
@@ -328,53 +341,141 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Load configuration
-    let config_path_opt = cli.config.clone(); // Clone for later use in store initialization
-    let mut config = if let Some(ref config_path) = config_path_opt {
-        info!("📁 Loading configuration from: {}", config_path);
-        ServerConfig::from_file(config_path)?
-    } else {
-        info!("📁 Using default configuration");
-        ServerConfig::default()
+    // ============================================================================
+    // PHASE 6: Bootstrap configuration - determines config source
+    // ============================================================================
+
+    // Load bootstrap configuration
+    let bootstrap_path = cli
+        .bootstrap
+        .as_deref()
+        .unwrap_or("~/.lunaroute/bootstrap.yaml");
+
+    let bootstrap = match bootstrap::BootstrapConfig::from_file(bootstrap_path) {
+        Ok(config) => {
+            info!("📋 Loaded bootstrap config from: {}", bootstrap_path);
+            config
+        }
+        Err(e) => {
+            // If bootstrap config doesn't exist, use default (file-based mode)
+            info!(
+                "📋 No bootstrap config found ({}), using default file-based mode",
+                e
+            );
+            bootstrap::BootstrapConfig::default()
+        }
     };
 
-    // Merge environment variables (they override config file)
+    // Load configuration based on bootstrap source
+    let mut config: ServerConfig;
+    let config_store: Option<Arc<dyn ConfigStore>>;
+    let tenant_id: Option<lunaroute_core::tenant::TenantId>;
+
+    match bootstrap.source {
+        bootstrap::ConfigSource::File => {
+            info!("📁 Config source: File-based (single-tenant)");
+
+            // Determine config file path (CLI > bootstrap > default)
+            let file_path = cli
+                .config
+                .clone()
+                .or_else(|| {
+                    bootstrap
+                        .file_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                })
+                .unwrap_or_else(|| "~/.lunaroute/config.yaml".to_string());
+
+            // Load config from file
+            config = match ServerConfig::from_file(&file_path) {
+                Ok(c) => {
+                    info!("✓ Loaded configuration from: {}", file_path);
+                    c
+                }
+                Err(e) => {
+                    warn!("Failed to load config from {}: {}", file_path, e);
+                    info!("Using default configuration");
+                    ServerConfig::default()
+                }
+            };
+
+            // Create FileConfigStore
+            config_store = match FileConfigStore::new(&file_path).await {
+                Ok(store) => {
+                    info!("✓ Initialized FileConfigStore");
+                    Some(Arc::new(store))
+                }
+                Err(e) => {
+                    warn!("Failed to create FileConfigStore: {}", e);
+                    warn!("Config hot-reloading will not be available");
+                    None
+                }
+            };
+
+            tenant_id = None;
+        }
+
+        bootstrap::ConfigSource::Database => {
+            #[cfg(feature = "postgres")]
+            {
+                info!("📁 Config source: PostgreSQL database");
+
+                let database_url = bootstrap
+                    .database_url
+                    .as_ref()
+                    .ok_or_else(|| "database_url is required for database mode".to_string())?;
+
+                // Create PostgresConfigStore
+                let pg_store = lunaroute_config_postgres::PostgresConfigStore::new(database_url)
+                    .await
+                    .map_err(|e| format!("Failed to create PostgresConfigStore: {}", e))?;
+
+                info!("✓ Connected to PostgreSQL config store");
+
+                // Convert bootstrap tenant_id to TenantId
+                tenant_id = bootstrap
+                    .tenant_id
+                    .map(lunaroute_core::tenant::TenantId::from_uuid);
+
+                if let Some(ref tid) = tenant_id {
+                    info!("✓ Single-tenant database mode: {}", tid);
+                } else {
+                    info!("✓ Multi-tenant database mode (tenant from request)");
+                }
+
+                // Load config from database
+                let config_json = pg_store
+                    .get_config(tenant_id)
+                    .await
+                    .map_err(|e| format!("Failed to load config from database: {}", e))?;
+
+                // Parse config JSON into ServerConfig
+                config = serde_json::from_value(config_json)
+                    .map_err(|e| format!("Failed to parse config: {}", e))?;
+
+                info!("✓ Loaded configuration from database");
+
+                config_store = Some(Arc::new(pg_store));
+            }
+
+            #[cfg(not(feature = "postgres"))]
+            {
+                return Err(
+                    "Database-backed configuration requires the 'postgres' feature. \
+                     Build with: cargo build --features postgres"
+                        .into(),
+                );
+            }
+        }
+    }
+
+    // Merge environment variables (they override config file/database)
     config.merge_env();
 
     // ============================================================================
-    // PHASE 5: Initialize trait-based stores for single-tenant mode (optional)
+    // PHASE 7: Initialize session store
     // ============================================================================
-    // Try to create FileConfigStore if config file is available
-    let config_store: Option<Arc<dyn ConfigStore>> = if let Some(ref config_path) = config_path_opt
-    {
-        match FileConfigStore::new(config_path).await {
-            Ok(store) => {
-                info!("✓ Initialized FileConfigStore for {:?}", config_path);
-                Some(Arc::new(store))
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to create FileConfigStore: {}. Config hot-reloading will not be available.",
-                    e
-                );
-                None
-            }
-        }
-    } else {
-        // No config file specified - try default location
-        match FileConfigStore::new("~/.lunaroute/config.yaml").await {
-            Ok(store) => {
-                info!("✓ Initialized FileConfigStore with default path ~/.lunaroute/config.yaml");
-                Some(Arc::new(store))
-            }
-            Err(_) => {
-                info!("📁 No config file available, config hot-reloading will not be available");
-                None
-            }
-        }
-    };
-
-    // Try to create SessionStore using factory
     let session_store: Option<Arc<dyn SessionStore>> = if config.session_recording.enabled
         && config.session_recording.has_writers()
     {
@@ -402,9 +503,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (config_store, session_store)
     {
         let state = app::AppState::new(
-            config_st, session_st, None, // Single-tenant mode (no tenant_id)
+            config_st, session_st, tenant_id, // Use tenant_id from bootstrap config
         );
-        info!("✓ Initialized AppState with trait-based stores");
+        if tenant_id.is_some() {
+            info!("✓ Initialized AppState with trait-based stores (single-tenant database mode)");
+        } else {
+            info!("✓ Initialized AppState with trait-based stores");
+        }
         Some(state)
     } else {
         info!(
