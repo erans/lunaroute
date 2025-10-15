@@ -4,6 +4,7 @@
 let tokenChart = null;
 let toolChart = null;
 let hourOfDayChart = null;
+let callsPerModelChart = null;
 let spendingByModelChart = null;
 
 /**
@@ -326,6 +327,111 @@ async function updateHourOfDayChart() {
     hourOfDayChart.data.datasets[0].data = hourData;
     hourOfDayChart.update();
 }
+
+/**
+ * Initialize calls per model chart
+ */
+async function initCallsPerModelChart() {
+    const ctx = document.getElementById('callsPerModelChart');
+    if (!ctx) return;
+
+    const hours = typeof currentTimeRangeHours !== 'undefined' ? currentTimeRangeHours : 24;
+
+    // Fetch initial data
+    const response = await fetch(`/api/stats/spending?hours=${hours}`);
+    const data = await response.json();
+
+    // Take top 10 models by call count (session count)
+    const sorted = [...data.by_model].sort((a, b) => b.session_count - a.session_count);
+    const top10 = sorted.slice(0, 10);
+
+    callsPerModelChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: top10.map(m => m.model_name),
+            datasets: [{
+                label: 'Total Calls',
+                data: top10.map(m => m.session_count),
+                backgroundColor: '#3b82f6',
+                borderColor: '#2563eb',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            indexAxis: 'y',
+            plugins: {
+                legend: {
+                    display: false
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const model = top10[context.dataIndex];
+                            return [
+                                `Total Calls: ${model.session_count}`,
+                                `Total Cost: $${model.total_cost.toFixed(4)}`,
+                                `Avg Cost/Call: $${model.avg_cost_per_session.toFixed(4)}`
+                            ];
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    beginAtZero: true,
+                    ticks: {
+                        color: '#cbd5e1',
+                        stepSize: 1
+                    },
+                    grid: {
+                        color: '#334155'
+                    }
+                },
+                y: {
+                    ticks: {
+                        color: '#cbd5e1'
+                    },
+                    grid: {
+                        color: '#334155'
+                    }
+                }
+            }
+        }
+    });
+
+    // Auto-update chart
+    setInterval(async () => {
+        const hours = typeof currentTimeRangeHours !== 'undefined' ? currentTimeRangeHours : 24;
+        const response = await fetch(`/api/stats/spending?hours=${hours}`);
+        const data = await response.json();
+        const sorted = [...data.by_model].sort((a, b) => b.session_count - a.session_count);
+        const top10 = sorted.slice(0, 10);
+
+        callsPerModelChart.data.labels = top10.map(m => m.model_name);
+        callsPerModelChart.data.datasets[0].data = top10.map(m => m.session_count);
+        callsPerModelChart.update('none');
+    }, 5000);
+}
+
+/**
+ * Update calls per model chart with new time range
+ */
+async function updateCallsPerModelChart() {
+    if (!callsPerModelChart) return;
+
+    const hours = typeof currentTimeRangeHours !== 'undefined' ? currentTimeRangeHours : 24;
+    const response = await fetch(`/api/stats/spending?hours=${hours}`);
+    const data = await response.json();
+    const sorted = [...data.by_model].sort((a, b) => b.session_count - a.session_count);
+    const top10 = sorted.slice(0, 10);
+
+    callsPerModelChart.data.labels = top10.map(m => m.model_name);
+    callsPerModelChart.data.datasets[0].data = top10.map(m => m.session_count);
+    callsPerModelChart.update();
+}
+
 
 /**
  * Initialize spending by model chart

@@ -253,6 +253,7 @@ impl PostgresSessionStore {
     ) -> Result<()> {
         if let SessionEvent::ResponseRecorded {
             session_id,
+            request_id,
             response_text,
             model_used,
             stats,
@@ -282,6 +283,43 @@ impl PostgresSessionStore {
             .await
             .map_err(|e| Error::SessionStore(format!("Failed to update response: {}", e)))?;
 
+            // Insert session stats for this request/response
+            sqlx::query(
+                r#"
+                INSERT INTO session_stats (
+                    tenant_id, session_id, request_id,
+                    model_name, post_processing_ms, proxy_overhead_ms,
+                    input_tokens, output_tokens, thinking_tokens, reasoning_tokens,
+                    cache_read_tokens, cache_creation_tokens,
+                    audio_input_tokens, audio_output_tokens,
+                    tokens_per_second, thinking_percentage,
+                    response_size_bytes, content_blocks, has_refusal
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                "#,
+            )
+            .bind(tenant_id.as_uuid())
+            .bind(session_id)
+            .bind(request_id)
+            .bind(model_used)
+            .bind(stats.post_processing_ms)
+            .bind(stats.total_proxy_overhead_ms)
+            .bind(stats.tokens.input_tokens as i32)
+            .bind(stats.tokens.output_tokens as i32)
+            .bind(stats.tokens.thinking_tokens.map(|t| t as i32))
+            .bind(stats.tokens.reasoning_tokens.map(|t| t as i32))
+            .bind(stats.tokens.cache_read_tokens.map(|t| t as i32))
+            .bind(stats.tokens.cache_creation_tokens.map(|t| t as i32))
+            .bind(stats.tokens.audio_input_tokens.map(|t| t as i32))
+            .bind(stats.tokens.audio_output_tokens.map(|t| t as i32))
+            .bind(stats.tokens.tokens_per_second)
+            .bind(stats.tokens.thinking_percentage)
+            .bind(stats.response_size_bytes as i64)
+            .bind(stats.content_blocks as i32)
+            .bind(stats.has_refusal)
+            .execute(&*self.pool)
+            .await
+            .map_err(|e| Error::SessionStore(format!("Failed to insert session stats: {}", e)))?;
+
             // Record tool calls if any
             for tool_call in &stats.tool_calls {
                 self.handle_tool_call(tenant_id, session_id, tool_call)
@@ -300,18 +338,17 @@ impl PostgresSessionStore {
     ) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO tool_stats (
+            INSERT INTO tool_call_executions (
                 tenant_id, session_id, request_id, created_at,
-                tool_name, tool_call_id, execution_time_ms, input_size_bytes,
+                tool_call_id, tool_name, execution_time_ms, input_size_bytes,
                 output_size_bytes, success
             ) VALUES ($1, $2, '', NOW(), $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (tenant_id, created_at, session_id, tool_call_id) DO NOTHING
             "#,
         )
         .bind(tenant_id.as_uuid())
         .bind(session_id)
-        .bind(&tool_call.tool_name)
         .bind(&tool_call.tool_call_id)
+        .bind(&tool_call.tool_name)
         .bind(tool_call.execution_time_ms.map(|t| t as i64))
         .bind(tool_call.input_size_bytes as i64)
         .bind(tool_call.output_size_bytes.map(|s| s as i64))
@@ -343,23 +380,22 @@ impl PostgresSessionStore {
         {
             sqlx::query(
                 r#"
-                INSERT INTO tool_stats (
+                INSERT INTO tool_call_executions (
                     tenant_id, session_id, request_id, created_at,
-                    tool_name, tool_call_id, execution_time_ms, input_size_bytes,
-                    output_size_bytes, success, tool_arguments
+                    tool_call_id, tool_name, tool_arguments, execution_time_ms,
+                    input_size_bytes, output_size_bytes, success
                 ) VALUES ($1, $2, '', NOW(), $3, $4, $5, $6, $7, $8, $9)
-                ON CONFLICT (tenant_id, created_at, session_id, tool_call_id) DO NOTHING
                 "#,
             )
             .bind(tenant_id.as_uuid())
             .bind(session_id)
-            .bind(tool_name)
             .bind(tool_call_id)
+            .bind(tool_name)
+            .bind(tool_arguments)
             .bind(execution_time_ms.map(|t| t as i64))
             .bind(*input_size_bytes as i64)
             .bind(output_size_bytes.map(|s| s as i64))
             .bind(success)
-            .bind(tool_arguments)
             .execute(&*self.pool)
             .await
             .map_err(|e| Error::SessionStore(format!("Failed to insert tool call: {}", e)))?;

@@ -17,6 +17,10 @@ pub struct SessionRecordingConfig {
     #[serde(default)]
     pub sqlite: Option<SqliteConfig>,
 
+    /// PostgreSQL writer configuration (for multi-tenant mode)
+    #[serde(default)]
+    pub postgres: Option<PostgresConfig>,
+
     /// Background worker configuration
     #[serde(default)]
     pub worker: WorkerConfig,
@@ -164,6 +168,50 @@ impl Default for SqliteConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgresConfig {
+    /// Enable PostgreSQL writer
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// PostgreSQL connection string (e.g., "postgres://user:password@localhost/dbname")
+    pub connection_string: String,
+
+    /// Maximum database connections
+    #[serde(default = "default_max_connections")]
+    pub max_connections: u32,
+
+    /// Minimum database connections
+    #[serde(default = "default_min_connections")]
+    pub min_connections: u32,
+
+    /// Connection acquire timeout in seconds
+    #[serde(default = "default_acquire_timeout_seconds")]
+    pub acquire_timeout_seconds: u64,
+
+    /// Idle connection timeout in seconds
+    #[serde(default = "default_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u64,
+
+    /// Maximum connection lifetime in seconds
+    #[serde(default = "default_max_lifetime_seconds")]
+    pub max_lifetime_seconds: u64,
+}
+
+impl Default for PostgresConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            connection_string: "postgres://localhost/lunaroute".to_string(),
+            max_connections: default_max_connections(),
+            min_connections: default_min_connections(),
+            acquire_timeout_seconds: default_acquire_timeout_seconds(),
+            idle_timeout_seconds: default_idle_timeout_seconds(),
+            max_lifetime_seconds: default_max_lifetime_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerConfig {
     /// Maximum events to buffer before flushing
     #[serde(default = "default_batch_size")]
@@ -190,6 +238,22 @@ fn default_true() -> bool {
 
 fn default_max_connections() -> u32 {
     5
+}
+
+fn default_min_connections() -> u32 {
+    1
+}
+
+fn default_acquire_timeout_seconds() -> u64 {
+    30
+}
+
+fn default_idle_timeout_seconds() -> u64 {
+    600 // 10 minutes
+}
+
+fn default_max_lifetime_seconds() -> u64 {
+    1800 // 30 minutes
 }
 
 fn default_batch_size() -> usize {
@@ -319,9 +383,14 @@ impl SessionRecordingConfig {
         self.enabled && self.sqlite.as_ref().is_some_and(|c| c.enabled)
     }
 
+    /// Check if PostgreSQL writer is enabled
+    pub fn is_postgres_enabled(&self) -> bool {
+        self.enabled && self.postgres.as_ref().is_some_and(|c| c.enabled)
+    }
+
     /// Check if any writer is enabled
     pub fn has_writers(&self) -> bool {
-        self.is_jsonl_enabled() || self.is_sqlite_enabled()
+        self.is_jsonl_enabled() || self.is_sqlite_enabled() || self.is_postgres_enabled()
     }
 
     /// Check if PII detection and redaction is enabled
@@ -400,6 +469,7 @@ mod tests {
             enabled: true,
             jsonl: Some(JsonlConfig::default()),
             sqlite: None,
+            postgres: None,
             worker: WorkerConfig::default(),
             pii: None,
             capture_user_agent: true,
@@ -417,6 +487,7 @@ mod tests {
             enabled: true,
             jsonl: None,
             sqlite: Some(SqliteConfig::default()),
+            postgres: None,
             worker: WorkerConfig::default(),
             pii: None,
             capture_user_agent: true,
@@ -477,6 +548,7 @@ mod tests {
                 path: PathBuf::from("~/.lunaroute/sessions.db"),
                 max_connections: 5,
             }),
+            postgres: None,
             worker: WorkerConfig::default(),
             pii: None,
             capture_user_agent: true,
@@ -514,6 +586,7 @@ mod tests {
             enabled: true,
             jsonl: Some(JsonlConfig::default()),
             sqlite: Some(SqliteConfig::default()),
+            postgres: None,
             worker: WorkerConfig::default(),
             pii: None,
             capture_user_agent: true,
@@ -531,6 +604,7 @@ mod tests {
             enabled: false,
             jsonl: Some(JsonlConfig::default()),
             sqlite: Some(SqliteConfig::default()),
+            postgres: None,
             worker: WorkerConfig::default(),
             pii: None,
             capture_user_agent: true,
@@ -556,6 +630,7 @@ mod tests {
                 path: PathBuf::from("/tmp/sessions.db"),
                 max_connections: 10,
             }),
+            postgres: None,
             worker: WorkerConfig {
                 batch_size: 200,
                 batch_timeout_ms: 50,
@@ -742,6 +817,7 @@ mod tests {
             enabled: true,
             jsonl: None,
             sqlite: None,
+            postgres: None,
             worker: WorkerConfig::default(),
             pii: Some(PIIConfig {
                 enabled: true,
@@ -760,6 +836,7 @@ mod tests {
             enabled: false,
             jsonl: None,
             sqlite: None,
+            postgres: None,
             worker: WorkerConfig::default(),
             pii: Some(PIIConfig {
                 enabled: true,
@@ -778,6 +855,7 @@ mod tests {
             enabled: true,
             jsonl: None,
             sqlite: None,
+            postgres: None,
             worker: WorkerConfig::default(),
             pii: Some(PIIConfig {
                 enabled: false,
@@ -796,6 +874,7 @@ mod tests {
             enabled: true,
             jsonl: None,
             sqlite: None,
+            postgres: None,
             worker: WorkerConfig::default(),
             pii: None,
             capture_user_agent: true,

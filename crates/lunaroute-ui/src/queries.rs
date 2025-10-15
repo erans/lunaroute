@@ -119,7 +119,7 @@ pub async fn get_tool_usage(pool: &SqlitePool) -> Result<Vec<ToolUsage>> {
             AVG(avg_execution_time_ms) as avg_time,
             MIN(avg_execution_time_ms) as min_time,
             MAX(avg_execution_time_ms) as max_time
-        FROM tool_calls
+        FROM tool_stats
         GROUP BY tool_name
         ORDER BY total_calls DESC
         LIMIT 20
@@ -756,7 +756,7 @@ pub async fn get_session_timeline(
             call_count,
             avg_execution_time_ms,
             error_count
-        FROM tool_calls
+        FROM tool_stats
         WHERE session_id = ?
         ORDER BY created_at {}
         LIMIT ? OFFSET ?
@@ -932,7 +932,7 @@ pub async fn get_session_tool_stats(
         SELECT
             tool_name,
             SUM(call_count) as total_calls
-        FROM tool_calls
+        FROM tool_stats
         WHERE session_id = ?
         GROUP BY tool_name
         ORDER BY total_calls DESC

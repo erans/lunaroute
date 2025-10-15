@@ -144,6 +144,99 @@ pub const MIGRATIONS: &[Migration] = &[
             )
         "#,
     },
+    Migration {
+        version: 6,
+        description: "Create session_stats table",
+        up_sql: r#"
+            CREATE TABLE IF NOT EXISTS session_stats (
+                id BIGSERIAL PRIMARY KEY,
+                tenant_id UUID NOT NULL,
+                session_id TEXT NOT NULL,
+                request_id TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                model_name TEXT NOT NULL,
+                pre_processing_ms DOUBLE PRECISION,
+                post_processing_ms DOUBLE PRECISION,
+                proxy_overhead_ms DOUBLE PRECISION,
+
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                thinking_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0,
+                audio_input_tokens INTEGER DEFAULT 0,
+                audio_output_tokens INTEGER DEFAULT 0,
+
+                tokens_per_second DOUBLE PRECISION,
+                thinking_percentage DOUBLE PRECISION,
+
+                request_size_bytes BIGINT,
+                response_size_bytes BIGINT,
+                message_count INTEGER,
+                content_blocks INTEGER,
+                has_tools BOOLEAN DEFAULT FALSE,
+                has_refusal BOOLEAN DEFAULT FALSE,
+                user_agent TEXT
+            )
+        "#,
+    },
+    Migration {
+        version: 7,
+        description: "Create session_stats indexes",
+        up_sql: r#"
+            CREATE INDEX IF NOT EXISTS idx_session_stats_tenant_session
+            ON session_stats(tenant_id, session_id);
+
+            CREATE INDEX IF NOT EXISTS idx_session_stats_tenant_model
+            ON session_stats(tenant_id, model_name, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_session_stats_tenant_time
+            ON session_stats(tenant_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_session_stats_user_agent
+            ON session_stats(user_agent)
+        "#,
+    },
+    Migration {
+        version: 8,
+        description: "Create tool_call_executions table",
+        up_sql: r#"
+            CREATE TABLE IF NOT EXISTS tool_call_executions (
+                id BIGSERIAL PRIMARY KEY,
+                tenant_id UUID NOT NULL,
+                session_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                tool_call_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                tool_arguments TEXT,
+                execution_time_ms BIGINT,
+                input_size_bytes BIGINT,
+                output_size_bytes BIGINT,
+                success BOOLEAN
+            )
+        "#,
+    },
+    Migration {
+        version: 9,
+        description: "Create tool_call_executions indexes",
+        up_sql: r#"
+            CREATE INDEX IF NOT EXISTS idx_tool_call_executions_tenant_session
+            ON tool_call_executions(tenant_id, session_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_tool_call_executions_tenant_tool
+            ON tool_call_executions(tenant_id, tool_name, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_tool_call_executions_request
+            ON tool_call_executions(request_id);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_call_executions_unique
+            ON tool_call_executions(tenant_id, created_at, session_id, tool_call_id)
+        "#,
+    },
 ];
 
 /// Run all pending migrations
@@ -299,6 +392,54 @@ async fn apply_timescaledb_features(pool: &PgPool) -> Result<()> {
         sqlx::query(
             r#"
             SELECT create_hypertable('stream_metrics', 'created_at',
+                partitioning_column => 'tenant_id',
+                number_partitions => 4,
+                if_not_exists => TRUE
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .ok();
+    }
+
+    // Convert session_stats table to hypertable
+    let is_session_stats_hypertable: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = 'session_stats')"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false);
+
+    if !is_session_stats_hypertable {
+        info!("Converting session_stats table to TimescaleDB hypertable");
+        sqlx::query(
+            r#"
+            SELECT create_hypertable('session_stats', 'created_at',
+                partitioning_column => 'tenant_id',
+                number_partitions => 4,
+                if_not_exists => TRUE
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .ok();
+    }
+
+    // Convert tool_call_executions table to hypertable
+    let is_tool_call_executions_hypertable: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = 'tool_call_executions')"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false);
+
+    if !is_tool_call_executions_hypertable {
+        info!("Converting tool_call_executions table to TimescaleDB hypertable");
+        sqlx::query(
+            r#"
+            SELECT create_hypertable('tool_call_executions', 'created_at',
                 partitioning_column => 'tenant_id',
                 number_partitions => 4,
                 if_not_exists => TRUE
