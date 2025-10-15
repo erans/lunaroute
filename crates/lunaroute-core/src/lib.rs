@@ -63,5 +63,6 @@ pub mod template;
 // Re-exports
 pub use config_store::ConfigStore;
 pub use error::{Error, Result};
+pub use events::SessionEvent;
 pub use session_store::SessionStore;
 pub use tenant::{TenantContext, TenantId};

@@ -1,0 +1,50 @@
+[package]
+name = "lunaroute-session-sqlite"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Internal dependencies
+lunaroute-core = { path = "../lunaroute-core" }
+lunaroute-session = { path = "../lunaroute-session", features = ["sqlite-writer"] }
+lunaroute-storage = { path = "../lunaroute-storage" }
+
+# Async
+async-trait = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Utilities
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+dirs = { workspace = true }
+
+# File handling
+lru = "0.16"
+bytes = { workspace = true }
+
+# Compression & Encryption
+zstd = { workspace = true }
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serial_test = { workspace = true }

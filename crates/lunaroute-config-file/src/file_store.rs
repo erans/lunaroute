@@ -9,9 +9,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use lunaroute_core::{
+    Error, Result,
     config_store::{ConfigChange, ConfigChangeStream, ConfigStore},
     tenant::TenantId,
-    Error, Result,
 };
 
 /// File-based configuration store for single-tenant mode
@@ -205,10 +205,7 @@ impl ConfigStore for FileConfigStore {
                 match event_result {
                     Ok(event) => {
                         // Only emit events for modify operations
-                        if matches!(
-                            event.kind,
-                            EventKind::Modify(_) | EventKind::Create(_)
-                        ) {
+                        if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                             let change = ConfigChange {
                                 tenant_id: None,
                                 timestamp: chrono::Utc::now(),
@@ -224,10 +221,7 @@ impl ConfigStore for FileConfigStore {
                     Err(e) => {
                         warn!("File watch error: {}", e);
                         if tx
-                            .blocking_send(Err(Error::Internal(format!(
-                                "File watch error: {}",
-                                e
-                            ))))
+                            .blocking_send(Err(Error::Internal(format!("File watch error: {}", e))))
                             .is_err()
                         {
                             break;
@@ -264,17 +258,17 @@ impl ConfigStore for FileConfigStore {
             if !port.is_number() {
                 return Err(Error::Config("'port' must be a number".to_string()));
             }
-            if let Some(port_val) = port.as_u64() {
-                if port_val > 65535 {
-                    return Err(Error::Config("'port' must be <= 65535".to_string()));
-                }
+            if let Some(port_val) = port.as_u64()
+                && port_val > 65535
+            {
+                return Err(Error::Config("'port' must be <= 65535".to_string()));
             }
         }
 
-        if let Some(host) = obj.get("host") {
-            if !host.is_string() {
-                return Err(Error::Config("'host' must be a string".to_string()));
-            }
+        if let Some(host) = obj.get("host")
+            && !host.is_string()
+        {
+            return Err(Error::Config("'host' must be a string".to_string()));
         }
 
         debug!("Config validation passed");
