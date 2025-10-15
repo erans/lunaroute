@@ -644,7 +644,72 @@ lunaroute/
     └── lunaroute-cloud              # Multi-tenant hosted binary
 ```
 
-### 4. Dependency Injection
+### 4. Dependency Injection & Factory Pattern
+
+#### Session Store Factory
+
+To abstract session store creation and avoid tight coupling, we use a factory pattern in `lunaroute-server/src/session_factory.rs`:
+
+```rust
+/// Create a session store based on configuration
+///
+/// Creates either a SQLite or PostgreSQL session store depending on what's enabled
+/// in the configuration. If both are enabled, PostgreSQL takes precedence.
+pub async fn create_session_store(
+    config: &SessionRecordingConfig,
+) -> Result<Arc<dyn SessionStore>> {
+    // Try PostgreSQL first (multi-tenant mode)
+    #[cfg(feature = "postgres")]
+    if config.is_postgres_enabled() && let Some(postgres_config) = &config.postgres {
+        tracing::info!("Initializing PostgreSQL session store");
+
+        let pg_config = PostgresSessionStoreConfig::default()
+            .with_max_connections(postgres_config.max_connections)
+            .with_min_connections(postgres_config.min_connections)
+            // ... other config
+
+        let store = PostgresSessionStore::with_config(
+            &postgres_config.connection_string,
+            pg_config,
+        ).await?;
+
+        return Ok(Arc::new(store));
+    }
+
+    // Fall back to SQLite + JSONL (single-tenant mode)
+    if config.is_sqlite_enabled() || config.is_jsonl_enabled() {
+        let db_path = config.sqlite.as_ref()
+            .map(|s| s.path.clone())
+            .unwrap_or_else(|| PathBuf::from("~/.lunaroute/sessions.db"));
+
+        let jsonl_dir = config.jsonl.as_ref()
+            .map(|j| j.directory.clone())
+            .unwrap_or_else(|| PathBuf::from("~/.lunaroute/sessions"));
+
+        let store = SqliteSessionStore::new(&db_path, &jsonl_dir).await?;
+        return Ok(Arc::new(store));
+    }
+
+    Err(Error::Config("No session store writer enabled in configuration".to_string()))
+}
+```
+
+**Benefits of Factory Pattern:**
+- Centralized store creation logic
+- Configuration-driven selection between SQLite and PostgreSQL
+- No need to change application code when switching stores
+- Clear precedence rules (PostgreSQL > SQLite)
+- Easy to extend with new store types
+
+**Why Factory is in Server Crate:**
+The factory lives in `lunaroute-server` rather than `lunaroute-session` to avoid cyclic dependencies:
+- `lunaroute-session` depends on `lunaroute-session-sqlite`
+- `lunaroute-session-sqlite` depends on `lunaroute-session`
+- If factory were in `lunaroute-session`, it would create a circular dependency
+
+By placing the factory at the application layer (`lunaroute-server`), we keep the library crates decoupled and the dependency graph acyclic.
+
+#### Application Initialization
 
 Refactor `lunaroute-server/src/app.rs` to accept trait-based stores:
 
@@ -692,8 +757,14 @@ impl LunaRouteApp {
 // Local mode (main.rs)
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load configuration from file
+    let config = ServerConfig::from_file("config.yaml")?;
+    let config.merge_env();
+
     let config_store = Arc::new(FileConfigStore::new("config.yaml").await?);
-    let session_store = Arc::new(SqliteSessionStore::new("~/.lunaroute/sessions.db").await?);
+
+    // Use factory to create appropriate session store based on configuration
+    let session_store = session_factory::create_session_store(&config.session_recording).await?;
 
     let app = LunaRouteApp::new(
         config_store,
