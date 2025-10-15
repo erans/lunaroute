@@ -22,7 +22,7 @@ pub type AggregateStats = serde_json::Value;
 ///
 /// Implementations:
 /// - `SqliteSessionStore`: SQLite + JSONL files (single-tenant)
-/// - `TimescaleSessionStore`: PostgreSQL + TimescaleDB (multi-tenant)
+/// - `PostgresSessionStore`: PostgreSQL (multi-tenant, TimescaleDB optional)
 /// - `ClickHouseSessionStore`: ClickHouse (multi-tenant, high scale)
 ///
 /// # Example

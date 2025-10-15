@@ -5,7 +5,7 @@ members = [
     "crates/lunaroute-config-file",
     "crates/lunaroute-config-postgres",
     "crates/lunaroute-session-sqlite",
-    "crates/lunaroute-session-timescale",
+    "crates/lunaroute-session-postgres",
     "crates/lunaroute-ingress",
     "crates/lunaroute-egress",
     "crates/lunaroute-routing",

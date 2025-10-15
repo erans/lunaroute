@@ -1,4 +1,7 @@
-//! TimescaleSessionStore - SessionStore trait implementation for TimescaleDB multi-tenant storage
+//! PostgresSessionStore - SessionStore trait implementation for PostgreSQL multi-tenant storage
+//!
+//! Supports both vanilla PostgreSQL and PostgreSQL with TimescaleDB extension.
+//! TimescaleDB features (hypertables, compression, etc.) are automatically enabled if available.
 
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
@@ -14,21 +17,24 @@ use lunaroute_core::{
     tenant::TenantId,
 };
 
-/// TimescaleDB-backed session store for multi-tenant mode
+/// PostgreSQL-backed session store for multi-tenant mode
 ///
-/// Uses TimescaleDB (PostgreSQL extension) for time-series session data with:
+/// Works with vanilla PostgreSQL or PostgreSQL + TimescaleDB extension.
+/// When TimescaleDB is available, automatically enables:
 /// - Hypertable partitioning by tenant_id and created_at
-/// - Automatic compression for old data
-/// - Continuous aggregates for dashboards
-/// - Built-in retention policies
+/// - Automatic compression for old data (when configured)
+/// - Continuous aggregates for dashboards (when configured)
+/// - Built-in retention policies (when configured)
 #[derive(Clone)]
-pub struct TimescaleSessionStore {
-    /// PostgreSQL connection pool (with TimescaleDB extension)
+pub struct PostgresSessionStore {
+    /// PostgreSQL connection pool
     pool: Arc<PgPool>,
 }
 
-impl TimescaleSessionStore {
-    /// Create a new TimescaleDB session store
+impl PostgresSessionStore {
+    /// Create a new PostgreSQL session store
+    ///
+    /// Automatically detects and enables TimescaleDB features if available.
     ///
     /// # Arguments
     /// * `database_url` - PostgreSQL connection string
@@ -635,7 +641,7 @@ impl TimescaleSessionStore {
 }
 
 #[async_trait]
-impl SessionStore for TimescaleSessionStore {
+impl SessionStore for PostgresSessionStore {
     async fn write_event(
         &self,
         tenant_id: Option<TenantId>,
@@ -644,7 +650,7 @@ impl SessionStore for TimescaleSessionStore {
         // Multi-tenant mode only - require tenant_id
         let tenant_id = tenant_id.ok_or_else(|| {
             Error::TenantRequired(
-                "TimescaleSessionStore requires a tenant_id (multi-tenant mode only)".to_string(),
+                "PostgresSessionStore requires a tenant_id (multi-tenant mode only)".to_string(),
             )
         })?;
 
@@ -673,7 +679,7 @@ impl SessionStore for TimescaleSessionStore {
                 self.handle_stats_updated_event(tenant_id, &event).await
             }
             SessionEvent::StatsSnapshot { .. } => {
-                // Stats snapshots are not persisted to TimescaleDB (only final stats matter)
+                // Stats snapshots are not persisted to PostgreSQL (only final stats matter)
                 Ok(())
             }
         }
@@ -687,7 +693,7 @@ impl SessionStore for TimescaleSessionStore {
         // Multi-tenant mode only - require tenant_id
         let tenant_id = tenant_id.ok_or_else(|| {
             Error::TenantRequired(
-                "TimescaleSessionStore requires a tenant_id (multi-tenant mode only)".to_string(),
+                "PostgresSessionStore requires a tenant_id (multi-tenant mode only)".to_string(),
             )
         })?;
 
@@ -752,7 +758,7 @@ impl SessionStore for TimescaleSessionStore {
         // Multi-tenant mode only - require tenant_id
         let tenant_id = tenant_id.ok_or_else(|| {
             Error::TenantRequired(
-                "TimescaleSessionStore requires a tenant_id (multi-tenant mode only)".to_string(),
+                "PostgresSessionStore requires a tenant_id (multi-tenant mode only)".to_string(),
             )
         })?;
 
@@ -812,7 +818,7 @@ impl SessionStore for TimescaleSessionStore {
         // Multi-tenant mode only - require tenant_id
         let _tenant_id = tenant_id.ok_or_else(|| {
             Error::TenantRequired(
-                "TimescaleSessionStore requires a tenant_id (multi-tenant mode only)".to_string(),
+                "PostgresSessionStore requires a tenant_id (multi-tenant mode only)".to_string(),
             )
         })?;
 
@@ -836,7 +842,7 @@ impl SessionStore for TimescaleSessionStore {
         // Multi-tenant mode only - require tenant_id
         let _tenant_id = tenant_id.ok_or_else(|| {
             Error::TenantRequired(
-                "TimescaleSessionStore requires a tenant_id (multi-tenant mode only)".to_string(),
+                "PostgresSessionStore requires a tenant_id (multi-tenant mode only)".to_string(),
             )
         })?;
 
@@ -854,7 +860,7 @@ impl SessionStore for TimescaleSessionStore {
     }
 
     async fn flush(&self) -> Result<()> {
-        // TimescaleDB writes are synchronous, no flush needed
+        // PostgreSQL writes are synchronous, no flush needed
         Ok(())
     }
 
@@ -867,7 +873,7 @@ impl SessionStore for TimescaleSessionStore {
         // Multi-tenant mode only - require tenant_id
         let tenant_id = tenant_id.ok_or_else(|| {
             Error::TenantRequired(
-                "TimescaleSessionStore requires a tenant_id (multi-tenant mode only)".to_string(),
+                "PostgresSessionStore requires a tenant_id (multi-tenant mode only)".to_string(),
             )
         })?;
 
@@ -924,23 +930,23 @@ impl SessionStore for TimescaleSessionStore {
 mod tests {
     use super::*;
 
-    async fn create_test_store() -> Result<TimescaleSessionStore> {
+    async fn create_test_store() -> Result<PostgresSessionStore> {
         let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
             "postgres://postgres:postgres@localhost:5432/lunaroute_test".to_string()
         });
 
-        TimescaleSessionStore::new(&database_url).await
+        PostgresSessionStore::new(&database_url).await
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL + TimescaleDB instance
+    #[ignore] // Requires PostgreSQL instance (TimescaleDB extension optional)
     async fn test_create_store() {
         let store = create_test_store().await;
         assert!(store.is_ok());
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL + TimescaleDB instance
+    #[ignore] // Requires PostgreSQL instance (TimescaleDB extension optional)
     async fn test_write_started_event() {
         let store = create_test_store().await.unwrap();
         let tenant_id = TenantId::new();
@@ -973,7 +979,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL + TimescaleDB instance
+    #[ignore] // Requires PostgreSQL instance (TimescaleDB extension optional)
     async fn test_get_session() {
         let store = create_test_store().await.unwrap();
         let tenant_id = TenantId::new();
@@ -1014,7 +1020,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL + TimescaleDB instance
+    #[ignore] // Requires PostgreSQL instance (TimescaleDB extension optional)
     async fn test_requires_tenant_id() {
         let store = create_test_store().await.unwrap();
 

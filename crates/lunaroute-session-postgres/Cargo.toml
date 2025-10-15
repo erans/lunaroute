@@ -1,5 +1,5 @@
 [package]
-name = "lunaroute-session-timescale"
+name = "lunaroute-session-postgres"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
