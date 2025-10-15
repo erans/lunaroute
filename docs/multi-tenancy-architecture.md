@@ -238,10 +238,10 @@ impl ConfigStore for PostgresConfigStore {
 }
 ```
 
-**`lunaroute-session-timescale`** (PostgreSQL + TimescaleDB extension):
+**`lunaroute-session-postgres`** (PostgreSQL with optional TimescaleDB):
 
 ```rust
-pub struct TimescaleSessionStore {
+pub struct PostgresSessionStore {
     pool: PgPool,
 }
 
@@ -385,7 +385,7 @@ pub struct TimescaleSessionStore {
 // );
 
 #[async_trait]
-impl SessionStore for TimescaleSessionStore {
+impl SessionStore for PostgresSessionStore {
     async fn write_event(&self, tenant_id: Option<TenantId>, event: SessionEvent) -> Result<()> {
         let tenant_id = tenant_id.ok_or(Error::TenantRequired)?;
 
@@ -589,9 +589,9 @@ lunaroute/
 │   │   │   └── jsonl_writer.rs      # Optional JSONL writer
 │   │   └── Cargo.toml
 │   │
-│   ├── lunaroute-session-timescale/ # NEW: Multi-tenant sessions
+│   ├── lunaroute-session-postgres/    # NEW: Multi-tenant sessions
 │   │   ├── src/
-│   │   │   ├── timescale_store.rs   # Implements SessionStore
+│   │   │   ├── postgres_store.rs    # Implements SessionStore
 │   │   │   └── migrations/          # SQL migration files
 │   │   └── Cargo.toml
 │   │
@@ -699,7 +699,7 @@ async fn main() -> Result<()> {
     let database_url = std::env::var("DATABASE_URL")?;
 
     let config_store = Arc::new(PostgresConfigStore::new(&database_url).await?);
-    let session_store = Arc::new(TimescaleSessionStore::new(&database_url).await?);
+    let session_store = Arc::new(PostgresSessionStore::new(&database_url).await?);
 
     // Multi-tenant router with tenant extraction middleware
     let app = Router::new()
@@ -889,7 +889,7 @@ Use Cargo features to compile different variants:
 [features]
 default = ["local"]
 local = ["lunaroute-config-file", "lunaroute-session-sqlite"]
-multitenant = ["lunaroute-config-postgres", "lunaroute-session-timescale"]
+multitenant = ["lunaroute-config-postgres", "lunaroute-session-postgres"]
 all-stores = ["local", "multitenant"]  # For testing
 
 [[bin]]
@@ -934,7 +934,7 @@ cargo build --release --features all-stores
 ### Phase 2: Multi-Tenant Implementations
 
 1. Create `lunaroute-config-postgres` implementing `ConfigStore`
-2. Create `lunaroute-session-timescale` implementing `SessionStore`
+2. Create `lunaroute-session-postgres` implementing `SessionStore`
 3. Add schema migration scripts for tenant tables
 4. Write integration tests for multi-tenant stores
 
@@ -1038,14 +1038,14 @@ CREATE POLICY tenant_isolation ON tenant_configs
 For best of both worlds:
 
 1. **PostgreSQL**: Configuration and tenant metadata
-2. **TimescaleDB**: Recent session data (last 30 days) for real-time dashboards
+2. **PostgreSQL (with TimescaleDB)**: Recent session data (last 30 days) for real-time dashboards
 3. **ClickHouse**: Historical session data (30+ days) for long-term analytics
-4. **Automatic archival**: Move old data from TimescaleDB to ClickHouse
+4. **Automatic archival**: Move old data from PostgreSQL to ClickHouse
 
 ```rust
 // Hybrid session store
 pub struct HybridSessionStore {
-    timescale: Arc<TimescaleSessionStore>,
+    postgres: Arc<PostgresSessionStore>,
     clickhouse: Arc<ClickHouseSessionStore>,
     archive_threshold_days: u32,
 }
@@ -1053,14 +1053,14 @@ pub struct HybridSessionStore {
 #[async_trait]
 impl SessionStore for HybridSessionStore {
     async fn write_event(&self, tenant_id: Option<TenantId>, event: SessionEvent) -> Result<()> {
-        // Always write to TimescaleDB for recent data
-        self.timescale.write_event(tenant_id, event).await
+        // Always write to PostgreSQL for recent data
+        self.postgres.write_event(tenant_id, event).await
     }
 
     async fn search(&self, tenant_id: Option<TenantId>, query: SearchQuery) -> Result<SearchResults> {
         // Route query based on time range
         if query.is_recent(self.archive_threshold_days) {
-            self.timescale.search(tenant_id, query).await
+            self.postgres.search(tenant_id, query).await
         } else {
             self.clickhouse.search(tenant_id, query).await
         }
@@ -1375,7 +1375,7 @@ impl JwtAuth {
 1. **Create `lunaroute-core` crate** with traits (2-3 days)
 2. **Refactor existing code** to implement traits (3-5 days)
 3. **Implement PostgreSQL config store** (2-3 days)
-4. **Implement TimescaleDB session store** (5-7 days)
+4. **Implement PostgreSQL session store** (5-7 days)
 5. **Create multi-tenant server** with tenant middleware (3-5 days)
 6. **Write integration tests** (3-5 days)
 7. **Deploy pilot** multi-tenant version (1-2 weeks)
