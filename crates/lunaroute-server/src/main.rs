@@ -48,6 +48,7 @@
 //!   }'
 //! ```
 
+mod app;
 mod config;
 mod session_stats;
 
@@ -334,6 +335,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Merge environment variables (they override config file)
     config.merge_env();
+
+    // ============================================================================
+    // PHASE 4 NOTE: Store-based architecture (not yet fully integrated)
+    // ============================================================================
+    // The server now has AppState infrastructure for dependency-injected stores.
+    // For full integration, you would initialize stores here like this:
+    //
+    // use lunaroute_config_file::FileConfigStore;
+    // use lunaroute_session_sqlite::SqliteSessionStore;
+    //
+    // let config_store = Arc::new(
+    //     FileConfigStore::new(&config_path)
+    //         .await
+    //         .expect("Failed to create config store")
+    // );
+    //
+    // let session_store = Arc::new(
+    //     SqliteSessionStore::new("~/.lunaroute/sessions.db", "~/.lunaroute/sessions")
+    //         .await
+    //         .expect("Failed to create session store")
+    // );
+    //
+    // let app_state = app::AppState::new(config_store, session_store, None);
+    //
+    // Then pass app_state to routes via Axum's state management.
+    // For now, the existing direct config and session recording logic remains.
+    // ============================================================================
 
     // Apply CLI dialect override (highest precedence)
     if let Some(ref dialect_str) = cli.dialect {

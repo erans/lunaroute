@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 lunaroute-core = { path = "../lunaroute-core" }
+lunaroute-config-file = { path = "../lunaroute-config-file" }
+lunaroute-session-sqlite = { path = "../lunaroute-session-sqlite" }
 lunaroute-ingress = { path = "../lunaroute-ingress" }
 lunaroute-egress = { path = "../lunaroute-egress" }
 lunaroute-routing = { path = "../lunaroute-routing" }
