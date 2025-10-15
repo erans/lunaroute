@@ -415,6 +415,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create AppState if both stores are available
+    // Clone session_store for passthrough routers before creating AppState
+    let session_store_for_passthrough = session_store.clone();
     let _app_state: Option<app::AppState> = if let (Some(config_st), Some(session_st)) =
         (config_store, session_store)
     {
@@ -479,39 +481,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", MOON);
 
     info!("🚀 Initializing LunaRoute Gateway with Intelligent Routing");
-
-    // Setup async multi-writer session recording if enabled
-    let async_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>> =
-        if config.session_recording.enabled {
-            match lunaroute_session::build_from_config(&config.session_recording).await? {
-                Some(multi_recorder) => {
-                    if config.session_recording.is_jsonl_enabled() {
-                        info!(
-                            "📝 JSONL session recording enabled: {:?}",
-                            config
-                                .session_recording
-                                .jsonl
-                                .as_ref()
-                                .map(|c| &c.directory)
-                        );
-                    }
-                    if config.session_recording.is_sqlite_enabled() {
-                        info!(
-                            "📝 SQLite session recording enabled: {:?}",
-                            config.session_recording.sqlite.as_ref().map(|c| &c.path)
-                        );
-                    }
-                    Some(Arc::new(multi_recorder))
-                }
-                None => {
-                    info!("📝 Session recording enabled but no writers configured");
-                    None
-                }
-            }
-        } else {
-            info!("📝 Session recording disabled");
-            None
-        };
 
     if config.logging.log_requests {
         info!("📋 Request/response logging enabled (stdout)");
@@ -767,7 +736,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     openai_connector.unwrap(),
                     Some(stats_tracker_clone),
                     Some(metrics.clone()),
-                    async_recorder.clone(),
+                    session_store_for_passthrough.clone(),
                 )
             } else {
                 openai::router(router)
@@ -782,7 +751,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         connector,
                         Some(stats_tracker_clone),
                         Some(metrics.clone()),
-                        async_recorder.clone(),
+                        session_store_for_passthrough.clone(),
                     )
                 } else {
                     anthropic_ingress::router(router)

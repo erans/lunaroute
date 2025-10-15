@@ -6,46 +6,19 @@
 //! 3. Network errors and timeouts are captured in session events
 //! 4. Error metadata (status codes, messages) is accurately recorded
 
+mod common;
+
 use axum::body::Body;
 use axum::http::Request;
+use common::InMemorySessionStore;
 use lunaroute_egress::anthropic::{AnthropicConfig, AnthropicConnector};
 use lunaroute_egress::openai::{OpenAIConfig, OpenAIConnector};
-use lunaroute_session::{MultiWriterRecorder, SessionEvent, SessionWriter, WriterResult};
+use lunaroute_session::SessionEvent;
 use serde_json::json;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tower::ServiceExt;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-
-/// In-memory session writer for testing
-#[derive(Clone)]
-struct InMemorySessionWriter {
-    events: Arc<Mutex<Vec<SessionEvent>>>,
-}
-
-impl InMemorySessionWriter {
-    fn new() -> Self {
-        Self {
-            events: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    fn get_events(&self) -> Vec<SessionEvent> {
-        self.events.lock().unwrap().clone()
-    }
-}
-
-#[async_trait::async_trait]
-impl SessionWriter for InMemorySessionWriter {
-    async fn write_event(&self, event: &SessionEvent) -> WriterResult<()> {
-        self.events.lock().unwrap().push(event.clone());
-        Ok(())
-    }
-
-    async fn flush(&self) -> WriterResult<()> {
-        Ok(())
-    }
-}
 
 #[tokio::test]
 async fn test_openai_400_error_with_recording() {
@@ -67,9 +40,8 @@ async fn test_openai_400_error_with_recording() {
         .mount(&mock_server)
         .await;
 
-    // Create in-memory session recorder
-    let in_memory_writer = Arc::new(InMemorySessionWriter::new());
-    let recorder = Arc::new(MultiWriterRecorder::new(vec![in_memory_writer.clone()]));
+    // Create in-memory session store
+    let store = Arc::new(InMemorySessionStore::new());
 
     // Create OpenAI connector pointing to mock server
     let config = OpenAIConfig {
@@ -84,12 +56,8 @@ async fn test_openai_400_error_with_recording() {
     let connector = Arc::new(OpenAIConnector::new(config).unwrap());
 
     // Create passthrough router with recording
-    let app = lunaroute_ingress::openai::passthrough_router(
-        connector,
-        None,
-        None,
-        Some(recorder.clone()),
-    );
+    let app =
+        lunaroute_ingress::openai::passthrough_router(connector, None, None, Some(store.clone()));
 
     // Send request that will trigger 400 error
     let request = json!({
@@ -113,12 +81,11 @@ async fn test_openai_400_error_with_recording() {
     // Verify error response (upstream errors become 502 Bad Gateway)
     assert_eq!(response.status(), 502);
 
-    // Drop recorder and wait for events to flush
-    drop(recorder);
+    // Wait for async events to flush
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Verify session events
-    let events = in_memory_writer.get_events();
+    let events = store.get_events();
 
     // Should have Started event
     let started_event = events
@@ -167,9 +134,8 @@ async fn test_openai_500_error_with_recording() {
         .mount(&mock_server)
         .await;
 
-    // Create in-memory session recorder
-    let in_memory_writer = Arc::new(InMemorySessionWriter::new());
-    let recorder = Arc::new(MultiWriterRecorder::new(vec![in_memory_writer.clone()]));
+    // Create in-memory session store
+    let store = Arc::new(InMemorySessionStore::new());
 
     // Create OpenAI connector pointing to mock server
     let config = OpenAIConfig {
@@ -184,12 +150,8 @@ async fn test_openai_500_error_with_recording() {
     let connector = Arc::new(OpenAIConnector::new(config).unwrap());
 
     // Create passthrough router with recording
-    let app = lunaroute_ingress::openai::passthrough_router(
-        connector,
-        None,
-        None,
-        Some(recorder.clone()),
-    );
+    let app =
+        lunaroute_ingress::openai::passthrough_router(connector, None, None, Some(store.clone()));
 
     // Send request that will trigger 500 error
     let request = json!({
@@ -213,12 +175,11 @@ async fn test_openai_500_error_with_recording() {
     // Verify error response (upstream errors become 502 Bad Gateway)
     assert_eq!(response.status(), 502);
 
-    // Drop recorder and wait for events to flush
-    drop(recorder);
+    // Wait for async events to flush
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Verify session events
-    let events = in_memory_writer.get_events();
+    let events = store.get_events();
 
     // Should have Started event
     let started_event = events
@@ -265,9 +226,8 @@ async fn test_anthropic_401_unauthorized_with_recording() {
         .mount(&mock_server)
         .await;
 
-    // Create in-memory session recorder
-    let in_memory_writer = Arc::new(InMemorySessionWriter::new());
-    let recorder = Arc::new(MultiWriterRecorder::new(vec![in_memory_writer.clone()]));
+    // Create in-memory session store
+    let store = Arc::new(InMemorySessionStore::new());
 
     // Create Anthropic connector pointing to mock server
     let config = AnthropicConfig {
@@ -283,7 +243,7 @@ async fn test_anthropic_401_unauthorized_with_recording() {
         connector,
         None,
         None,
-        Some(recorder.clone()),
+        Some(store.clone()),
     );
 
     // Send request with invalid API key
@@ -312,12 +272,11 @@ async fn test_anthropic_401_unauthorized_with_recording() {
     // Verify error response (upstream errors become 502 Bad Gateway)
     assert_eq!(response.status(), 502);
 
-    // Drop recorder and wait for events to flush
-    drop(recorder);
+    // Wait for async events to flush
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Verify session events
-    let events = in_memory_writer.get_events();
+    let events = store.get_events();
 
     // Should have Started event
     let started_event = events
@@ -368,9 +327,8 @@ async fn test_anthropic_rate_limit_429_with_recording() {
         .mount(&mock_server)
         .await;
 
-    // Create in-memory session recorder
-    let in_memory_writer = Arc::new(InMemorySessionWriter::new());
-    let recorder = Arc::new(MultiWriterRecorder::new(vec![in_memory_writer.clone()]));
+    // Create in-memory session store
+    let store = Arc::new(InMemorySessionStore::new());
 
     // Create Anthropic connector pointing to mock server
     let config = AnthropicConfig {
@@ -386,7 +344,7 @@ async fn test_anthropic_rate_limit_429_with_recording() {
         connector,
         None,
         None,
-        Some(recorder.clone()),
+        Some(store.clone()),
     );
 
     // Send request that will hit rate limit
@@ -415,12 +373,11 @@ async fn test_anthropic_rate_limit_429_with_recording() {
     // Verify error response (upstream errors become 502 Bad Gateway)
     assert_eq!(response.status(), 502);
 
-    // Drop recorder and wait for events to flush
-    drop(recorder);
+    // Wait for async events to flush
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Verify session events
-    let events = in_memory_writer.get_events();
+    let events = store.get_events();
 
     // Should have Started event
     let started_event = events
@@ -468,9 +425,8 @@ async fn test_openai_streaming_error_with_recording() {
         .mount(&mock_server)
         .await;
 
-    // Create in-memory session recorder
-    let in_memory_writer = Arc::new(InMemorySessionWriter::new());
-    let recorder = Arc::new(MultiWriterRecorder::new(vec![in_memory_writer.clone()]));
+    // Create in-memory session store
+    let store = Arc::new(InMemorySessionStore::new());
 
     // Create OpenAI connector pointing to mock server
     let config = OpenAIConfig {
@@ -485,12 +441,8 @@ async fn test_openai_streaming_error_with_recording() {
     let connector = Arc::new(OpenAIConnector::new(config).unwrap());
 
     // Create passthrough router with recording
-    let app = lunaroute_ingress::openai::passthrough_router(
-        connector,
-        None,
-        None,
-        Some(recorder.clone()),
-    );
+    let app =
+        lunaroute_ingress::openai::passthrough_router(connector, None, None, Some(store.clone()));
 
     // Send streaming request that will fail
     let request = json!({
@@ -515,12 +467,11 @@ async fn test_openai_streaming_error_with_recording() {
     // Verify error response (upstream errors become 502 Bad Gateway)
     assert_eq!(response.status(), 502);
 
-    // Drop recorder and wait for events to flush
-    drop(recorder);
+    // Wait for async events to flush
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Verify session events
-    let events = in_memory_writer.get_events();
+    let events = store.get_events();
 
     // Should have Started event
     let started_event = events
