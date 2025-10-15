@@ -329,7 +329,7 @@ async function updateHourOfDayChart() {
 }
 
 /**
- * Initialize calls per model chart
+ * Initialize calls per model chart (pie chart showing distribution)
  */
 async function initCallsPerModelChart() {
     const ctx = document.getElementById('callsPerModelChart');
@@ -343,56 +343,88 @@ async function initCallsPerModelChart() {
     const sorted = [...data.by_model].sort((a, b) => b.session_count - a.session_count);
     const top10 = sorted.slice(0, 10);
 
+    // Generate distinct colors for each model
+    const colors = [
+        '#3b82f6', // blue
+        '#10b981', // green
+        '#f59e0b', // amber
+        '#ef4444', // red
+        '#8b5cf6', // purple
+        '#ec4899', // pink
+        '#06b6d4', // cyan
+        '#f97316', // orange
+        '#84cc16', // lime
+        '#6366f1', // indigo
+    ];
+
     callsPerModelChart = new Chart(ctx, {
-        type: 'bar',
+        type: 'pie',
         data: {
             labels: top10.map(m => m.model_name),
             datasets: [{
-                label: 'Total Calls',
+                label: 'Calls',
                 data: top10.map(m => m.session_count),
-                backgroundColor: '#3b82f6',
-                borderColor: '#2563eb',
-                borderWidth: 1
+                backgroundColor: colors.slice(0, top10.length),
+                borderColor: '#1e293b',
+                borderWidth: 2
             }]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            indexAxis: 'y',
             plugins: {
                 legend: {
-                    display: false
+                    position: 'right',
+                    labels: {
+                        color: '#f1f5f9',
+                        padding: 15,
+                        font: {
+                            size: 12
+                        },
+                        generateLabels: function(chart) {
+                            const data = chart.data;
+                            if (data.labels.length && data.datasets.length) {
+                                const dataset = data.datasets[0];
+                                const total = dataset.data.reduce((a, b) => a + b, 0);
+
+                                return data.labels.map((label, i) => {
+                                    const value = dataset.data[i];
+                                    const percentage = ((value / total) * 100).toFixed(1);
+                                    return {
+                                        text: `${label}: ${value} (${percentage}%)`,
+                                        fillStyle: dataset.backgroundColor[i],
+                                        hidden: false,
+                                        index: i
+                                    };
+                                });
+                            }
+                            return [];
+                        }
+                    }
                 },
                 tooltip: {
                     callbacks: {
                         label: function(context) {
                             const model = top10[context.dataIndex];
+                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                            const percentage = ((model.session_count / total) * 100).toFixed(1);
+
                             return [
-                                `Total Calls: ${model.session_count}`,
+                                `Model: ${model.model_name}`,
+                                `Calls: ${model.session_count} (${percentage}%)`,
                                 `Total Cost: $${model.total_cost.toFixed(4)}`,
                                 `Avg Cost/Call: $${model.avg_cost_per_session.toFixed(4)}`
                             ];
                         }
                     }
-                }
-            },
-            scales: {
-                x: {
-                    beginAtZero: true,
-                    ticks: {
-                        color: '#cbd5e1',
-                        stepSize: 1
-                    },
-                    grid: {
-                        color: '#334155'
-                    }
                 },
-                y: {
-                    ticks: {
-                        color: '#cbd5e1'
-                    },
-                    grid: {
-                        color: '#334155'
+                title: {
+                    display: true,
+                    text: 'All-Time Calls Distribution',
+                    color: '#f1f5f9',
+                    font: {
+                        size: 14,
+                        weight: 'normal'
                     }
                 }
             }
@@ -408,6 +440,7 @@ async function initCallsPerModelChart() {
 
         callsPerModelChart.data.labels = top10.map(m => m.model_name);
         callsPerModelChart.data.datasets[0].data = top10.map(m => m.session_count);
+        callsPerModelChart.data.datasets[0].backgroundColor = colors.slice(0, top10.length);
         callsPerModelChart.update('none');
     }, 5000);
 }
@@ -418,6 +451,12 @@ async function initCallsPerModelChart() {
 async function updateCallsPerModelChart() {
     if (!callsPerModelChart) return;
 
+    // Color palette (same as initialization)
+    const colors = [
+        '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+        '#ec4899', '#06b6d4', '#f97316', '#84cc16', '#6366f1',
+    ];
+
     // NO hours parameter - we want all-time cumulative data
     // This chart should NOT be affected by the time range selector
     const response = await fetch('/api/stats/spending');
@@ -427,6 +466,7 @@ async function updateCallsPerModelChart() {
 
     callsPerModelChart.data.labels = top10.map(m => m.model_name);
     callsPerModelChart.data.datasets[0].data = top10.map(m => m.session_count);
+    callsPerModelChart.data.datasets[0].backgroundColor = colors.slice(0, top10.length);
     callsPerModelChart.update();
 }
 
