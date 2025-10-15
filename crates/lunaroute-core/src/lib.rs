@@ -40,7 +40,7 @@
 //!   ┌──┴──┐                   ┌──┴──┐
 //!   │     │                   │     │
 //!   ▼     ▼                   ▼     ▼
-//! File  Postgres           SQLite  Timescale
+//! File  Postgres           SQLite  Postgres
 //! (local) (cloud)         (local)  (cloud)
 //! ```
 //!
