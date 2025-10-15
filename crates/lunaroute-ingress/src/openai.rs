@@ -1503,6 +1503,7 @@ pub async fn chat_completions_passthrough(
         // Collect events for async parsing (zero-copy - just storing references)
         let collected_events: Arc<std::sync::Mutex<Vec<eventsource_stream::Event>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
+        let collected_events_for_parsing = collected_events.clone();
 
         let tracked_stream = sse_stream.map(move |event_result| {
             match event_result {
@@ -1656,12 +1657,30 @@ pub async fn chat_completions_passthrough(
                     }
                 });
 
-                // Note: async_stream_parser uses the old recorder pattern - it will need to be updated
-                // in a separate refactoring to use SessionStore. For now, we skip the async parser
-                // when using trait-based stores, as it requires the MultiWriterRecorder.
-                tracing::debug!(
-                    "Skipping async stream parser (requires conversion to SessionStore trait)"
-                );
+                // Spawn async parser to extract tokens and tool calls (zero latency for client)
+                match collected_events_for_parsing.lock() {
+                    Ok(mut events) if !events.is_empty() => {
+                        // Take ownership of events vec instead of cloning (reduces memory usage)
+                        let events_vec = std::mem::take(&mut *events);
+                        // Use Infallible error type since we already have successfully parsed events
+                        let event_stream = futures::stream::iter(
+                            events_vec.into_iter().map(Ok::<_, eventsource_stream::EventStreamError<std::convert::Infallible>>)
+                        );
+                        crate::async_stream_parser::spawn_openai_parser(
+                            event_stream,
+                            session_id.clone(),
+                            request_id.clone(),
+                            session_store.clone(),
+                            user_agent.clone(),
+                        );
+                    }
+                    Ok(_) => {
+                        // Empty events, nothing to parse
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to acquire event collection lock for async parsing (poisoned): {}", e);
+                    }
+                }
             }
 
             // Return empty event to complete the stream

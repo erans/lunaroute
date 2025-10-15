@@ -1277,25 +1277,21 @@ pub async fn messages_passthrough(
                 });
 
                 // Spawn async parser to extract tokens and tool calls (zero latency for client)
-                // Note: async_stream_parser now needs to use SessionStore instead of MultiWriterRecorder
                 match events_for_parsing.lock() {
                     Ok(mut events) if !events.is_empty() => {
                         // Take ownership of events vec instead of cloning (reduces memory usage)
                         let events_vec = std::mem::take(&mut *events);
                         // Use Infallible error type since we already have successfully parsed events
-                        let _event_stream = futures::stream::iter(
+                        let event_stream = futures::stream::iter(
                             events_vec.into_iter().map(Ok::<_, eventsource_stream::EventStreamError<std::convert::Infallible>>)
                         );
-                        // TODO: Update async_stream_parser to accept SessionStore instead of MultiWriterRecorder
-                        // For now, this will cause a compilation error that needs to be fixed
-                        // crate::async_stream_parser::spawn_anthropic_parser(
-                        //     event_stream,
-                        //     session_id.clone(),
-                        //     request_id.clone(),
-                        //     session_store.clone(),
-                        //     user_agent.clone(),
-                        // );
-                        tracing::warn!("Async stream parser not yet updated to use SessionStore - skipping token/tool extraction for streaming");
+                        crate::async_stream_parser::spawn_anthropic_parser(
+                            event_stream,
+                            session_id.clone(),
+                            request_id.clone(),
+                            session_store.clone(),
+                            user_agent.clone(),
+                        );
                     }
                     Ok(_) => {
                         // Empty events, nothing to parse
