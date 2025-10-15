@@ -55,10 +55,13 @@ mod session_stats;
 use clap::{Parser, Subcommand};
 use config::{ApiDialect, ServerConfig};
 use futures::StreamExt;
+use lunaroute_config_file::FileConfigStore;
 use lunaroute_core::provider::Provider;
 use lunaroute_core::{
+    config_store::ConfigStore,
     error::Error as CoreError,
     normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
+    session_store::SessionStore,
 };
 use lunaroute_egress::{
     anthropic::{AnthropicConfig, AnthropicConnector},
@@ -67,6 +70,7 @@ use lunaroute_egress::{
 use lunaroute_ingress::{anthropic as anthropic_ingress, openai};
 use lunaroute_observability::{HealthState, Metrics, health_router};
 use lunaroute_routing::{RouteTable, Router, RoutingRule, RuleMatcher};
+use lunaroute_session_sqlite::SqliteSessionStore;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -325,9 +329,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Load configuration
-    let mut config = if let Some(config_path) = cli.config {
+    let config_path_opt = cli.config.clone(); // Clone for later use in store initialization
+    let mut config = if let Some(ref config_path) = config_path_opt {
         info!("📁 Loading configuration from: {}", config_path);
-        ServerConfig::from_file(&config_path)?
+        ServerConfig::from_file(config_path)?
     } else {
         info!("📁 Using default configuration");
         ServerConfig::default()
@@ -337,30 +342,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.merge_env();
 
     // ============================================================================
-    // PHASE 4 NOTE: Store-based architecture (not yet fully integrated)
+    // PHASE 5: Initialize trait-based stores for single-tenant mode (optional)
     // ============================================================================
-    // The server now has AppState infrastructure for dependency-injected stores.
-    // For full integration, you would initialize stores here like this:
-    //
-    // use lunaroute_config_file::FileConfigStore;
-    // use lunaroute_session_sqlite::SqliteSessionStore;
-    //
-    // let config_store = Arc::new(
-    //     FileConfigStore::new(&config_path)
-    //         .await
-    //         .expect("Failed to create config store")
-    // );
-    //
-    // let session_store = Arc::new(
-    //     SqliteSessionStore::new("~/.lunaroute/sessions.db", "~/.lunaroute/sessions")
-    //         .await
-    //         .expect("Failed to create session store")
-    // );
-    //
-    // let app_state = app::AppState::new(config_store, session_store, None);
-    //
-    // Then pass app_state to routes via Axum's state management.
-    // For now, the existing direct config and session recording logic remains.
+    // Try to create FileConfigStore if config file is available
+    let config_store: Option<Arc<dyn ConfigStore>> = if let Some(ref config_path) = config_path_opt
+    {
+        match FileConfigStore::new(config_path).await {
+            Ok(store) => {
+                info!("✓ Initialized FileConfigStore for {:?}", config_path);
+                Some(Arc::new(store))
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to create FileConfigStore: {}. Config hot-reloading will not be available.",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        // No config file specified - try default location
+        match FileConfigStore::new("~/.lunaroute/config.yaml").await {
+            Ok(store) => {
+                info!("✓ Initialized FileConfigStore with default path ~/.lunaroute/config.yaml");
+                Some(Arc::new(store))
+            }
+            Err(_) => {
+                info!("📁 No config file available, config hot-reloading will not be available");
+                None
+            }
+        }
+    };
+
+    // Try to create SqliteSessionStore if session recording is enabled
+    let session_store: Option<Arc<dyn SessionStore>> = if config.session_recording.enabled
+        && (config.session_recording.is_sqlite_enabled()
+            || config.session_recording.is_jsonl_enabled())
+    {
+        // Determine paths from config
+        let db_path = config
+            .session_recording
+            .sqlite
+            .as_ref()
+            .map(|s| s.path.clone())
+            .unwrap_or_else(|| PathBuf::from("~/.lunaroute/sessions.db"));
+
+        let jsonl_dir = config
+            .session_recording
+            .jsonl
+            .as_ref()
+            .map(|j| j.directory.clone())
+            .unwrap_or_else(|| PathBuf::from("~/.lunaroute/sessions"));
+
+        match SqliteSessionStore::new(&db_path, &jsonl_dir).await {
+            Ok(store) => {
+                info!(
+                    "✓ Initialized SqliteSessionStore (db={:?}, jsonl={:?})",
+                    db_path, jsonl_dir
+                );
+                Some(Arc::new(store))
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to create SqliteSessionStore: {}. Falling back to legacy session recording.",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Create AppState if both stores are available
+    let _app_state: Option<app::AppState> = if let (Some(config_st), Some(session_st)) =
+        (config_store, session_store)
+    {
+        let state = app::AppState::new(
+            config_st, session_st, None, // Single-tenant mode (no tenant_id)
+        );
+        info!("✓ Initialized AppState with trait-based stores");
+        Some(state)
+    } else {
+        info!(
+            "ℹ️  AppState not initialized (stores unavailable). Using legacy configuration and session recording."
+        );
+        None
+    };
+
+    // Note: AppState is currently unused but provides infrastructure for future integration.
+    // Routes will be updated in a future phase to use trait-based stores via AppState.
+    // For now, the existing direct config and session recording logic remains active.
     // ============================================================================
 
     // Apply CLI dialect override (highest precedence)
