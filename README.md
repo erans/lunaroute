@@ -221,6 +221,7 @@ ORDER BY started_at DESC;
 - Async recording (non-blocking, batched writes)
 - Compression (Zstd after 7 days, ~10x smaller)
 - Retention policies (age-based, size-based cleanup)
+- **Custom storage backends** (S3, CloudWatch, GCS - implement your own)
 
 ### 📈 **Session Statistics**
 
@@ -505,11 +506,13 @@ We welcome contributions! Whether it's:
 
 Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
+**Recently Implemented:**
+- ✅ Custom storage backends (S3, CloudWatch, GCS)
+
 **Popular feature requests:**
 - UI for session browsing
 - More routing strategies
 - Additional provider connectors
-- Custom storage backends
 
 ---
 

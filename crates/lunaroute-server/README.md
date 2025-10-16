@@ -200,6 +200,7 @@ Open http://localhost:8082 after starting the server.
 - ✅ **Circuit breakers**: Prevent cascading failures
 - ✅ **Health monitoring**: Track provider availability
 - ✅ **Session recording**: Optional request/response capture with session grouping
+- ✅ **Custom storage backends**: Pluggable SessionWriter trait for S3, CloudWatch, GCS, etc.
 - ✅ **Session statistics**: Per-session tracking of tokens (input/output/thinking), requests, tool usage, and proxy overhead
 - ✅ **Request logging**: Print all traffic to stdout
 - ✅ **Detailed timing metrics**: Pre/post proxy overhead, provider response time (DEBUG level)

@@ -72,6 +72,49 @@ The session recording system now captures comprehensive statistics alongside req
 └── sessions.db  (SQLite for metadata/queries, schema v1)
 ```
 
+## Custom Storage Backends
+
+LunaRoute supports pluggable storage through the `SessionWriter` trait. You can implement custom writers for:
+
+- **S3/GCS/Azure Blob** - Long-term archival storage
+- **CloudWatch/Datadog** - Real-time log streaming
+- **Elasticsearch** - Full-text search capabilities
+- **PostgreSQL** - Multi-tenant deployments
+- **Custom systems** - Any storage system you need
+
+**Example: S3 Writer**
+```rust
+use lunaroute_session_sqlite::{SessionWriter, SessionEvent, WriterResult};
+
+struct S3SessionWriter {
+    bucket: String,
+    s3_client: S3Client,
+}
+
+#[async_trait]
+impl SessionWriter for S3SessionWriter {
+    async fn write_event(&self, event: &SessionEvent) -> WriterResult<()> {
+        // Upload to S3
+        Ok(())
+    }
+}
+
+// Combine SQLite (queries) + S3 (archival)
+let store = SqliteSessionStore::with_writers(
+    Some(Arc::new(sqlite)),
+    vec![Arc::new(s3_writer)],
+    RecorderConfig::default(),
+)?;
+```
+
+**Benefits:**
+- Hybrid storage (SQLite for queries, S3 for durability)
+- Cost optimization (hot/cold tier separation)
+- Compliance (immutable audit logs)
+- Multi-region replication
+
+See [lunaroute-session README](../crates/lunaroute-session/README.md) for detailed examples.
+
 ## SQLite Schema
 
 - **schema_version** table: Single column tracking schema version (currently 1)
@@ -158,6 +201,7 @@ print(f"Total cost: ${stats['estimated_cost.total_cost_usd'].sum():.2f}")
 5. **Performance insights**: Detailed latency breakdowns
 6. **Tool analytics**: Usage patterns and performance
 7. **Audit compliance**: Full request/response preservation
+8. **Extensible storage**: Pluggable SessionWriter trait for custom backends
 
 ## Implementation Status
 
@@ -167,5 +211,6 @@ print(f"Total cost: ${stats['estimated_cost.total_cost_usd'].sum():.2f}")
 4. ✅ **Phase 5**: Real-time streaming support with comprehensive metrics
    - ✅ Anthropic passthrough mode
    - ✅ OpenAI passthrough mode
-5. 🔄 **Phase 4**: Compression and archival (planned)
-6. 🔄 **Phase 6**: Advanced dashboards and visualization (planned)
+5. ✅ **Phase 6**: Custom storage backends with SessionWriter trait
+6. 🔄 **Phase 4**: Compression and archival (planned)
+7. 🔄 **Phase 7**: Advanced dashboards and visualization (planned)
