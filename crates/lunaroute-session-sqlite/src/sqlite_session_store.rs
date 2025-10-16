@@ -97,6 +97,72 @@ impl SqliteSessionStore {
             jsonl,
         })
     }
+
+    /// Create a session store with custom writers
+    ///
+    /// This constructor allows you to inject custom `SessionWriter` implementations
+    /// (e.g., S3, CloudWatch, GCS) alongside or instead of the default SQLite/JSONL writers.
+    ///
+    /// # Arguments
+    /// * `sqlite` - Optional SQLite writer for queries and stats (required for search/stats methods)
+    /// * `additional_writers` - Custom writers (S3, CloudWatch, etc.)
+    /// * `config` - Recorder configuration (batch size, timeout)
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use lunaroute_session_sqlite::{SqliteSessionStore, SessionWriter, RecorderConfig};
+    /// # use lunaroute_session::sqlite_writer::SqliteWriter;
+    /// # use std::sync::Arc;
+    /// # use std::path::Path;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Create SQLite writer for stats/queries
+    /// let sqlite = SqliteWriter::new(Path::new("~/.lunaroute/sessions.db")).await?;
+    ///
+    /// // Add custom S3 writer (implement SessionWriter trait)
+    /// // let s3_writer = Arc::new(S3SessionWriter::new("my-bucket")?);
+    ///
+    /// let store = SqliteSessionStore::with_writers(
+    ///     Some(Arc::new(sqlite)),
+    ///     vec![/* s3_writer */],  // Your custom writers here
+    ///     RecorderConfig::default(),
+    /// )?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    /// - `Error::Config` if no writers are provided
+    pub fn with_writers(
+        sqlite: Option<Arc<SqliteWriter>>,
+        additional_writers: Vec<Arc<dyn SessionWriter>>,
+        config: RecorderConfig,
+    ) -> Result<Self> {
+        let mut writers: Vec<Arc<dyn SessionWriter>> = Vec::new();
+
+        // Add SQLite writer if provided
+        if let Some(ref sqlite_writer) = sqlite {
+            writers.push(sqlite_writer.clone() as Arc<dyn SessionWriter>);
+        }
+
+        // Add all custom writers (S3, CloudWatch, etc.)
+        writers.extend(additional_writers);
+
+        // Ensure at least one writer is enabled
+        if writers.is_empty() {
+            return Err(Error::Config(
+                "At least one session writer must be provided".to_string(),
+            ));
+        }
+
+        // Create multi-writer recorder with all writers
+        let recorder = Arc::new(MultiWriterRecorder::with_config(writers, config));
+
+        Ok(Self {
+            recorder,
+            sqlite,
+            jsonl: None, // Custom writers don't track JSONL writer
+        })
+    }
 }
 
 #[async_trait]
@@ -585,5 +651,100 @@ mod tests {
         });
         let results = store.search(None, query).await.unwrap();
         assert!(results.is_object());
+    }
+
+    #[tokio::test]
+    async fn test_with_writers_custom_writer() {
+        use async_trait::async_trait;
+        use lunaroute_session::writer::WriterResult;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Mock custom writer that counts events
+        struct MockWriter {
+            event_count: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl SessionWriter for MockWriter {
+            async fn write_event(&self, _event: &SessionEvent) -> WriterResult<()> {
+                self.event_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+
+        // Create SQLite writer
+        let sqlite = Arc::new(SqliteWriter::new(&db_path).await.unwrap());
+
+        // Create custom mock writer
+        let event_count = Arc::new(AtomicUsize::new(0));
+        let mock_writer = Arc::new(MockWriter {
+            event_count: event_count.clone(),
+        });
+
+        // Create store with both SQLite and custom writer
+        let store = SqliteSessionStore::with_writers(
+            Some(sqlite),
+            vec![mock_writer as Arc<dyn SessionWriter>],
+            RecorderConfig {
+                batch_size: 100,
+                batch_timeout_ms: 100,
+                channel_buffer_size: 10_000,
+            },
+        );
+
+        assert!(store.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_with_writers_only_custom() {
+        use async_trait::async_trait;
+        use lunaroute_session::writer::WriterResult;
+        use std::sync::Arc;
+
+        // Mock custom writer
+        struct MockWriter;
+
+        #[async_trait]
+        impl SessionWriter for MockWriter {
+            async fn write_event(&self, _event: &SessionEvent) -> WriterResult<()> {
+                Ok(())
+            }
+        }
+
+        let mock_writer = Arc::new(MockWriter);
+
+        // Create store with only custom writer (no SQLite)
+        let store = SqliteSessionStore::with_writers(
+            None,
+            vec![mock_writer as Arc<dyn SessionWriter>],
+            RecorderConfig::default(),
+        );
+
+        assert!(store.is_ok());
+
+        // Verify that SQLite-dependent methods fail gracefully
+        let store = store.unwrap();
+        let filter = serde_json::json!({
+            "page": 0,
+            "page_size": 50
+        });
+        let result = store.search(None, filter).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_with_writers_no_writers() {
+        // Should fail if no writers provided
+        let store = SqliteSessionStore::with_writers(None, vec![], RecorderConfig::default());
+
+        assert!(store.is_err());
+        match store {
+            Err(Error::Config(_)) => (),
+            _ => panic!("Expected Config error when no writers are provided"),
+        }
     }
 }
