@@ -335,8 +335,11 @@ async function initCallsPerModelChart() {
     const ctx = document.getElementById('callsPerModelChart');
     if (!ctx) return;
 
-    // NO hours parameter - we want all-time cumulative data
-    const response = await fetch('/api/stats/spending');
+    // Get hours from current time range
+    const hours = typeof currentTimeRangeHours !== 'undefined' ? currentTimeRangeHours : 24;
+
+    // Fetch initial data with time range
+    const response = await fetch(`/api/stats/spending?hours=${hours}`);
     const data = await response.json();
 
     // Take top 10 models by call count (request count)
@@ -420,21 +423,16 @@ async function initCallsPerModelChart() {
                     }
                 },
                 title: {
-                    display: true,
-                    text: 'All-Time Calls Distribution',
-                    color: '#f1f5f9',
-                    font: {
-                        size: 14,
-                        weight: 'normal'
-                    }
+                    display: false
                 }
             }
         }
     });
 
-    // Auto-update chart (no hours parameter - all-time data)
+    // Auto-update chart with current time range
     setInterval(async () => {
-        const response = await fetch('/api/stats/spending');
+        const hours = typeof currentTimeRangeHours !== 'undefined' ? currentTimeRangeHours : 24;
+        const response = await fetch(`/api/stats/spending?hours=${hours}`);
         const data = await response.json();
         const sorted = [...data.by_model].sort((a, b) => b.request_count - a.request_count);
         const top10 = sorted.slice(0, 10);
@@ -458,9 +456,9 @@ async function updateCallsPerModelChart() {
         '#ec4899', '#06b6d4', '#f97316', '#84cc16', '#6366f1',
     ];
 
-    // NO hours parameter - we want all-time cumulative data
-    // This chart should NOT be affected by the time range selector
-    const response = await fetch('/api/stats/spending');
+    // Fetch data with current time range
+    const hours = typeof currentTimeRangeHours !== 'undefined' ? currentTimeRangeHours : 24;
+    const response = await fetch(`/api/stats/spending?hours=${hours}`);
     const data = await response.json();
     const sorted = [...data.by_model].sort((a, b) => b.request_count - a.request_count);
     const top10 = sorted.slice(0, 10);

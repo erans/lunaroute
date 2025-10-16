@@ -890,11 +890,12 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: Option<i64>) -> Result
         total_cost += cost;
 
         if let Some(model_name) = model {
-            let entry = model_costs
-                .entry(model_name)
-                .or_insert((0.0, std::collections::HashSet::new(), 0));
+            let entry =
+                model_costs
+                    .entry(model_name)
+                    .or_insert((0.0, std::collections::HashSet::new(), 0));
             entry.0 += cost;
-            entry.2 += 1;  // Increment request count
+            entry.2 += 1; // Increment request count
             if let Some(sid) = session_id {
                 entry.1.insert(sid);
             }

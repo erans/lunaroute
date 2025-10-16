@@ -135,7 +135,7 @@ pub struct ModelSpending {
     pub total_cost: f64,
     pub session_count: i64,
     pub avg_cost_per_session: f64,
-    pub request_count: i64,  // Total number of API calls (session_stats entries)
+    pub request_count: i64, // Total number of API calls (session_stats entries)
 }
 
 /// Extended spending statistics
