@@ -339,8 +339,8 @@ async function initCallsPerModelChart() {
     const response = await fetch('/api/stats/spending');
     const data = await response.json();
 
-    // Take top 10 models by call count (session count)
-    const sorted = [...data.by_model].sort((a, b) => b.session_count - a.session_count);
+    // Take top 10 models by call count (request count)
+    const sorted = [...data.by_model].sort((a, b) => b.request_count - a.request_count);
     const top10 = sorted.slice(0, 10);
 
     // Generate distinct colors for each model
@@ -362,8 +362,8 @@ async function initCallsPerModelChart() {
         data: {
             labels: top10.map(m => m.model_name),
             datasets: [{
-                label: 'Calls',
-                data: top10.map(m => m.session_count),
+                label: 'API Calls',
+                data: top10.map(m => m.request_count),
                 backgroundColor: colors.slice(0, top10.length),
                 borderColor: '#1e293b',
                 borderWidth: 2
@@ -407,13 +407,14 @@ async function initCallsPerModelChart() {
                         label: function(context) {
                             const model = top10[context.dataIndex];
                             const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                            const percentage = ((model.session_count / total) * 100).toFixed(1);
+                            const percentage = ((model.request_count / total) * 100).toFixed(1);
 
                             return [
                                 `Model: ${model.model_name}`,
-                                `Calls: ${model.session_count} (${percentage}%)`,
+                                `API Calls: ${model.request_count} (${percentage}%)`,
+                                `Sessions: ${model.session_count}`,
                                 `Total Cost: $${model.total_cost.toFixed(4)}`,
-                                `Avg Cost/Call: $${model.avg_cost_per_session.toFixed(4)}`
+                                `Avg Cost/Session: $${model.avg_cost_per_session.toFixed(4)}`
                             ];
                         }
                     }
@@ -435,11 +436,11 @@ async function initCallsPerModelChart() {
     setInterval(async () => {
         const response = await fetch('/api/stats/spending');
         const data = await response.json();
-        const sorted = [...data.by_model].sort((a, b) => b.session_count - a.session_count);
+        const sorted = [...data.by_model].sort((a, b) => b.request_count - a.request_count);
         const top10 = sorted.slice(0, 10);
 
         callsPerModelChart.data.labels = top10.map(m => m.model_name);
-        callsPerModelChart.data.datasets[0].data = top10.map(m => m.session_count);
+        callsPerModelChart.data.datasets[0].data = top10.map(m => m.request_count);
         callsPerModelChart.data.datasets[0].backgroundColor = colors.slice(0, top10.length);
         callsPerModelChart.update('none');
     }, 5000);
@@ -461,11 +462,11 @@ async function updateCallsPerModelChart() {
     // This chart should NOT be affected by the time range selector
     const response = await fetch('/api/stats/spending');
     const data = await response.json();
-    const sorted = [...data.by_model].sort((a, b) => b.session_count - a.session_count);
+    const sorted = [...data.by_model].sort((a, b) => b.request_count - a.request_count);
     const top10 = sorted.slice(0, 10);
 
     callsPerModelChart.data.labels = top10.map(m => m.model_name);
-    callsPerModelChart.data.datasets[0].data = top10.map(m => m.session_count);
+    callsPerModelChart.data.datasets[0].data = top10.map(m => m.request_count);
     callsPerModelChart.data.datasets[0].backgroundColor = colors.slice(0, top10.length);
     callsPerModelChart.update();
 }

@@ -866,10 +866,11 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: Option<i64>) -> Result
     let stats_rows = sqlx::query(&query).fetch_all(pool).await?;
 
     // Calculate total cost and per-model breakdown
+    // Track: (total_cost, unique_sessions, total_requests)
     let mut total_cost = 0.0;
     let mut model_costs: std::collections::HashMap<
         String,
-        (f64, std::collections::HashSet<String>),
+        (f64, std::collections::HashSet<String>, i64),
     > = std::collections::HashMap::new();
 
     for stat in &stats_rows {
@@ -891,8 +892,9 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: Option<i64>) -> Result
         if let Some(model_name) = model {
             let entry = model_costs
                 .entry(model_name)
-                .or_insert((0.0, std::collections::HashSet::new()));
+                .or_insert((0.0, std::collections::HashSet::new(), 0));
             entry.0 += cost;
+            entry.2 += 1;  // Increment request count
             if let Some(sid) = session_id {
                 entry.1.insert(sid);
             }
@@ -926,13 +928,14 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: Option<i64>) -> Result
     // Build per-model spending stats
     let mut by_model: Vec<ModelSpending> = model_costs
         .into_iter()
-        .map(|(model_name, (cost, sessions))| {
+        .map(|(model_name, (cost, sessions, requests))| {
             let session_count = sessions.len() as i64;
             ModelSpending {
                 model_name,
                 total_cost: cost,
                 session_count,
                 avg_cost_per_session: cost / session_count.max(1) as f64,
+                request_count: requests,
             }
         })
         .collect();
