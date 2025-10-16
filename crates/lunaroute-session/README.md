@@ -22,6 +22,13 @@ Records, stores, searches, and replays LLM interactions with automatic PII redac
 - **Race-Free Concurrency** - Pending operation tracking prevents file handle conflicts
 - **10-100x faster** for high-volume streaming sessions
 
+### Custom Storage Backends
+
+- **SessionWriter trait** - Implement your own storage backends (S3, CloudWatch, GCS, etc.)
+- **Multi-writer support** - Write to multiple backends simultaneously
+- **Pluggable architecture** - Add custom writers without modifying core code
+- **Public API** - Full access to SessionWriter, RecorderConfig, and SessionEvent types
+
 ### Production-Ready Security
 
 - **AES-256-GCM Encryption at Rest** - Optional encryption for stored sessions
@@ -287,6 +294,103 @@ let cleanup_handle = tokio::spawn(async move {
     run_background_cleanup(config.retention, jsonl_writer).await;
 });
 ```
+
+### Custom Storage Writers
+
+Implement your own storage backend by implementing the `SessionWriter` trait:
+
+```rust
+use lunaroute_session_sqlite::{
+    SqliteSessionStore, SessionWriter, SessionEvent,
+    RecorderConfig, WriterResult
+};
+use lunaroute_session::sqlite_writer::SqliteWriter;
+use async_trait::async_trait;
+use std::sync::Arc;
+use std::path::Path;
+
+// Example: Custom S3 writer for raw event storage
+struct S3SessionWriter {
+    bucket: String,
+    s3_client: S3Client,
+}
+
+#[async_trait]
+impl SessionWriter for S3SessionWriter {
+    async fn write_event(&self, event: &SessionEvent) -> WriterResult<()> {
+        // Serialize event to JSON
+        let json = serde_json::to_string(event)?;
+
+        // Upload to S3 bucket
+        let key = format!(
+            "sessions/{}/events/{}.json",
+            event.session_id,
+            event.timestamp
+        );
+
+        self.s3_client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .body(json.into_bytes().into())
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
+    async fn write_batch(&self, events: &[SessionEvent]) -> WriterResult<()> {
+        // Optional: Implement batch upload for better performance
+        for event in events {
+            self.write_event(event).await?;
+        }
+        Ok(())
+    }
+
+    fn supports_batching(&self) -> bool {
+        true
+    }
+}
+
+// Create session store with SQLite (for queries) + S3 (for raw events)
+async fn create_hybrid_store() -> Result<SqliteSessionStore, Box<dyn std::error::Error>> {
+    // Create SQLite writer for fast queries and stats
+    let sqlite = SqliteWriter::new(Path::new("~/.lunaroute/sessions.db")).await?;
+
+    // Create custom S3 writer for durable raw event storage
+    let s3_writer = Arc::new(S3SessionWriter {
+        bucket: "my-lunaroute-sessions".to_string(),
+        s3_client: S3Client::new(),
+    });
+
+    // Combine both writers
+    let store = SqliteSessionStore::with_writers(
+        Some(Arc::new(sqlite)),  // SQLite for queries
+        vec![s3_writer],          // S3 for raw events
+        RecorderConfig {
+            batch_size: 100,
+            batch_timeout_ms: 100,
+            channel_buffer_size: 10_000,
+        },
+    )?;
+
+    Ok(store)
+}
+```
+
+**Benefits of Custom Writers:**
+- **Hybrid storage** - SQLite for queries, S3/CloudWatch for long-term storage
+- **Cost optimization** - Keep hot data in SQLite, archive to cheaper object storage
+- **Compliance** - Send audit logs to immutable storage (S3 with versioning)
+- **Observability** - Send events to CloudWatch/Datadog for real-time monitoring
+- **Multi-region** - Replicate sessions across regions for disaster recovery
+
+**Available Types:**
+- `SessionWriter` - Trait to implement for custom storage
+- `SessionEvent` - Event data structure
+- `RecorderConfig` - Batch and timeout configuration
+- `WriterResult<T>` - Standard result type for writer operations
+- `WriterError` - Error type for writer failures
 
 ### Production Features
 

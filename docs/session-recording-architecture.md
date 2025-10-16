@@ -11,6 +11,7 @@ A high-performance, non-blocking session recording system that writes to multipl
 3. **Eventual Consistency**: Prioritize request performance over immediate persistence
 4. **Graceful Degradation**: Recording failures don't affect core proxy functionality
 5. **Efficient Resource Usage**: Batched writes, connection pooling, and buffering
+6. **Custom Storage Backends**: Pluggable architecture for custom SessionWriter implementations (S3, CloudWatch, etc.)
 
 ## Architecture
 
@@ -721,6 +722,115 @@ impl SessionWriter for SqliteWriter {
 - **Streaming Metrics:** If `final_stats.streaming_stats` is present, inserts into `stream_metrics` table with TTFT, chunk counts, and latency percentiles
 
 This ensures complete data capture for both streaming and non-streaming sessions. See `crates/lunaroute-session/src/sqlite_writer.rs:849-938` for the full implementation.
+
+### 7. Custom Storage Writers
+
+The `SessionWriter` trait is publicly exposed, allowing users to implement custom storage backends without modifying LunaRoute core:
+
+```rust
+use lunaroute_session_sqlite::{
+    SqliteSessionStore, SessionWriter, SessionEvent,
+    RecorderConfig, WriterResult
+};
+use async_trait::async_trait;
+use std::sync::Arc;
+
+// Example: Custom S3 writer for raw event storage
+pub struct S3SessionWriter {
+    bucket: String,
+    s3_client: S3Client,
+}
+
+#[async_trait]
+impl SessionWriter for S3SessionWriter {
+    async fn write_event(&self, event: &SessionEvent) -> WriterResult<()> {
+        // Serialize event to JSON
+        let json = serde_json::to_string(event)?;
+
+        // Upload to S3 bucket
+        let key = format!(
+            "sessions/{}/events/{}.json",
+            event.session_id,
+            event.timestamp
+        );
+
+        self.s3_client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .body(json.into_bytes().into())
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
+    async fn write_batch(&self, events: &[SessionEvent]) -> WriterResult<()> {
+        // Optional: Implement batch upload for better performance
+        for event in events {
+            self.write_event(event).await?;
+        }
+        Ok(())
+    }
+
+    fn supports_batching(&self) -> bool {
+        true
+    }
+}
+```
+
+**Using Custom Writers:**
+
+```rust
+use lunaroute_session::sqlite_writer::SqliteWriter;
+use std::path::Path;
+
+// Create session store with SQLite + custom writers
+async fn create_hybrid_store() -> Result<SqliteSessionStore> {
+    // SQLite for fast queries and stats
+    let sqlite = SqliteWriter::new(Path::new("~/.lunaroute/sessions.db")).await?;
+
+    // Custom S3 writer for durable storage
+    let s3_writer = Arc::new(S3SessionWriter {
+        bucket: "my-lunaroute-sessions".to_string(),
+        s3_client: S3Client::new(),
+    });
+
+    // CloudWatch writer for real-time monitoring
+    let cloudwatch_writer = Arc::new(CloudWatchSessionWriter::new("my-log-group")?);
+
+    // Combine all writers
+    let store = SqliteSessionStore::with_writers(
+        Some(Arc::new(sqlite)),  // SQLite for queries
+        vec![
+            s3_writer,               // S3 for raw events
+            cloudwatch_writer,       // CloudWatch for monitoring
+        ],
+        RecorderConfig {
+            batch_size: 100,
+            batch_timeout_ms: 100,
+            channel_buffer_size: 10_000,
+        },
+    )?;
+
+    Ok(store)
+}
+```
+
+**Benefits of Custom Writers:**
+- **Hybrid storage** - SQLite for queries, S3/GCS for long-term archival
+- **Cost optimization** - Keep hot data in SQLite, archive to cheaper object storage
+- **Compliance** - Send audit logs to immutable storage (S3 with versioning/retention locks)
+- **Observability** - Real-time event streaming to CloudWatch/Datadog
+- **Multi-region** - Replicate sessions across regions for disaster recovery
+- **Vendor flexibility** - Easy migration between storage providers
+
+**Exported Types:**
+- `SessionWriter` - Trait to implement for custom storage backends
+- `SessionEvent` - Event data structure with all session information
+- `RecorderConfig` - Batch size, timeout, and channel buffer configuration
+- `WriterResult<T>` - Standard result type for writer operations
+- `WriterError` - Error type for writer failures
 
 ## Usage in Passthrough Handler
 
