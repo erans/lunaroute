@@ -16,7 +16,17 @@
 //! # use lunaroute_session_sqlite::SqliteSessionStore;
 //! # use lunaroute_core::SessionStore;
 //! # async fn example() -> lunaroute_core::Result<()> {
-//! let store = SqliteSessionStore::new("~/.lunaroute/sessions.db", "~/.lunaroute/sessions").await?;
+//! // Both SQLite and JSONL enabled
+//! let store = SqliteSessionStore::new(
+//!     Some("~/.lunaroute/sessions.db"),
+//!     Some("~/.lunaroute/sessions")
+//! ).await?;
+//!
+//! // Only SQLite enabled (no JSONL files)
+//! let store = SqliteSessionStore::new(
+//!     Some("~/.lunaroute/sessions.db"),
+//!     None::<&str>
+//! ).await?;
 //! # Ok(())
 //! # }
 //! ```

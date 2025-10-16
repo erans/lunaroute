@@ -54,26 +54,48 @@ pub async fn create_session_store(
 
     // Fall back to SQLite + JSONL (single-tenant mode)
     if config.is_sqlite_enabled() || config.is_jsonl_enabled() {
-        // Determine paths from config
-        let db_path = config
-            .sqlite
-            .as_ref()
-            .map(|s| s.path.clone())
-            .unwrap_or_else(|| std::path::PathBuf::from("~/.lunaroute/sessions.db"));
+        // Determine paths from config only if enabled
+        let db_path = if config.is_sqlite_enabled() {
+            config.sqlite.as_ref().map(|s| s.path.clone())
+        } else {
+            None
+        };
 
-        let jsonl_dir = config
-            .jsonl
-            .as_ref()
-            .map(|j| j.directory.clone())
-            .unwrap_or_else(|| std::path::PathBuf::from("~/.lunaroute/sessions"));
+        let jsonl_dir = if config.is_jsonl_enabled() {
+            config.jsonl.as_ref().map(|j| j.directory.clone())
+        } else {
+            None
+        };
 
-        tracing::info!(
-            "Initializing SQLite session store (db={:?}, jsonl={:?})",
-            db_path,
-            jsonl_dir
-        );
+        // Log which writers are enabled
+        match (db_path.is_some(), jsonl_dir.is_some()) {
+            (true, true) => {
+                tracing::info!(
+                    "Initializing session store with SQLite + JSONL writers (db={:?}, jsonl={:?})",
+                    db_path,
+                    jsonl_dir
+                );
+            }
+            (true, false) => {
+                tracing::info!(
+                    "Initializing session store with SQLite writer only (db={:?})",
+                    db_path
+                );
+            }
+            (false, true) => {
+                tracing::info!(
+                    "Initializing session store with JSONL writer only (jsonl={:?})",
+                    jsonl_dir
+                );
+            }
+            (false, false) => {
+                return Err(lunaroute_core::Error::Config(
+                    "At least one session writer (SQLite or JSONL) must be enabled".to_string(),
+                ));
+            }
+        }
 
-        let store = lunaroute_session_sqlite::SqliteSessionStore::new(&db_path, &jsonl_dir).await?;
+        let store = lunaroute_session_sqlite::SqliteSessionStore::new(db_path, jsonl_dir).await?;
 
         return Ok(Arc::new(store));
     }

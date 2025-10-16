@@ -23,50 +23,67 @@ use lunaroute_session::{
 /// SQLite + JSONL session store for single-tenant mode
 ///
 /// Combines SQLite for fast queries with JSONL files for complete event history.
+/// Either or both writers can be enabled based on configuration.
 #[derive(Clone)]
 pub struct SqliteSessionStore {
-    /// Multi-writer recorder that writes to both SQLite and JSONL
+    /// Multi-writer recorder that writes to enabled writers (SQLite and/or JSONL)
     recorder: Arc<MultiWriterRecorder>,
-    /// SQLite writer for queries (will be used for search, get_session, etc.)
+    /// SQLite writer for queries (optional - only if SQLite is enabled)
+    sqlite: Option<Arc<SqliteWriter>>,
+    /// JSONL writer for file access (optional - only if JSONL is enabled)
     #[allow(dead_code)]
-    sqlite: Arc<SqliteWriter>,
-    /// JSONL writer for file access (will be used for reading raw events)
-    #[allow(dead_code)]
-    jsonl: Arc<JsonlWriter>,
+    jsonl: Option<Arc<JsonlWriter>>,
 }
 
 impl SqliteSessionStore {
     /// Create a new SQLite + JSONL session store
     ///
     /// # Arguments
-    /// * `db_path` - Path to SQLite database file
-    /// * `jsonl_dir` - Directory for JSONL files (organized by date)
+    /// * `db_path` - Optional path to SQLite database file (None disables SQLite writer)
+    /// * `jsonl_dir` - Optional directory for JSONL files (None disables JSONL writer)
     ///
     /// # Errors
     /// - `Error::Database` if SQLite connection fails
-    /// - `Error::Io` if JSONL directory creation fails
-    pub async fn new(db_path: impl Into<PathBuf>, jsonl_dir: impl Into<PathBuf>) -> Result<Self> {
-        let db_path = db_path.into();
-        let jsonl_dir = jsonl_dir.into();
+    /// - `Error::Config` if neither writer is enabled
+    pub async fn new(
+        db_path: Option<impl Into<PathBuf>>,
+        jsonl_dir: Option<impl Into<PathBuf>>,
+    ) -> Result<Self> {
+        let mut writers: Vec<Arc<dyn SessionWriter>> = Vec::new();
 
-        // Expand tilde in paths
-        let db_path = expand_tilde(db_path)?;
-        let jsonl_dir = expand_tilde(jsonl_dir)?;
+        // Create SQLite writer if enabled
+        let sqlite = if let Some(path) = db_path {
+            let path = expand_tilde(path.into())?;
+            let writer =
+                Arc::new(SqliteWriter::new(&path).await.map_err(|e| {
+                    Error::Database(format!("Failed to create SQLite writer: {}", e))
+                })?);
+            writers.push(writer.clone() as Arc<dyn SessionWriter>);
+            Some(writer)
+        } else {
+            None
+        };
 
-        // Create writers
-        let sqlite = Arc::new(
-            SqliteWriter::new(&db_path)
-                .await
-                .map_err(|e| Error::Database(format!("Failed to create SQLite writer: {}", e)))?,
-        );
+        // Create JSONL writer if enabled
+        let jsonl = if let Some(dir) = jsonl_dir {
+            let dir = expand_tilde(dir.into())?;
+            let writer = Arc::new(JsonlWriter::new(dir));
+            writers.push(writer.clone() as Arc<dyn SessionWriter>);
+            Some(writer)
+        } else {
+            None
+        };
 
-        let jsonl = Arc::new(JsonlWriter::new(jsonl_dir));
-        // Create multi-writer recorder with both writers
+        // Ensure at least one writer is enabled
+        if writers.is_empty() {
+            return Err(Error::Config(
+                "At least one session writer (SQLite or JSONL) must be enabled".to_string(),
+            ));
+        }
+
+        // Create multi-writer recorder with enabled writers
         let recorder = Arc::new(MultiWriterRecorder::with_config(
-            vec![
-                sqlite.clone() as Arc<dyn SessionWriter>,
-                jsonl.clone() as Arc<dyn SessionWriter>,
-            ],
+            writers,
             RecorderConfig {
                 batch_size: 100,
                 batch_timeout_ms: 100,
@@ -121,9 +138,13 @@ impl SessionStore for SqliteSessionStore {
         let filter: lunaroute_session::search::SessionFilter = serde_json::from_value(query)
             .map_err(|e| Error::SessionStore(format!("Invalid search query: {}", e)))?;
 
+        // SQLite writer is required for search
+        let sqlite = self.sqlite.as_ref().ok_or_else(|| {
+            Error::Config("SQLite writer is disabled, search not available".to_string())
+        })?;
+
         // Execute search using SQLite
-        let results = self
-            .sqlite
+        let results = sqlite
             .search_sessions(&filter)
             .await
             .map_err(|e| Error::SessionStore(format!("Search failed: {}", e)))?;
@@ -149,8 +170,12 @@ impl SessionStore for SqliteSessionStore {
             ..Default::default()
         };
 
-        let results = self
-            .sqlite
+        // SQLite writer is required for get_session
+        let sqlite = self.sqlite.as_ref().ok_or_else(|| {
+            Error::Config("SQLite writer is disabled, get_session not available".to_string())
+        })?;
+
+        let results = sqlite
             .search_sessions(&filter)
             .await
             .map_err(|e| Error::SessionStore(format!("Failed to get session: {}", e)))?;
@@ -227,9 +252,13 @@ impl SessionStore for SqliteSessionStore {
             ..Default::default()
         };
 
+        // SQLite writer is required for get_stats
+        let sqlite = self.sqlite.as_ref().ok_or_else(|| {
+            Error::Config("SQLite writer is disabled, get_stats not available".to_string())
+        })?;
+
         // Get aggregates using SQLite
-        let aggregates = self
-            .sqlite
+        let aggregates = sqlite
             .get_aggregates(&filter)
             .await
             .map_err(|e| Error::SessionStore(format!("Failed to get stats: {}", e)))?;
@@ -269,8 +298,12 @@ impl SessionStore for SqliteSessionStore {
             ..Default::default()
         };
 
-        let results = self
-            .sqlite
+        // SQLite writer is required for list_sessions
+        let sqlite = self.sqlite.as_ref().ok_or_else(|| {
+            Error::Config("SQLite writer is disabled, list_sessions not available".to_string())
+        })?;
+
+        let results = sqlite
             .search_sessions(&filter)
             .await
             .map_err(|e| Error::SessionStore(format!("Failed to list sessions: {}", e)))?;
@@ -309,8 +342,36 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let jsonl_dir = temp_dir.path().join("sessions");
 
-        let store = SqliteSessionStore::new(db_path, jsonl_dir).await;
+        let store = SqliteSessionStore::new(Some(db_path), Some(jsonl_dir)).await;
         assert!(store.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_store_sqlite_only() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+
+        let store = SqliteSessionStore::new(Some(db_path), None::<PathBuf>).await;
+        assert!(store.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_store_jsonl_only() {
+        let temp_dir = TempDir::new().unwrap();
+        let jsonl_dir = temp_dir.path().join("sessions");
+
+        let store = SqliteSessionStore::new(None::<PathBuf>, Some(jsonl_dir)).await;
+        assert!(store.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_store_neither_enabled() {
+        let store = SqliteSessionStore::new(None::<PathBuf>, None::<PathBuf>).await;
+        assert!(store.is_err());
+        match store {
+            Err(Error::Config(_)) => (),
+            _ => panic!("Expected Config error when neither writer is enabled"),
+        }
     }
 
     #[tokio::test]
@@ -319,7 +380,9 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let jsonl_dir = temp_dir.path().join("sessions");
 
-        let store = SqliteSessionStore::new(db_path, jsonl_dir).await.unwrap();
+        let store = SqliteSessionStore::new(Some(db_path), Some(jsonl_dir))
+            .await
+            .unwrap();
         let tenant_id = Some(TenantId::new());
 
         // write_event with tenant should fail
@@ -335,7 +398,9 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let jsonl_dir = temp_dir.path().join("sessions");
 
-        let store = SqliteSessionStore::new(db_path, jsonl_dir).await.unwrap();
+        let store = SqliteSessionStore::new(Some(db_path), Some(jsonl_dir))
+            .await
+            .unwrap();
 
         // Write some test events
         let event = serde_json::json!({
@@ -376,7 +441,9 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let jsonl_dir = temp_dir.path().join("sessions");
 
-        let store = SqliteSessionStore::new(db_path, jsonl_dir).await.unwrap();
+        let store = SqliteSessionStore::new(Some(db_path), Some(jsonl_dir))
+            .await
+            .unwrap();
 
         // Try to get a non-existent session
         let result = store.get_session(None, "non-existent").await;
@@ -395,7 +462,9 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let jsonl_dir = temp_dir.path().join("sessions");
 
-        let store = SqliteSessionStore::new(db_path, jsonl_dir).await.unwrap();
+        let store = SqliteSessionStore::new(Some(db_path), Some(jsonl_dir))
+            .await
+            .unwrap();
 
         // List sessions (should be empty)
         let sessions = store.list_sessions(None, 10, 0).await.unwrap();
@@ -416,7 +485,9 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let jsonl_dir = temp_dir.path().join("sessions");
 
-        let store = SqliteSessionStore::new(db_path, jsonl_dir).await.unwrap();
+        let store = SqliteSessionStore::new(Some(db_path), Some(jsonl_dir))
+            .await
+            .unwrap();
 
         // Write a test session first to avoid empty database issues
         let event = serde_json::json!({
@@ -457,7 +528,9 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let jsonl_dir = temp_dir.path().join("sessions");
 
-        let store = SqliteSessionStore::new(db_path, jsonl_dir).await.unwrap();
+        let store = SqliteSessionStore::new(Some(db_path), Some(jsonl_dir))
+            .await
+            .unwrap();
 
         // Test cleanup (currently returns empty stats)
         let retention = serde_json::json!({
@@ -479,7 +552,9 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let jsonl_dir = temp_dir.path().join("sessions");
 
-        let store = SqliteSessionStore::new(db_path, jsonl_dir).await.unwrap();
+        let store = SqliteSessionStore::new(Some(db_path), Some(jsonl_dir))
+            .await
+            .unwrap();
 
         // Write a test session
         let event = serde_json::json!({
