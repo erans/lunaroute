@@ -1,5 +1,23 @@
 # 🌕 LunaRoute
 
+```
+         ___---___
+      .--         --.
+    ./   ()      .-. \.
+   /   o    .   (   )  \
+  / .            '-'    \    _                      ____             _
+ | ()    .  O         .  |  | |   _   _ _ __   __ _|  _ \ ___  _   _| |_ ___
+|                         | | |  | | | | '_ \ / _` | |_) / _ \| | | | __/ _ \
+|    o           ()       | | |__| |_| | | | | (_| |  _ < (_) | |_| | ||  __/
+|       .--.          O   | |_____\__,_|_| |_|\__,_|_| \_\___/ \__,_|\__\___|
+ | .   |    |            |
+  \    `.__.'    o   .  / 
+   \                   /   
+    `\  o    ()      /    
+      `--___   ___--'
+            ---
+
+```
 **Your AI Coding Assistant's Best Friend**
 
 LunaRoute is a high-performance local proxy for AI coding assistants like Claude Code, OpenAI Codex CLI, and OpenCode. Get complete visibility into every LLM interaction with zero-overhead passthrough, comprehensive session recording, and powerful debugging capabilities.
