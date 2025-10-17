@@ -108,10 +108,22 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for dir in artifacts/*/; do
+            artifact_name=$(basename "$dir")
+            for file in "$dir"*; do
+              if [ -f "$file" ]; then
+                mv "$file" "release/$artifact_name"
+              fi
+            done
+          done
+          ls -lh release/
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
-          files: artifacts/**/*
+          files: release/*
           draft: false
           prerelease: false
         env:
