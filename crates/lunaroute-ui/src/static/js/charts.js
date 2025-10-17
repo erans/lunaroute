@@ -3,6 +3,7 @@
 
 let tokenChart = null;
 let toolChart = null;
+let toolChartData = []; // Store current tool data for tooltips
 let hourOfDayChart = null;
 let callsPerModelChart = null;
 let spendingByModelChart = null;
@@ -131,17 +132,17 @@ async function initToolChart() {
     // Sort by call count
     data.sort((a, b) => b.call_count - a.call_count);
 
-    // Take top 10
-    const top10 = data.slice(0, 10);
+    // Take top 10 and store globally
+    toolChartData = data.slice(0, 10);
 
     toolChart = new Chart(ctx, {
         type: 'bar',
         data: {
-            labels: top10.map(t => t.tool_name),
+            labels: toolChartData.map(t => t.tool_name),
             datasets: [{
                 label: 'Call Count',
-                data: top10.map(t => t.call_count),
-                backgroundColor: top10.map(t => {
+                data: toolChartData.map(t => t.call_count),
+                backgroundColor: toolChartData.map(t => {
                     // Color by success rate
                     const rate = t.success_rate || 100;
                     if (rate >= 95) return '#10b981'; // Excellent (≥95%) - green
@@ -161,7 +162,7 @@ async function initToolChart() {
                 tooltip: {
                     callbacks: {
                         label: function(context) {
-                            const tool = top10[context.dataIndex];
+                            const tool = toolChartData[context.dataIndex];
                             const rate = tool.success_rate || 100;
 
                             // Determine status indicator
@@ -207,11 +208,13 @@ async function initToolChart() {
         const response = await fetch('/api/stats/tools');
         const data = await response.json();
         data.sort((a, b) => b.call_count - a.call_count);
-        const top10 = data.slice(0, 10);
 
-        toolChart.data.labels = top10.map(t => t.tool_name);
-        toolChart.data.datasets[0].data = top10.map(t => t.call_count);
-        toolChart.data.datasets[0].backgroundColor = top10.map(t => {
+        // Update global data for tooltips
+        toolChartData = data.slice(0, 10);
+
+        toolChart.data.labels = toolChartData.map(t => t.tool_name);
+        toolChart.data.datasets[0].data = toolChartData.map(t => t.call_count);
+        toolChart.data.datasets[0].backgroundColor = toolChartData.map(t => {
             const rate = t.success_rate || 100;
             if (rate >= 95) return '#10b981';
             if (rate >= 80) return '#f59e0b';

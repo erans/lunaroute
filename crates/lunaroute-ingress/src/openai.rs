@@ -1103,13 +1103,14 @@ async fn responses_passthrough(
         let request_id_clone = request_id.clone();
         let req_size = body.len();
         let req_clone = req.clone();
+        let tool_call_mapper_clone = state.tool_call_mapper.clone();
         tokio::spawn(async move {
             let event = SessionEvent::RequestRecorded {
-                session_id: session_id_clone,
-                request_id: request_id_clone,
+                session_id: session_id_clone.clone(),
+                request_id: request_id_clone.clone(),
                 timestamp: chrono::Utc::now(),
                 request_text,
-                request_json: req_clone,
+                request_json: req_clone.clone(),
                 estimated_tokens: 0,
                 stats: RequestStats {
                     pre_processing_ms: pre_provider_overhead.as_secs_f64() * 1000.0,
@@ -1122,6 +1123,85 @@ async fn responses_passthrough(
             };
             if let Ok(json) = serde_json::to_value(event) {
                 let _ = store_clone.write_event(None, json).await;
+            }
+
+            // Extract and record tool results from request body
+            // Check both "messages" array (chat completions) and "input" array (Responses API)
+            let input_array = req_clone.get("input").or_else(|| req_clone.get("messages"));
+
+            if let Some(messages) = input_array.and_then(|m| m.as_array()) {
+                for message in messages {
+                    // Look for tool result messages in different formats
+                    let mut tool_call_id: Option<&str> = None;
+                    let mut output_content: Option<&str> = None;
+                    let mut exit_code: Option<i64> = None;
+
+                    // Check for Responses API format: type="function_call_output"
+                    if let Some(msg_type) = message.get("type").and_then(|t| t.as_str())
+                        && msg_type == "function_call_output"
+                    {
+                        tool_call_id = message.get("call_id").and_then(|id| id.as_str());
+                        output_content = message.get("output").and_then(|o| o.as_str());
+
+                        // Try to parse exit code from output string
+                        if let Some(output) = output_content
+                            && output.starts_with("Exit code: ")
+                            && let Some(code_str) = output
+                                .lines()
+                                .next()
+                                .and_then(|line| line.strip_prefix("Exit code: "))
+                        {
+                            exit_code = code_str.trim().parse::<i64>().ok();
+                        }
+                    }
+
+                    // Check for Chat Completions format: role="tool"
+                    if tool_call_id.is_none()
+                        && let Some(role) = message.get("role").and_then(|r| r.as_str())
+                        && role == "tool"
+                    {
+                        tool_call_id = message.get("tool_call_id").and_then(|id| id.as_str());
+                        output_content = message.get("content").and_then(|c| c.as_str());
+                        exit_code = message.get("exit_code").and_then(|e| e.as_i64());
+                    }
+
+                    // If we found a tool result, record it
+                    if let Some(call_id) = tool_call_id {
+                        let success = exit_code.map(|code| code == 0);
+
+                        // Get tool name from mapper
+                        let tool_name = tool_call_mapper_clone
+                            .lookup(call_id)
+                            .unwrap_or_else(|| "unknown".to_string());
+
+                        tracing::debug!(
+                            "Found tool result in request: tool_call_id={}, tool_name={}, exit_code={:?}, success={:?}",
+                            call_id,
+                            tool_name,
+                            exit_code,
+                            success
+                        );
+
+                        // Emit ToolCallRecorded event with result info
+                        let output_size = output_content.map(|c| c.len()).unwrap_or(0);
+                        let tool_result_event = SessionEvent::ToolCallRecorded {
+                            session_id: session_id_clone.clone(),
+                            request_id: request_id_clone.clone(),
+                            timestamp: chrono::Utc::now(),
+                            tool_name,
+                            tool_call_id: call_id.to_string(),
+                            execution_time_ms: None,
+                            input_size_bytes: 0,
+                            output_size_bytes: Some(output_size),
+                            success,
+                            tool_arguments: None,
+                        };
+
+                        if let Ok(json) = serde_json::to_value(tool_result_event) {
+                            let _ = store_clone.write_event(None, json).await;
+                        }
+                    }
+                }
             }
         });
     }
@@ -1222,6 +1302,8 @@ async fn responses_passthrough(
             finish_reason: Option<String>,
             response_size_bytes: usize,
             stats_emitted: bool,
+            // Tool call tracking for Responses API
+            tool_calls: std::collections::HashMap<String, (String, String)>, // id -> (name, arguments)
         }
 
         let stats = Arc::new(Mutex::new(StreamingStats {
@@ -1236,6 +1318,7 @@ async fn responses_passthrough(
         let request_id_clone = recording_request_id.clone();
         let start_time_clone = start_time;
         let user_agent_clone = user_agent.clone();
+        let tool_call_mapper_clone = state.tool_call_mapper.clone();
 
         let mapped_stream = sse_stream.filter_map(move |result| {
             // Clone Arc-wrapped values before async move
@@ -1245,6 +1328,7 @@ async fn responses_passthrough(
             let request_id_for_async = request_id_clone.clone();
             let user_agent_for_async = user_agent_clone.clone();
             let start_time_for_async = start_time_clone;
+            let tool_call_mapper_for_async = tool_call_mapper_clone.clone();
 
             async move {
                 match &result {
@@ -1260,6 +1344,41 @@ async fn responses_passthrough(
                             }
 
                             let mut stats_guard = stats_for_async.lock().unwrap();
+
+                            // Extract tool calls from Responses API events
+                            if let Some(response_type) = json.get("type").and_then(|t| t.as_str()) {
+                                match response_type {
+                                    // When a function_call output item is added, extract call_id and name
+                                    "response.output_item.added" => {
+                                        if let Some(item) = json.get("item")
+                                            && let Some("function_call") =
+                                                item.get("type").and_then(|t| t.as_str())
+                                            && let (Some(call_id), Some(name)) = (
+                                                item.get("call_id").and_then(|id| id.as_str()),
+                                                item.get("name").and_then(|n| n.as_str()),
+                                            )
+                                        {
+                                            // Initialize tool call entry with name
+                                            stats_guard.tool_calls.insert(
+                                                call_id.to_string(),
+                                                (name.to_string(), String::new()),
+                                            );
+                                        }
+                                    }
+                                    // Accumulate function call arguments
+                                    "response.function_call_arguments.delta" => {
+                                        if let (Some(call_id), Some(arguments)) = (
+                                            json.get("call_id").and_then(|id| id.as_str()),
+                                            json.get("arguments").and_then(|a| a.as_str()),
+                                        ) && let Some(entry) =
+                                            stats_guard.tool_calls.get_mut(call_id)
+                                        {
+                                            entry.1.push_str(arguments);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
 
                             // Extract usage data if present (check both top-level and nested in response)
                             let usage = json
@@ -1304,6 +1423,8 @@ async fn responses_passthrough(
                                     let model_used = stats_guard.model_used.clone();
                                     let finish_reason = stats_guard.finish_reason.clone();
                                     let response_size = stats_guard.response_size_bytes;
+                                    let tool_calls = stats_guard.tool_calls.clone();
+                                    let tool_call_mapper = tool_call_mapper_for_async.clone();
 
                                     // Emit events asynchronously
                                     if let (Some(store), Some(sid), Some(rid)) =
@@ -1345,6 +1466,39 @@ async fn responses_passthrough(
 
                                             if let Ok(json) = serde_json::to_value(stats_event) {
                                                 let _ = store.write_event(None, json).await;
+                                            }
+
+                                            // Record and emit tool calls
+                                            for (tool_call_id, (tool_name, tool_arguments)) in
+                                                tool_calls
+                                            {
+                                                // Record to mapper for later lookup
+                                                tool_call_mapper.record_call(
+                                                    tool_call_id.clone(),
+                                                    tool_name.clone(),
+                                                );
+
+                                                // Emit ToolCallRecorded event
+                                                let input_size = tool_arguments.len();
+                                                let tool_call_event =
+                                                    SessionEvent::ToolCallRecorded {
+                                                        session_id: sid.clone(),
+                                                        request_id: rid.clone(),
+                                                        timestamp: chrono::Utc::now(),
+                                                        tool_name,
+                                                        tool_call_id,
+                                                        execution_time_ms: None,
+                                                        input_size_bytes: input_size,
+                                                        output_size_bytes: None,
+                                                        success: None,
+                                                        tool_arguments: Some(tool_arguments),
+                                                    };
+
+                                                if let Ok(json) =
+                                                    serde_json::to_value(tool_call_event)
+                                                {
+                                                    let _ = store.write_event(None, json).await;
+                                                }
                                             }
 
                                             // Emit Completed event
@@ -2070,6 +2224,98 @@ pub async fn chat_completions_passthrough(
                 }
             }
         }
+
+        // Detect and record Codex tool calls from input array (OpenAI Responses API format)
+        if let Some(input) = req.get("input").and_then(|i| i.as_array()) {
+            for item in input {
+                // Check for function_call type (tool request from model)
+                if let Some("function_call") = item.get("type").and_then(|t| t.as_str()) {
+                    if let (Some(call_id), Some(name)) = (
+                        item.get("call_id").and_then(|id| id.as_str()),
+                        item.get("name").and_then(|n| n.as_str()),
+                    ) {
+                        let arguments =
+                            item.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
+                        let input_size = arguments.len();
+
+                        // Record mapping of tool_call_id -> tool_name for later lookup
+                        state
+                            .tool_call_mapper
+                            .record_call(call_id.to_string(), name.to_string());
+
+                        // Record ToolCallRecorded event asynchronously
+                        let store_clone = session_store.clone();
+                        let session_id_clone = session_id.clone();
+                        let request_id_clone = request_id.clone();
+                        let tool_name_string = name.to_string();
+                        let tool_id_string = call_id.to_string();
+                        let arguments_string = arguments.to_string();
+                        tokio::spawn(async move {
+                            let event = lunaroute_session::SessionEvent::ToolCallRecorded {
+                                session_id: session_id_clone,
+                                request_id: request_id_clone,
+                                timestamp: chrono::Utc::now(),
+                                tool_name: tool_name_string,
+                                tool_call_id: tool_id_string,
+                                execution_time_ms: None, // Model just requested the call
+                                input_size_bytes: input_size,
+                                output_size_bytes: None, // No result yet
+                                success: None,           // Unknown until client executes
+                                tool_arguments: Some(arguments_string), // Store arguments
+                            };
+                            if let Ok(json) = serde_json::to_value(event) {
+                                let _ = store_clone.write_event(None, json).await;
+                            }
+                        });
+                    }
+                }
+                // Check for function_call_output type (tool result from client)
+                else if let Some("function_call_output") =
+                    item.get("type").and_then(|t| t.as_str())
+                    && let Some(call_id) = item.get("call_id").and_then(|id| id.as_str())
+                {
+                    let output = item.get("output").and_then(|o| o.as_str()).unwrap_or("");
+                    let is_error = detect_tool_error(output);
+
+                    // Look up tool name from mapper (function_call_output doesn't have "name" field)
+                    let tool_name = state.tool_call_mapper.lookup(call_id);
+
+                    // Only record if we can determine the tool name
+                    if let Some(tool_name) = tool_name {
+                        let output_size = output.len();
+
+                        // Record ToolCallRecorded event asynchronously
+                        let store_clone = session_store.clone();
+                        let session_id_clone = session_id.clone();
+                        let request_id_clone = request_id.clone();
+                        let tool_call_id_string = call_id.to_string();
+                        tokio::spawn(async move {
+                            use lunaroute_session::SessionEvent;
+                            let event = SessionEvent::ToolCallRecorded {
+                                session_id: session_id_clone,
+                                request_id: request_id_clone,
+                                timestamp: chrono::Utc::now(),
+                                tool_name,
+                                tool_call_id: tool_call_id_string,
+                                execution_time_ms: None, // Not available in passthrough mode
+                                input_size_bytes: 0,     // Input was in previous request
+                                output_size_bytes: Some(output_size),
+                                success: Some(!is_error), // Inverted: true if no error
+                                tool_arguments: None,     // Not available for tool results
+                            };
+                            if let Ok(json) = serde_json::to_value(event) {
+                                let _ = store_clone.write_event(None, json).await;
+                            }
+                        });
+                    } else {
+                        tracing::warn!(
+                            "Codex function_call_output for unknown call_id: {}",
+                            call_id
+                        );
+                    }
+                }
+            }
+        }
     }
 
     if is_streaming {
@@ -2265,6 +2511,7 @@ pub async fn chat_completions_passthrough(
                             request_id.clone(),
                             session_store.clone(),
                             user_agent.clone(),
+                            Some(state.tool_call_mapper.clone()),
                         );
                     }
                     Ok(_) => {

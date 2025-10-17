@@ -864,6 +864,7 @@ pub struct PassthroughState {
     pub stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
     pub metrics: Option<Arc<lunaroute_observability::Metrics>>,
     pub session_store: Option<Arc<dyn SessionStore>>,
+    pub tool_call_mapper: Arc<lunaroute_session::ToolCallMapper>,
 }
 
 /// Passthrough handler for Anthropic→Anthropic routing (no normalization)
@@ -1068,6 +1069,12 @@ pub async fn messages_passthrough(
         let request_id_clone = request_id.clone();
         let req_size = serde_json::to_string(&req).map(|s| s.len()).unwrap_or(0);
         let req_clone = req.clone();
+
+        // Clone again for the second spawn (tool result extraction)
+        let store_clone_for_tools = store_clone.clone();
+        let session_id_clone_for_tools = session_id_clone.clone();
+        let request_id_clone_for_tools = request_id_clone.clone();
+
         tokio::spawn(async move {
             let event = SessionEvent::RequestRecorded {
                 session_id: session_id_clone,
@@ -1090,10 +1097,61 @@ pub async fn messages_passthrough(
             }
         });
 
-        // Note: Tool results from incoming messages are not recorded in passthrough mode
-        // because the Anthropic API's tool_result block doesn't include the tool name.
-        // Tool calls are recorded from the model's response (which does include the name).
-        // This avoids creating "unknown" entries in the database for tool results.
+        // Extract and record tool results from incoming messages
+        // Use ToolCallMapper to look up tool names from tool_use_id
+        let tool_call_mapper_clone = state.tool_call_mapper.clone();
+        let req_for_tools = req.clone();
+        tokio::spawn(async move {
+            // Check for messages array
+            if let Some(messages) = req_for_tools.get("messages").and_then(|m| m.as_array()) {
+                for message in messages {
+                    // Check for content blocks
+                    if let Some(content_blocks) = message.get("content").and_then(|c| c.as_array())
+                    {
+                        for block in content_blocks {
+                            // Look for ToolResult blocks
+                            if let Some("tool_result") = block.get("type").and_then(|t| t.as_str())
+                            {
+                                let tool_use_id =
+                                    block.get("tool_use_id").and_then(|id| id.as_str());
+                                let content = block.get("content").and_then(|c| c.as_str());
+                                let is_error = block.get("is_error").and_then(|e| e.as_bool());
+
+                                if let Some(tool_use_id) = tool_use_id {
+                                    // Look up tool name from mapper
+                                    let tool_name = tool_call_mapper_clone
+                                        .lookup(tool_use_id)
+                                        .unwrap_or_else(|| "unknown".to_string());
+
+                                    // Calculate output size
+                                    let output_size = content.map(|c| c.len()).unwrap_or(0);
+
+                                    // Map is_error to success (success = !is_error)
+                                    let success = is_error.map(|err| !err);
+
+                                    // Emit ToolCallRecorded event with result info
+                                    let event = lunaroute_session::SessionEvent::ToolCallRecorded {
+                                        session_id: session_id_clone_for_tools.clone(),
+                                        request_id: request_id_clone_for_tools.clone(),
+                                        timestamp: chrono::Utc::now(),
+                                        tool_name,
+                                        tool_call_id: tool_use_id.to_string(),
+                                        execution_time_ms: None,
+                                        input_size_bytes: 0, // We don't have input size here
+                                        output_size_bytes: Some(output_size),
+                                        success,
+                                        tool_arguments: None, // Already recorded when tool was called
+                                    };
+                                    if let Ok(json) = serde_json::to_value(event) {
+                                        let _ = store_clone_for_tools.write_event(None, json).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 
     if is_streaming {
@@ -1214,6 +1272,7 @@ pub async fn messages_passthrough(
         let request_id_clone = recording_request_id.clone();
         let start_clone = start_time;
         let before_provider_clone = before_provider;
+        let tool_call_mapper_for_parser = state.tool_call_mapper.clone();
 
         let completion_stream = tracked_stream.chain(futures::stream::once(async move {
             // Record StreamStarted and Completed events after stream ends
@@ -1291,6 +1350,7 @@ pub async fn messages_passthrough(
                             request_id.clone(),
                             session_store.clone(),
                             user_agent.clone(),
+                            Some(tool_call_mapper_for_parser.clone()), // Pass mapper to record tool calls
                         );
                     }
                     Ok(_) => {
@@ -1675,6 +1735,7 @@ pub fn passthrough_router(
         stats_tracker,
         metrics,
         session_store,
+        tool_call_mapper: Arc::new(lunaroute_session::ToolCallMapper::new()),
     });
 
     Router::new()
