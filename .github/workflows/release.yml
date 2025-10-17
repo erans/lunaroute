@@ -66,10 +66,14 @@ jobs:
       # Build using cross for ARM Linux, regular cargo for others
       - name: Build release binary (cross)
         if: matrix.cross == true
+        env:
+          GIT_SHA: ${{ github.sha }}
         run: cross build --release --target ${{ matrix.target }} --package lunaroute-server
 
       - name: Build release binary (cargo)
         if: matrix.cross != true
+        env:
+          GIT_SHA: ${{ github.sha }}
         run: cargo build --release --target ${{ matrix.target }} --package lunaroute-server
 
       # Strip binaries on Unix systems for smaller size

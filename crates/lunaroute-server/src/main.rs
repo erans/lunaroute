@@ -80,7 +80,15 @@ use tokio::net::TcpListener;
 use tracing::{Level, debug, info, warn};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
-const MOON: &str = r#"
+const VERSION: &str = env!("VERSION");
+const SHA: &str = env!("SHA");
+
+// Create version string at compile time using concat!
+const VERSION_STRING: &str = concat!(env!("VERSION"), " (", env!("SHA"), ")");
+
+fn moon_banner() -> String {
+    format!(
+        r#"
          ___---___
       .--         --.
     ./   ()      .-. \.
@@ -92,17 +100,20 @@ const MOON: &str = r#"
 |       .--.          O   | |_____\__,_|_| |_|\__,_|_| \_\___/ \__,_|\__\___|
  | .   |    |            |
   \    `.__.'    o   .  /   https://lunaroute.org
-   \                   /    version : {VERSION}
-    `\  o    ()      /      commit  : {SHA}
+   \                   /    version : {}
+    `\  o    ()      /      commit  : {}
       `--___   ___--'
             ---
-"#;
+"#,
+        VERSION, SHA
+    )
+}
 
 /// LunaRoute Server - Intelligent LLM API Gateway
 #[derive(Parser)]
 #[command(name = "lunaroute-server")]
 #[command(about = "LunaRoute production server for LLM API routing", long_about = None)]
-#[command(before_help = MOON)]
+#[command(version = VERSION_STRING)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -564,7 +575,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     // Print the moon
-    println!("{}", MOON);
+    println!("{}", moon_banner());
 
     info!("🚀 Initializing LunaRoute Gateway with Intelligent Routing");
 
