@@ -73,6 +73,10 @@ pub struct ProviderSettings {
     /// Response body modifications (metadata injection, extension fields)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_body: Option<ResponseBodyModConfig>,
+
+    /// Codex authentication (read auth tokens from Codex CLI auth.json file)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_auth: Option<CodexAuthConfig>,
 }
 
 /// HTTP client configuration settings
@@ -184,6 +188,29 @@ pub struct ResponseBodyModConfig {
     /// Creates: {"choices": [...], "x-request-id": "...", "x-provider": "..."}
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extension_fields: Option<HashMap<String, String>>,
+}
+
+/// Codex authentication configuration (OpenAI only)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexAuthConfig {
+    /// Enable Codex authentication
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Path to Codex auth file (default: ~/.codex/auth.json)
+    #[serde(default = "default_codex_auth_file")]
+    pub auth_file: PathBuf,
+
+    /// JSON field path for access token (default: "tokens.access_token")
+    /// Supports nested paths using dot notation
+    #[serde(default = "default_codex_token_field")]
+    pub token_field: String,
+
+    /// Optional account ID to send as chatgpt-account-id header
+    /// If set, will override client's chatgpt-account-id header
+    /// If not set, will try to read from auth.json or pass through client header
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
 }
 
 // SessionRecordingConfig is now imported from lunaroute_session crate
@@ -353,6 +380,7 @@ impl ServerConfig {
                 request_headers: None,
                 request_body: None,
                 response_body: None,
+                codex_auth: None,
             });
             provider.api_key = Some(api_key);
         }
@@ -366,6 +394,7 @@ impl ServerConfig {
                 request_headers: None,
                 request_body: None,
                 response_body: None,
+                codex_auth: None,
             });
             provider.api_key = Some(api_key);
         }
@@ -517,6 +546,14 @@ fn default_metadata_namespace() -> String {
     "lunaroute".to_string()
 }
 
+fn default_codex_auth_file() -> PathBuf {
+    PathBuf::from("~/.codex/auth.json")
+}
+
+fn default_codex_token_field() -> String {
+    "tokens.access_token".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,6 +649,7 @@ mod tests {
             request_headers: None,
             request_body: None,
             response_body: None,
+            codex_auth: None,
         };
 
         merge_http_client_env(&mut provider, "OPENAI");
@@ -655,6 +693,7 @@ mod tests {
             request_headers: None,
             request_body: None,
             response_body: None,
+            codex_auth: None,
         };
 
         merge_http_client_env(&mut provider, "ANTHROPIC");
@@ -691,6 +730,7 @@ mod tests {
             request_headers: None,
             request_body: None,
             response_body: None,
+            codex_auth: None,
         };
 
         merge_http_client_env(&mut provider, "OPENAI");
@@ -835,6 +875,7 @@ providers:
             request_headers: None,
             request_body: None,
             response_body: None,
+            codex_auth: None,
         };
 
         unsafe {
@@ -873,6 +914,7 @@ providers:
             request_headers: None,
             request_body: None,
             response_body: None,
+            codex_auth: None,
         };
 
         // Set only one env var

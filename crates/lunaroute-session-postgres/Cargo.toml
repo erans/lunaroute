@@ -1,0 +1,41 @@
+[package]
+name = "lunaroute-session-postgres"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Internal dependencies
+lunaroute-core = { path = "../lunaroute-core" }
+
+# Async
+async-trait = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Utilities
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Metrics
+prometheus = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = "0.4"
+serial_test = { workspace = true }
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }

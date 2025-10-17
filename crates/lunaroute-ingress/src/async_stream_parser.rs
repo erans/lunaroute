@@ -21,6 +21,7 @@
 //! 4. Emit StatsUpdated event to update database records
 
 use futures::StreamExt;
+use lunaroute_core::session_store::SessionStore;
 use lunaroute_session::events::{TokenTotals, ToolStats, ToolUsageSummary};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -339,7 +340,7 @@ pub fn spawn_anthropic_parser<E>(
     + 'static,
     session_id: String,
     request_id: String,
-    recorder: Arc<lunaroute_session::MultiWriterRecorder>,
+    session_store: Arc<dyn SessionStore>,
     user_agent: Option<String>,
 ) {
     tokio::spawn(async move {
@@ -350,17 +351,30 @@ pub fn spawn_anthropic_parser<E>(
 
             // Emit ToolCallRecorded events for each tool call with arguments
             for tool_call in &parsed.tool_calls {
-                recorder.record_event(lunaroute_session::SessionEvent::ToolCallRecorded {
-                    session_id: session_id.clone(),
-                    request_id: request_id.clone(),
-                    timestamp: chrono::Utc::now(),
-                    tool_name: tool_call.tool_name.clone(),
-                    tool_call_id: tool_call.tool_call_id.clone(),
-                    execution_time_ms: None,
-                    input_size_bytes: tool_call.tool_arguments.len(),
-                    output_size_bytes: None,
-                    success: None,
-                    tool_arguments: Some(tool_call.tool_arguments.clone()),
+                let store_clone = session_store.clone();
+                let session_id_clone = session_id.clone();
+                let request_id_clone = request_id.clone();
+                let tool_name = tool_call.tool_name.clone();
+                let tool_call_id = tool_call.tool_call_id.clone();
+                let input_size = tool_call.tool_arguments.len();
+                let tool_arguments = tool_call.tool_arguments.clone();
+
+                tokio::spawn(async move {
+                    let event = lunaroute_session::SessionEvent::ToolCallRecorded {
+                        session_id: session_id_clone,
+                        request_id: request_id_clone,
+                        timestamp: chrono::Utc::now(),
+                        tool_name,
+                        tool_call_id,
+                        execution_time_ms: None,
+                        input_size_bytes: input_size,
+                        output_size_bytes: None,
+                        success: None,
+                        tool_arguments: Some(tool_arguments),
+                    };
+                    if let Ok(json) = serde_json::to_value(event) {
+                        let _ = store_clone.write_event(None, json).await;
+                    }
                 });
             }
 
@@ -373,25 +387,34 @@ pub fn spawn_anthropic_parser<E>(
                     parsed.tool_calls.len()
                 );
 
-                recorder.record_event(lunaroute_session::SessionEvent::StatsUpdated {
-                    session_id,
-                    request_id,
-                    timestamp: chrono::Utc::now(),
-                    token_updates: if parsed.tokens.grand_total > 0 {
-                        Some(parsed.tokens)
-                    } else {
-                        None
-                    },
-                    tool_call_updates: if parsed.tool_summary.total_tool_calls > 0 {
-                        Some(parsed.tool_summary)
-                    } else {
-                        None
-                    },
-                    model_used: parsed.model_used,
-                    response_size_bytes: parsed.response_size_bytes,
-                    content_blocks: parsed.content_blocks,
-                    has_refusal: parsed.has_refusal,
-                    user_agent,
+                let store_clone = session_store.clone();
+                let session_id_clone = session_id.clone();
+                let request_id_clone = request_id.clone();
+
+                tokio::spawn(async move {
+                    let event = lunaroute_session::SessionEvent::StatsUpdated {
+                        session_id: session_id_clone,
+                        request_id: request_id_clone,
+                        timestamp: chrono::Utc::now(),
+                        token_updates: if parsed.tokens.grand_total > 0 {
+                            Some(parsed.tokens)
+                        } else {
+                            None
+                        },
+                        tool_call_updates: if parsed.tool_summary.total_tool_calls > 0 {
+                            Some(parsed.tool_summary)
+                        } else {
+                            None
+                        },
+                        model_used: parsed.model_used,
+                        response_size_bytes: parsed.response_size_bytes,
+                        content_blocks: parsed.content_blocks,
+                        has_refusal: parsed.has_refusal,
+                        user_agent,
+                    };
+                    if let Ok(json) = serde_json::to_value(event) {
+                        let _ = store_clone.write_event(None, json).await;
+                    }
                 });
             }
         });
@@ -420,7 +443,7 @@ pub fn spawn_openai_parser<E>(
     + 'static,
     session_id: String,
     request_id: String,
-    recorder: Arc<lunaroute_session::MultiWriterRecorder>,
+    session_store: Arc<dyn SessionStore>,
     user_agent: Option<String>,
 ) {
     tokio::spawn(async move {
@@ -437,25 +460,34 @@ pub fn spawn_openai_parser<E>(
                     parsed.tool_summary.total_tool_calls
                 );
 
-                recorder.record_event(lunaroute_session::SessionEvent::StatsUpdated {
-                    session_id,
-                    request_id,
-                    timestamp: chrono::Utc::now(),
-                    token_updates: if parsed.tokens.grand_total > 0 {
-                        Some(parsed.tokens)
-                    } else {
-                        None
-                    },
-                    tool_call_updates: if parsed.tool_summary.total_tool_calls > 0 {
-                        Some(parsed.tool_summary)
-                    } else {
-                        None
-                    },
-                    model_used: parsed.model_used,
-                    response_size_bytes: parsed.response_size_bytes,
-                    content_blocks: parsed.content_blocks,
-                    has_refusal: parsed.has_refusal,
-                    user_agent,
+                let store_clone = session_store.clone();
+                let session_id_clone = session_id.clone();
+                let request_id_clone = request_id.clone();
+
+                tokio::spawn(async move {
+                    let event = lunaroute_session::SessionEvent::StatsUpdated {
+                        session_id: session_id_clone,
+                        request_id: request_id_clone,
+                        timestamp: chrono::Utc::now(),
+                        token_updates: if parsed.tokens.grand_total > 0 {
+                            Some(parsed.tokens)
+                        } else {
+                            None
+                        },
+                        tool_call_updates: if parsed.tool_summary.total_tool_calls > 0 {
+                            Some(parsed.tool_summary)
+                        } else {
+                            None
+                        },
+                        model_used: parsed.model_used,
+                        response_size_bytes: parsed.response_size_bytes,
+                        content_blocks: parsed.content_blocks,
+                        has_refusal: parsed.has_refusal,
+                        user_agent,
+                    };
+                    if let Ok(json) = serde_json::to_value(event) {
+                        let _ = store_clone.write_event(None, json).await;
+                    }
                 });
             }
         });

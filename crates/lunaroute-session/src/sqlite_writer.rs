@@ -1767,16 +1767,17 @@ impl SessionWriter for SqliteWriter {
                 SessionEvent::Completed {
                     session_id,
                     request_id,
+                    timestamp,
                     success,
                     error,
                     finish_reason,
                     final_stats,
-                    ..
                 } => {
                     Self::handle_session_completed(
                         &mut tx,
                         session_id,
                         request_id,
+                        timestamp,
                         *success,
                         error,
                         finish_reason,
@@ -1928,10 +1929,12 @@ impl SessionWriter for SqliteWriter {
 #[cfg(feature = "sqlite-writer")]
 impl SqliteWriter {
     /// Process session completion event - updates tokens, tool calls, and streaming stats
+    #[allow(clippy::too_many_arguments)]
     async fn handle_session_completed(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         session_id: &str,
         request_id: &str,
+        timestamp: &chrono::DateTime<chrono::Utc>,
         success: bool,
         error: &Option<String>,
         finish_reason: &Option<String>,
@@ -1970,11 +1973,14 @@ impl SqliteWriter {
         sqlx::query(
             r#"
             UPDATE sessions
-            SET completed_at = CURRENT_TIMESTAMP,
+            SET completed_at = ?,
                 success = ?,
                 error_message = ?,
                 finish_reason = ?,
-                total_duration_ms = ?,
+                total_duration_ms = MAX(
+                    CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER),
+                    ?
+                ),
                 input_tokens = MAX(COALESCE(input_tokens, 0), ?),
                 output_tokens = MAX(COALESCE(output_tokens, 0), ?),
                 thinking_tokens = MAX(COALESCE(thinking_tokens, 0), ?),
@@ -1986,9 +1992,11 @@ impl SqliteWriter {
             WHERE session_id = ?
             "#,
         )
+        .bind(timestamp)
         .bind(success)
         .bind(error)
         .bind(finish_reason)
+        .bind(timestamp)
         .bind(total_duration)
         .bind(input_tokens)
         .bind(output_tokens)
@@ -3565,7 +3573,7 @@ mod tests {
                 SessionEvent::Completed {
                     session_id: format!("sort-session-{}", i),
                     request_id: format!("sort-req-{}", i),
-                    timestamp: Utc::now(),
+                    timestamp: timestamp + chrono::Duration::milliseconds(duration as i64),
                     success: true,
                     error: None,
                     finish_reason: Some("end_turn".to_string()),

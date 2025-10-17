@@ -41,8 +41,8 @@ pub use cleanup::{
     compress_session_file, delete_session_file, execute_cleanup, spawn_cleanup_task,
 };
 pub use config::{
-    CustomPatternConfig, JsonlConfig, PIIConfig, RetentionPolicy, SessionRecordingConfig,
-    SqliteConfig, WorkerConfig,
+    CustomPatternConfig, JsonlConfig, PIIConfig, PostgresConfig, RetentionPolicy,
+    SessionRecordingConfig, SqliteConfig, WorkerConfig,
 };
 pub use events::{FinalSessionStats, SessionEvent, SessionStats};
 pub use jsonl_writer::{JsonlConfig as JsonlWriterConfig, JsonlWriter};

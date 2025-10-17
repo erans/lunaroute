@@ -19,6 +19,7 @@ use lunaroute_core::{
         NormalizedRequest, NormalizedResponse, NormalizedStreamEvent, Role, Tool, ToolCall,
     },
     provider::Provider,
+    session_store::SessionStore,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -857,12 +858,12 @@ pub async fn messages(
     }
 }
 
-/// State for passthrough handler (connector + optional stats tracker + metrics + session recorder)
+/// State for passthrough handler (connector + optional stats tracker + metrics + session store)
 pub struct PassthroughState {
     pub connector: Arc<lunaroute_egress::anthropic::AnthropicConnector>,
     pub stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
     pub metrics: Option<Arc<lunaroute_observability::Metrics>>,
-    pub session_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>>,
+    pub session_store: Option<Arc<dyn SessionStore>>,
 }
 
 /// Passthrough handler for Anthropic→Anthropic routing (no normalization)
@@ -985,7 +986,7 @@ pub async fn messages_passthrough(
         });
 
     // Use extracted session ID from metadata, or generate a new one if not available
-    let recording_session_id = if state.session_recorder.is_some() {
+    let recording_session_id = if state.session_store.is_some() {
         session_id
             .clone()
             .or_else(|| Some(uuid::Uuid::new_v4().to_string()))
@@ -993,35 +994,46 @@ pub async fn messages_passthrough(
         None
     };
 
-    let recording_request_id = if state.session_recorder.is_some() {
+    let recording_request_id = if state.session_store.is_some() {
         Some(uuid::Uuid::new_v4().to_string())
     } else {
         None
     };
 
     // Start session recording if enabled (using async events)
-    if let (Some(recorder), Some(session_id), Some(request_id)) = (
-        &state.session_recorder,
+    if let (Some(session_store), Some(session_id), Some(request_id)) = (
+        &state.session_store,
         &recording_session_id,
         &recording_request_id,
     ) {
         use lunaroute_session::{SessionEvent, events::SessionMetadata as V2Metadata};
 
-        recorder.record_event(SessionEvent::Started {
-            session_id: session_id.clone(),
-            request_id: request_id.clone(),
-            timestamp: chrono::Utc::now(),
-            model_requested: model.clone(),
-            provider: "anthropic".to_string(),
-            listener: "anthropic".to_string(),
-            is_streaming,
-            metadata: V2Metadata {
-                client_ip: None,
-                user_agent: user_agent.clone(),
-                api_version: None,
-                request_headers: Default::default(),
-                session_tags: vec![],
-            },
+        // Record Started event (spawn async to avoid blocking)
+        let store_clone = session_store.clone();
+        let session_id_clone = session_id.clone();
+        let request_id_clone = request_id.clone();
+        let model_clone = model.clone();
+        let user_agent_clone = user_agent.clone();
+        tokio::spawn(async move {
+            let event = SessionEvent::Started {
+                session_id: session_id_clone,
+                request_id: request_id_clone,
+                timestamp: chrono::Utc::now(),
+                model_requested: model_clone,
+                provider: "anthropic".to_string(),
+                listener: "anthropic".to_string(),
+                is_streaming,
+                metadata: V2Metadata {
+                    client_ip: None,
+                    user_agent: user_agent_clone,
+                    api_version: None,
+                    request_headers: Default::default(),
+                    session_tags: vec![],
+                },
+            };
+            if let Ok(json) = serde_json::to_value(event) {
+                let _ = store_clone.write_event(None, json).await;
+            }
         });
 
         // Record the request
@@ -1050,21 +1062,32 @@ pub async fn messages_passthrough(
             .map(|a| a.len())
             .unwrap_or(0);
 
-        recorder.record_event(SessionEvent::RequestRecorded {
-            session_id: session_id.clone(),
-            request_id: request_id.clone(),
-            timestamp: chrono::Utc::now(),
-            request_text,
-            request_json: req.clone(),
-            estimated_tokens: 0, // Not available in passthrough mode
-            stats: RequestStats {
-                pre_processing_ms: pre_provider_overhead.as_secs_f64() * 1000.0,
-                request_size_bytes: serde_json::to_string(&req).map(|s| s.len()).unwrap_or(0),
-                message_count,
-                has_system_prompt,
-                has_tools,
-                tool_count,
-            },
+        // Record RequestRecorded event (spawn async to avoid blocking)
+        let store_clone = session_store.clone();
+        let session_id_clone = session_id.clone();
+        let request_id_clone = request_id.clone();
+        let req_size = serde_json::to_string(&req).map(|s| s.len()).unwrap_or(0);
+        let req_clone = req.clone();
+        tokio::spawn(async move {
+            let event = SessionEvent::RequestRecorded {
+                session_id: session_id_clone,
+                request_id: request_id_clone,
+                timestamp: chrono::Utc::now(),
+                request_text,
+                request_json: req_clone,
+                estimated_tokens: 0, // Not available in passthrough mode
+                stats: RequestStats {
+                    pre_processing_ms: pre_provider_overhead.as_secs_f64() * 1000.0,
+                    request_size_bytes: req_size,
+                    message_count,
+                    has_system_prompt,
+                    has_tools,
+                    tool_count,
+                },
+            };
+            if let Ok(json) = serde_json::to_value(event) {
+                let _ = store_clone.write_event(None, json).await;
+            }
         });
 
         // Note: Tool results from incoming messages are not recorded in passthrough mode
@@ -1186,7 +1209,7 @@ pub async fn messages_passthrough(
         });
 
         // Add completion handler to record session stats when stream ends
-        let recorder_clone = state.session_recorder.clone();
+        let store_clone = state.session_store.clone();
         let session_id_clone = recording_session_id.clone();
         let request_id_clone = recording_request_id.clone();
         let start_clone = start_time;
@@ -1194,8 +1217,8 @@ pub async fn messages_passthrough(
 
         let completion_stream = tracked_stream.chain(futures::stream::once(async move {
             // Record StreamStarted and Completed events after stream ends
-            if let (Some(recorder), Some(session_id), Some(request_id)) =
-                (recorder_clone.as_ref(), session_id_clone.as_ref(), request_id_clone.as_ref())
+            if let (Some(session_store), Some(session_id), Some(request_id)) =
+                (store_clone.as_ref(), session_id_clone.as_ref(), request_id_clone.as_ref())
             {
                 use lunaroute_session::{SessionEvent, events::{FinalSessionStats, TokenTotals, ToolUsageSummary, PerformanceMetrics}};
 
@@ -1205,34 +1228,52 @@ pub async fn messages_passthrough(
                 // Record Prometheus metrics
                 finalized.record_to_prometheus(&state.metrics, "anthropic", &model);
 
-                // Record StreamStarted event
+                // Record StreamStarted event (async)
                 if finalized.ttft_ms > 0 {
-                    recorder.record_event(SessionEvent::StreamStarted {
-                        session_id: session_id.clone(),
-                        request_id: request_id.clone(),
-                        timestamp: chrono::Utc::now(),
-                        time_to_first_token_ms: finalized.ttft_ms,
+                    let store_for_event = session_store.clone();
+                    let sid = session_id.clone();
+                    let rid = request_id.clone();
+                    let ttft = finalized.ttft_ms;
+                    tokio::spawn(async move {
+                        let event = SessionEvent::StreamStarted {
+                            session_id: sid,
+                            request_id: rid,
+                            timestamp: chrono::Utc::now(),
+                            time_to_first_token_ms: ttft,
+                        };
+                        if let Ok(json) = serde_json::to_value(event) {
+                            let _ = store_for_event.write_event(None, json).await;
+                        }
                     });
                 }
 
-                // Record Completed event with streaming_stats
-                recorder.record_event(SessionEvent::Completed {
-                    session_id: session_id.clone(),
-                    request_id: request_id.clone(),
-                    timestamp: chrono::Utc::now(),
-                    success: true,
-                    error: None,
-                    finish_reason: finalized.finish_reason.clone(),
-                    final_stats: Box::new(FinalSessionStats {
-                        total_duration_ms: finalized.total_duration_ms,
-                        provider_time_ms: finalized.total_duration_ms, // Entire duration is provider time in streaming
-                        proxy_overhead_ms: 0.0, // Minimal overhead in passthrough mode
-                        total_tokens: TokenTotals::default(), // Tokens will be updated by async parser
-                        tool_summary: ToolUsageSummary::default(), // Tool calls will be updated by async parser
-                        performance: PerformanceMetrics::default(),
-                        streaming_stats: Some(finalized.to_streaming_stats()),
-                        estimated_cost: None,
-                    }),
+                // Record Completed event with streaming_stats (async)
+                let store_for_completed = session_store.clone();
+                let sid_completed = session_id.clone();
+                let rid_completed = request_id.clone();
+                let fin_clone = finalized.clone();
+                tokio::spawn(async move {
+                    let event = SessionEvent::Completed {
+                        session_id: sid_completed,
+                        request_id: rid_completed,
+                        timestamp: chrono::Utc::now(),
+                        success: true,
+                        error: None,
+                        finish_reason: fin_clone.finish_reason.clone(),
+                        final_stats: Box::new(FinalSessionStats {
+                            total_duration_ms: fin_clone.total_duration_ms,
+                            provider_time_ms: fin_clone.total_duration_ms, // Entire duration is provider time in streaming
+                            proxy_overhead_ms: 0.0, // Minimal overhead in passthrough mode
+                            total_tokens: TokenTotals::default(), // Tokens will be updated by async parser
+                            tool_summary: ToolUsageSummary::default(), // Tool calls will be updated by async parser
+                            performance: PerformanceMetrics::default(),
+                            streaming_stats: Some(fin_clone.to_streaming_stats()),
+                            estimated_cost: None,
+                        }),
+                    };
+                    if let Ok(json) = serde_json::to_value(event) {
+                        let _ = store_for_completed.write_event(None, json).await;
+                    }
                 });
 
                 // Spawn async parser to extract tokens and tool calls (zero latency for client)
@@ -1248,7 +1289,7 @@ pub async fn messages_passthrough(
                             event_stream,
                             session_id.clone(),
                             request_id.clone(),
-                            recorder.clone(),
+                            session_store.clone(),
                             user_agent.clone(),
                         );
                     }
@@ -1294,30 +1335,41 @@ pub async fn messages_passthrough(
         Ok((bytes, headers)) => (bytes, headers),
         Err(e) => {
             // Record error in session if recording is enabled
-            if let (Some(recorder), Some(session_id), Some(request_id)) = (
-                &state.session_recorder,
+            if let (Some(session_store), Some(session_id), Some(request_id)) = (
+                &state.session_store,
                 &recording_session_id,
                 &recording_request_id,
             ) {
                 use lunaroute_session::{SessionEvent, events::FinalSessionStats};
 
-                recorder.record_event(SessionEvent::Completed {
-                    session_id: session_id.clone(),
-                    request_id: request_id.clone(),
-                    timestamp: chrono::Utc::now(),
-                    success: false,
-                    error: Some(e.to_string()),
-                    finish_reason: None,
-                    final_stats: Box::new(FinalSessionStats {
-                        total_duration_ms: start_time.elapsed().as_millis() as u64,
-                        provider_time_ms: 0,
-                        proxy_overhead_ms: 0.0,
-                        total_tokens: Default::default(),
-                        tool_summary: Default::default(),
-                        performance: Default::default(),
-                        streaming_stats: None,
-                        estimated_cost: None,
-                    }),
+                // Record error async (spawn to avoid blocking)
+                let store_clone = session_store.clone();
+                let sid = session_id.clone();
+                let rid = request_id.clone();
+                let error_msg = e.to_string();
+                let elapsed = start_time.elapsed().as_millis() as u64;
+                tokio::spawn(async move {
+                    let event = SessionEvent::Completed {
+                        session_id: sid,
+                        request_id: rid,
+                        timestamp: chrono::Utc::now(),
+                        success: false,
+                        error: Some(error_msg),
+                        finish_reason: None,
+                        final_stats: Box::new(FinalSessionStats {
+                            total_duration_ms: elapsed,
+                            provider_time_ms: 0,
+                            proxy_overhead_ms: 0.0,
+                            total_tokens: Default::default(),
+                            tool_summary: Default::default(),
+                            performance: Default::default(),
+                            streaming_stats: None,
+                            estimated_cost: None,
+                        }),
+                    };
+                    if let Ok(json) = serde_json::to_value(event) {
+                        let _ = store_clone.write_event(None, json).await;
+                    }
                 });
             }
             return Err(IngressError::ProviderError(e.to_string()));
@@ -1350,8 +1402,8 @@ pub async fn messages_passthrough(
     }
 
     // Spawn async parsing task (zero latency for client)
-    if let (Some(recorder), Some(session_id), Some(request_id)) = (
-        state.session_recorder.clone(),
+    if let (Some(session_store), Some(session_id), Some(request_id)) = (
+        state.session_store.clone(),
         recording_session_id.clone(),
         recording_request_id.clone(),
     ) {
@@ -1464,20 +1516,30 @@ pub async fn messages_passthrough(
                                     serde_json::to_string(input_value).unwrap_or_default();
                                 let input_size = input_str.len();
 
-                                recorder.record_event(
-                                    lunaroute_session::SessionEvent::ToolCallRecorded {
-                                        session_id: session_id.clone(),
-                                        request_id: request_id.clone(),
+                                // Record tool call async (spawn to avoid blocking)
+                                let store_for_tool = session_store.clone();
+                                let sid = session_id.clone();
+                                let rid = request_id.clone();
+                                let tool_name_str = tool_name.to_string();
+                                let tool_id_str = tool_id.to_string();
+                                let input_str_clone = input_str.clone();
+                                tokio::spawn(async move {
+                                    let event = lunaroute_session::SessionEvent::ToolCallRecorded {
+                                        session_id: sid,
+                                        request_id: rid,
                                         timestamp: chrono::Utc::now(),
-                                        tool_name: tool_name.to_string(),
-                                        tool_call_id: tool_id.to_string(),
+                                        tool_name: tool_name_str,
+                                        tool_call_id: tool_id_str,
                                         execution_time_ms: None, // Model just requested the call
                                         input_size_bytes: input_size,
                                         output_size_bytes: None, // No result yet
                                         success: None,           // Unknown until client executes
-                                        tool_arguments: Some(input_str.clone()), // Store arguments
-                                    },
-                                );
+                                        tool_arguments: Some(input_str_clone), // Store arguments
+                                    };
+                                    if let Ok(json) = serde_json::to_value(event) {
+                                        let _ = store_for_tool.write_event(None, json).await;
+                                    }
+                                });
                             }
                         }
                     }
@@ -1550,17 +1612,27 @@ pub async fn messages_passthrough(
                         None
                     };
 
-                    recorder.record_event(lunaroute_session::SessionEvent::StatsUpdated {
-                        session_id,
-                        request_id,
-                        timestamp: chrono::Utc::now(),
-                        token_updates,
-                        tool_call_updates: tool_summary,
-                        model_used,
-                        response_size_bytes,
-                        content_blocks,
-                        has_refusal,
-                        user_agent: user_agent_clone,
+                    // Record StatsUpdated event async (spawn to avoid blocking)
+                    let store_for_stats = session_store.clone();
+                    let sid = session_id.clone();
+                    let rid = request_id.clone();
+                    let user_agent_for_stats = user_agent_clone.clone();
+                    tokio::spawn(async move {
+                        let event = lunaroute_session::SessionEvent::StatsUpdated {
+                            session_id: sid,
+                            request_id: rid,
+                            timestamp: chrono::Utc::now(),
+                            token_updates,
+                            tool_call_updates: tool_summary,
+                            model_used,
+                            response_size_bytes,
+                            content_blocks,
+                            has_refusal,
+                            user_agent: user_agent_for_stats,
+                        };
+                        if let Ok(json) = serde_json::to_value(event) {
+                            let _ = store_for_stats.write_event(None, json).await;
+                        }
                     });
 
                     tracing::debug!(
@@ -1596,13 +1668,13 @@ pub fn passthrough_router(
     connector: Arc<lunaroute_egress::anthropic::AnthropicConnector>,
     stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
     metrics: Option<Arc<lunaroute_observability::Metrics>>,
-    session_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>>,
+    session_store: Option<Arc<dyn SessionStore>>,
 ) -> Router {
     let state = Arc::new(PassthroughState {
         connector,
         stats_tracker,
         metrics,
-        session_recorder,
+        session_store,
     });
 
     Router::new()

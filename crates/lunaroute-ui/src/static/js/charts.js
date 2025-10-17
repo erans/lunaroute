@@ -4,6 +4,7 @@
 let tokenChart = null;
 let toolChart = null;
 let hourOfDayChart = null;
+let callsPerModelChart = null;
 let spendingByModelChart = null;
 
 /**
@@ -326,6 +327,148 @@ async function updateHourOfDayChart() {
     hourOfDayChart.data.datasets[0].data = hourData;
     hourOfDayChart.update();
 }
+
+/**
+ * Initialize calls per model chart (pie chart showing distribution)
+ */
+async function initCallsPerModelChart() {
+    const ctx = document.getElementById('callsPerModelChart');
+    if (!ctx) return;
+
+    // Get hours from current time range
+    const hours = typeof currentTimeRangeHours !== 'undefined' ? currentTimeRangeHours : 24;
+
+    // Fetch initial data with time range
+    const response = await fetch(`/api/stats/spending?hours=${hours}`);
+    const data = await response.json();
+
+    // Take top 10 models by call count (request count)
+    const sorted = [...data.by_model].sort((a, b) => b.request_count - a.request_count);
+    const top10 = sorted.slice(0, 10);
+
+    // Generate distinct colors for each model
+    const colors = [
+        '#3b82f6', // blue
+        '#10b981', // green
+        '#f59e0b', // amber
+        '#ef4444', // red
+        '#8b5cf6', // purple
+        '#ec4899', // pink
+        '#06b6d4', // cyan
+        '#f97316', // orange
+        '#84cc16', // lime
+        '#6366f1', // indigo
+    ];
+
+    callsPerModelChart = new Chart(ctx, {
+        type: 'pie',
+        data: {
+            labels: top10.map(m => m.model_name),
+            datasets: [{
+                label: 'API Calls',
+                data: top10.map(m => m.request_count),
+                backgroundColor: colors.slice(0, top10.length),
+                borderColor: '#1e293b',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'right',
+                    labels: {
+                        color: '#f1f5f9',
+                        padding: 15,
+                        font: {
+                            size: 12
+                        },
+                        generateLabels: function(chart) {
+                            const data = chart.data;
+                            if (data.labels.length && data.datasets.length) {
+                                const dataset = data.datasets[0];
+                                const total = dataset.data.reduce((a, b) => a + b, 0);
+
+                                return data.labels.map((label, i) => {
+                                    const value = dataset.data[i];
+                                    const percentage = ((value / total) * 100).toFixed(1);
+                                    return {
+                                        text: `${label}: ${value} (${percentage}%)`,
+                                        fillStyle: dataset.backgroundColor[i],
+                                        hidden: false,
+                                        index: i
+                                    };
+                                });
+                            }
+                            return [];
+                        }
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const model = top10[context.dataIndex];
+                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                            const percentage = ((model.request_count / total) * 100).toFixed(1);
+
+                            return [
+                                `Model: ${model.model_name}`,
+                                `API Calls: ${model.request_count} (${percentage}%)`,
+                                `Sessions: ${model.session_count}`,
+                                `Total Cost: $${model.total_cost.toFixed(4)}`,
+                                `Avg Cost/Session: $${model.avg_cost_per_session.toFixed(4)}`
+                            ];
+                        }
+                    }
+                },
+                title: {
+                    display: false
+                }
+            }
+        }
+    });
+
+    // Auto-update chart with current time range
+    setInterval(async () => {
+        const hours = typeof currentTimeRangeHours !== 'undefined' ? currentTimeRangeHours : 24;
+        const response = await fetch(`/api/stats/spending?hours=${hours}`);
+        const data = await response.json();
+        const sorted = [...data.by_model].sort((a, b) => b.request_count - a.request_count);
+        const top10 = sorted.slice(0, 10);
+
+        callsPerModelChart.data.labels = top10.map(m => m.model_name);
+        callsPerModelChart.data.datasets[0].data = top10.map(m => m.request_count);
+        callsPerModelChart.data.datasets[0].backgroundColor = colors.slice(0, top10.length);
+        callsPerModelChart.update('none');
+    }, 5000);
+}
+
+/**
+ * Update calls per model chart with new time range
+ */
+async function updateCallsPerModelChart() {
+    if (!callsPerModelChart) return;
+
+    // Color palette (same as initialization)
+    const colors = [
+        '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+        '#ec4899', '#06b6d4', '#f97316', '#84cc16', '#6366f1',
+    ];
+
+    // Fetch data with current time range
+    const hours = typeof currentTimeRangeHours !== 'undefined' ? currentTimeRangeHours : 24;
+    const response = await fetch(`/api/stats/spending?hours=${hours}`);
+    const data = await response.json();
+    const sorted = [...data.by_model].sort((a, b) => b.request_count - a.request_count);
+    const top10 = sorted.slice(0, 10);
+
+    callsPerModelChart.data.labels = top10.map(m => m.model_name);
+    callsPerModelChart.data.datasets[0].data = top10.map(m => m.request_count);
+    callsPerModelChart.data.datasets[0].backgroundColor = colors.slice(0, top10.length);
+    callsPerModelChart.update();
+}
+
 
 /**
  * Initialize spending by model chart

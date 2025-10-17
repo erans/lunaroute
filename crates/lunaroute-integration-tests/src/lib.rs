@@ -59,8 +59,9 @@ mod e2e_tests {
             custom_headers: None,
             request_body_config: None,
             response_body_config: None,
+            codex_auth: None,
         };
-        let connector = Arc::new(OpenAIConnector::new(config).unwrap());
+        let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
 
         // Create ingress router with the connector
         let app = openai::router(connector);
@@ -145,8 +146,9 @@ mod e2e_tests {
             custom_headers: None,
             request_body_config: None,
             response_body_config: None,
+            codex_auth: None,
         };
-        let connector = Arc::new(OpenAIConnector::new(config).unwrap());
+        let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
         let app = openai::router(connector);
 
         let request = Request::builder()
@@ -203,8 +205,9 @@ mod e2e_tests {
             custom_headers: None,
             request_body_config: None,
             response_body_config: None,
+            codex_auth: None,
         };
-        let connector = Arc::new(OpenAIConnector::new(config).unwrap());
+        let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
         let app = openai::router(connector);
 
         let request = Request::builder()
@@ -253,8 +256,9 @@ mod e2e_tests {
             custom_headers: None,
             request_body_config: None,
             response_body_config: None,
+            codex_auth: None,
         };
-        let connector = Arc::new(OpenAIConnector::new(config).unwrap());
+        let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
         let app = openai::router(connector);
 
         // Invalid request (temperature out of range)
@@ -336,8 +340,9 @@ mod e2e_tests {
             custom_headers: None,
             request_body_config: None,
             response_body_config: None,
+            codex_auth: None,
         };
-        let connector = Arc::new(OpenAIConnector::new(config).unwrap());
+        let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
         let app = openai::router(connector);
 
         let request = Request::builder()

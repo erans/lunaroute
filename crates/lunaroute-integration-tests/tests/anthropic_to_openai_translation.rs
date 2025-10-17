@@ -65,8 +65,9 @@ async fn test_anthropic_request_translates_to_openai_api() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let openai_connector = OpenAIConnector::new(config).unwrap();
+    let openai_connector = OpenAIConnector::new(config).await.unwrap();
 
     // Create Anthropic ingress router with OpenAI as the egress provider
     let app = anthropic::router(Arc::new(openai_connector));
@@ -146,8 +147,9 @@ async fn test_anthropic_request_with_temperature() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let openai_connector = OpenAIConnector::new(config).unwrap();
+    let openai_connector = OpenAIConnector::new(config).await.unwrap();
     let app = anthropic::router(Arc::new(openai_connector));
 
     let anthropic_request = json!({
@@ -223,8 +225,9 @@ async fn test_anthropic_assistant_message_in_conversation() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let openai_connector = OpenAIConnector::new(config).unwrap();
+    let openai_connector = OpenAIConnector::new(config).await.unwrap();
     let app = anthropic::router(Arc::new(openai_connector));
 
     let anthropic_request = json!({
@@ -289,8 +292,9 @@ data: [DONE]
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let openai_connector = OpenAIConnector::new(config).unwrap();
+    let openai_connector = OpenAIConnector::new(config).await.unwrap();
     let app = anthropic::router(Arc::new(openai_connector));
 
     // Send Anthropic streaming request (should be translated to OpenAI format)

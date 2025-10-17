@@ -62,8 +62,9 @@ async fn test_custom_headers_with_template_substitution() {
         custom_headers: Some(custom_headers),
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = OpenAIConnector::new(config).unwrap();
+    let connector = OpenAIConnector::new(config).await.unwrap();
 
     // Create normalized request
     let request = NormalizedRequest {
@@ -143,8 +144,9 @@ async fn test_request_body_defaults() {
             prepend_messages: None,
         }),
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = OpenAIConnector::new(config).unwrap();
+    let connector = OpenAIConnector::new(config).await.unwrap();
 
     // Create request WITHOUT temperature or max_tokens
     let request = NormalizedRequest {
@@ -217,8 +219,9 @@ async fn test_request_body_overrides() {
             prepend_messages: None,
         }),
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = OpenAIConnector::new(config).unwrap();
+    let connector = OpenAIConnector::new(config).await.unwrap();
 
     // Send request WITH temperature and max_tokens (should be overridden)
     let request = NormalizedRequest {
@@ -290,8 +293,9 @@ async fn test_prepend_messages() {
             prepend_messages: Some(prepend_messages),
         }),
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = OpenAIConnector::new(config).unwrap();
+    let connector = OpenAIConnector::new(config).await.unwrap();
 
     // Send request with only user message
     let request = NormalizedRequest {

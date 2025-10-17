@@ -8,6 +8,7 @@ use thiserror::Error;
 
 pub mod anthropic;
 pub mod client;
+pub mod codex_auth;
 pub mod openai;
 
 // Re-export commonly used types

@@ -12,12 +12,8 @@ use serde::Deserialize;
 /// Query parameters for stats
 #[derive(Debug, Deserialize)]
 pub struct StatsQuery {
-    #[serde(default = "default_hours")]
-    hours: i64,
-}
-
-fn default_hours() -> i64 {
-    24
+    /// Time range in hours. If None, returns all-time stats
+    hours: Option<i64>,
 }
 
 /// Query parameters for time series
@@ -72,7 +68,7 @@ pub async fn overview_stats(
     State(state): State<AppState>,
     Query(params): Query<StatsQuery>,
 ) -> Json<OverviewStats> {
-    let stats = queries::get_overview_stats(&state.db, params.hours)
+    let stats = queries::get_overview_stats(&state.db, params.hours.unwrap_or(24))
         .await
         .unwrap_or(OverviewStats {
             total_sessions: 0,
@@ -121,8 +117,7 @@ pub async fn cost_stats(State(state): State<AppState>) -> Json<CostStats> {
 /// Query parameters for model stats
 #[derive(Debug, Deserialize)]
 pub struct ModelStatsQuery {
-    #[serde(default = "default_hours")]
-    hours: i64,
+    hours: Option<i64>,
     user_agent: Option<String>,
 }
 
@@ -131,9 +126,13 @@ pub async fn model_stats(
     State(state): State<AppState>,
     Query(params): Query<ModelStatsQuery>,
 ) -> Json<Vec<ModelUsage>> {
-    let stats = queries::get_model_usage(&state.db, params.hours, params.user_agent.as_deref())
-        .await
-        .unwrap_or_default();
+    let stats = queries::get_model_usage(
+        &state.db,
+        params.hours.unwrap_or(24),
+        params.user_agent.as_deref(),
+    )
+    .await
+    .unwrap_or_default();
     Json(stats)
 }
 
@@ -240,7 +239,7 @@ pub async fn hour_of_day_stats(
     State(state): State<AppState>,
     Query(params): Query<StatsQuery>,
 ) -> Json<Vec<HourOfDayStats>> {
-    let stats = queries::get_sessions_by_hour(&state.db, params.hours)
+    let stats = queries::get_sessions_by_hour(&state.db, params.hours.unwrap_or(24))
         .await
         .unwrap_or_default();
     Json(stats)

@@ -15,6 +15,40 @@ pub enum Error {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    // Multi-tenancy errors
+    #[error("Invalid tenant: {0}")]
+    InvalidTenant(String),
+
+    #[error("Tenant required: {0}")]
+    TenantRequired(String),
+
+    #[error("Tenant not found: {0}")]
+    TenantNotFound(String),
+
+    // Configuration errors
+    #[error("Configuration error: {0}")]
+    Config(String),
+
+    #[error("Configuration not found")]
+    ConfigNotFound,
+
+    #[error("Configuration validation failed: {0}")]
+    ConfigValidation(String),
+
+    // Session store errors
+    #[error("Session not found: {0}")]
+    SessionNotFound(String),
+
+    #[error("Session store error: {0}")]
+    SessionStore(String),
+
+    // Database errors
+    #[error("Database error: {0}")]
+    Database(String),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

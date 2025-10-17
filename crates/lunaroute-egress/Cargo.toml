@@ -24,6 +24,7 @@ eventsource-stream = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_urlencoded = "0.7"
 
 # Observability
 tracing = { workspace = true }
@@ -34,6 +35,8 @@ thiserror = { workspace = true }
 async-trait = "0.1"
 flate2 = { workspace = true }
 uuid = { workspace = true }
+dirs = "5.0"
+base64 = "0.22"
 
 [dev-dependencies]
 mockall = { workspace = true }
@@ -42,3 +45,4 @@ wiremock = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 axum = { workspace = true }
+tempfile = { workspace = true }

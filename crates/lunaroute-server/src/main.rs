@@ -48,16 +48,22 @@
 //!   }'
 //! ```
 
+mod app;
+mod bootstrap;
 mod config;
+mod session_factory;
 mod session_stats;
 
 use clap::{Parser, Subcommand};
 use config::{ApiDialect, ServerConfig};
 use futures::StreamExt;
+use lunaroute_config_file::FileConfigStore;
 use lunaroute_core::provider::Provider;
 use lunaroute_core::{
+    config_store::ConfigStore,
     error::Error as CoreError,
     normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
+    session_store::SessionStore,
 };
 use lunaroute_egress::{
     anthropic::{AnthropicConfig, AnthropicConnector},
@@ -101,7 +107,19 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
+    /// Path to bootstrap configuration file (YAML or TOML)
+    /// Determines whether to use file-based or database-backed configuration
+    #[arg(
+        short = 'b',
+        long,
+        value_name = "FILE",
+        env = "LUNAROUTE_BOOTSTRAP",
+        global = true
+    )]
+    bootstrap: Option<String>,
+
     /// Path to configuration file (YAML or TOML)
+    /// Only used in file-based mode (ignored if bootstrap specifies database mode)
     #[arg(
         short,
         long,
@@ -323,17 +341,187 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Load configuration
-    let mut config = if let Some(config_path) = cli.config {
-        info!("📁 Loading configuration from: {}", config_path);
-        ServerConfig::from_file(&config_path)?
-    } else {
-        info!("📁 Using default configuration");
-        ServerConfig::default()
+    // ============================================================================
+    // PHASE 6: Bootstrap configuration - determines config source
+    // ============================================================================
+
+    // Load bootstrap configuration
+    let bootstrap_path = cli
+        .bootstrap
+        .as_deref()
+        .unwrap_or("~/.lunaroute/bootstrap.yaml");
+
+    let bootstrap = match bootstrap::BootstrapConfig::from_file(bootstrap_path) {
+        Ok(config) => {
+            info!("📋 Loaded bootstrap config from: {}", bootstrap_path);
+            config
+        }
+        Err(e) => {
+            // If bootstrap config doesn't exist, use default (file-based mode)
+            info!(
+                "📋 No bootstrap config found ({}), using default file-based mode",
+                e
+            );
+            bootstrap::BootstrapConfig::default()
+        }
     };
 
-    // Merge environment variables (they override config file)
+    // Load configuration based on bootstrap source
+    let mut config: ServerConfig;
+    let config_store: Option<Arc<dyn ConfigStore>>;
+    let tenant_id: Option<lunaroute_core::tenant::TenantId>;
+
+    match bootstrap.source {
+        bootstrap::ConfigSource::File => {
+            info!("📁 Config source: File-based (single-tenant)");
+
+            // Determine config file path (CLI > bootstrap > default)
+            let file_path = cli
+                .config
+                .clone()
+                .or_else(|| {
+                    bootstrap
+                        .file_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                })
+                .unwrap_or_else(|| "~/.lunaroute/config.yaml".to_string());
+
+            // Load config from file
+            config = match ServerConfig::from_file(&file_path) {
+                Ok(c) => {
+                    info!("✓ Loaded configuration from: {}", file_path);
+                    c
+                }
+                Err(e) => {
+                    warn!("Failed to load config from {}: {}", file_path, e);
+                    info!("Using default configuration");
+                    ServerConfig::default()
+                }
+            };
+
+            // Create FileConfigStore
+            config_store = match FileConfigStore::new(&file_path).await {
+                Ok(store) => {
+                    info!("✓ Initialized FileConfigStore");
+                    Some(Arc::new(store))
+                }
+                Err(e) => {
+                    warn!("Failed to create FileConfigStore: {}", e);
+                    warn!("Config hot-reloading will not be available");
+                    None
+                }
+            };
+
+            tenant_id = None;
+        }
+
+        bootstrap::ConfigSource::Database => {
+            #[cfg(feature = "postgres")]
+            {
+                info!("📁 Config source: PostgreSQL database");
+
+                let database_url = bootstrap
+                    .database_url
+                    .as_ref()
+                    .ok_or_else(|| "database_url is required for database mode".to_string())?;
+
+                // Create PostgresConfigStore
+                let pg_store = lunaroute_config_postgres::PostgresConfigStore::new(database_url)
+                    .await
+                    .map_err(|e| format!("Failed to create PostgresConfigStore: {}", e))?;
+
+                info!("✓ Connected to PostgreSQL config store");
+
+                // Convert bootstrap tenant_id to TenantId
+                tenant_id = bootstrap
+                    .tenant_id
+                    .map(lunaroute_core::tenant::TenantId::from_uuid);
+
+                if let Some(ref tid) = tenant_id {
+                    info!("✓ Single-tenant database mode: {}", tid);
+                } else {
+                    info!("✓ Multi-tenant database mode (tenant from request)");
+                }
+
+                // Load config from database
+                let config_json = pg_store
+                    .get_config(tenant_id)
+                    .await
+                    .map_err(|e| format!("Failed to load config from database: {}", e))?;
+
+                // Parse config JSON into ServerConfig
+                config = serde_json::from_value(config_json)
+                    .map_err(|e| format!("Failed to parse config: {}", e))?;
+
+                info!("✓ Loaded configuration from database");
+
+                config_store = Some(Arc::new(pg_store));
+            }
+
+            #[cfg(not(feature = "postgres"))]
+            {
+                return Err(
+                    "Database-backed configuration requires the 'postgres' feature. \
+                     Build with: cargo build --features postgres"
+                        .into(),
+                );
+            }
+        }
+    }
+
+    // Merge environment variables (they override config file/database)
     config.merge_env();
+
+    // ============================================================================
+    // PHASE 7: Initialize session store
+    // ============================================================================
+    let session_store: Option<Arc<dyn SessionStore>> = if config.session_recording.enabled
+        && config.session_recording.has_writers()
+    {
+        match session_factory::create_session_store(&config.session_recording).await {
+            Ok(store) => {
+                info!("✓ Initialized session store");
+                Some(store)
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to create session store: {}. Session recording will not be available.",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Create AppState if both stores are available
+    // Clone session_store for passthrough routers before creating AppState
+    let session_store_for_passthrough = session_store.clone();
+    let _app_state: Option<app::AppState> = if let (Some(config_st), Some(session_st)) =
+        (config_store, session_store)
+    {
+        let state = app::AppState::new(
+            config_st, session_st, tenant_id, // Use tenant_id from bootstrap config
+        );
+        if tenant_id.is_some() {
+            info!("✓ Initialized AppState with trait-based stores (single-tenant database mode)");
+        } else {
+            info!("✓ Initialized AppState with trait-based stores");
+        }
+        Some(state)
+    } else {
+        info!(
+            "ℹ️  AppState not initialized (stores unavailable). Using legacy configuration and session recording."
+        );
+        None
+    };
+
+    // Note: AppState is currently unused but provides infrastructure for future integration.
+    // Routes will be updated in a future phase to use trait-based stores via AppState.
+    // For now, the existing direct config and session recording logic remains active.
+    // ============================================================================
 
     // Apply CLI dialect override (highest precedence)
     if let Some(ref dialect_str) = cli.dialect {
@@ -380,39 +568,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🚀 Initializing LunaRoute Gateway with Intelligent Routing");
 
-    // Setup async multi-writer session recording if enabled
-    let async_recorder: Option<Arc<lunaroute_session::MultiWriterRecorder>> =
-        if config.session_recording.enabled {
-            match lunaroute_session::build_from_config(&config.session_recording).await? {
-                Some(multi_recorder) => {
-                    if config.session_recording.is_jsonl_enabled() {
-                        info!(
-                            "📝 JSONL session recording enabled: {:?}",
-                            config
-                                .session_recording
-                                .jsonl
-                                .as_ref()
-                                .map(|c| &c.directory)
-                        );
-                    }
-                    if config.session_recording.is_sqlite_enabled() {
-                        info!(
-                            "📝 SQLite session recording enabled: {:?}",
-                            config.session_recording.sqlite.as_ref().map(|c| &c.path)
-                        );
-                    }
-                    Some(Arc::new(multi_recorder))
-                }
-                None => {
-                    info!("📝 Session recording enabled but no writers configured");
-                    None
-                }
-            }
-        } else {
-            info!("📝 Session recording disabled");
-            None
-        };
-
     if config.logging.log_requests {
         info!("📋 Request/response logging enabled (stdout)");
     }
@@ -457,6 +612,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             custom_headers: None,
             request_body_config: None,
             response_body_config: None,
+            codex_auth: openai_config.codex_auth.as_ref().map(|c| {
+                lunaroute_egress::openai::CodexAuthConfig {
+                    enabled: c.enabled,
+                    auth_file: c.auth_file.clone(),
+                    token_field: c.token_field.clone(),
+                    account_id: c.account_id.clone(),
+                }
+            }),
         };
 
         // Wire custom headers and body modifications
@@ -479,7 +642,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
 
-        let conn = OpenAIConnector::new(provider_config)?;
+        let conn = OpenAIConnector::new(provider_config).await?;
 
         // Build the provider stack (order matters!)
         // 1. Start with connector
@@ -667,7 +830,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     openai_connector.unwrap(),
                     Some(stats_tracker_clone),
                     Some(metrics.clone()),
-                    async_recorder.clone(),
+                    session_store_for_passthrough.clone(),
                 )
             } else {
                 openai::router(router)
@@ -682,7 +845,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         connector,
                         Some(stats_tracker_clone),
                         Some(metrics.clone()),
-                        async_recorder.clone(),
+                        session_store_for_passthrough.clone(),
                     )
                 } else {
                     anthropic_ingress::router(router)

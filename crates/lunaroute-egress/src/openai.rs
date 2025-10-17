@@ -16,8 +16,40 @@ use lunaroute_core::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::{Arc, RwLock};
 use tracing::{debug, instrument, warn};
+
+/// Codex authentication configuration
+#[derive(Debug, Clone)]
+pub struct CodexAuthConfig {
+    /// Enable Codex authentication
+    pub enabled: bool,
+
+    /// Path to Codex auth file (default: ~/.codex/auth.json)
+    pub auth_file: PathBuf,
+
+    /// JSON field path for access token (default: "tokens.access_token")
+    /// Supports nested paths using dot notation (e.g., "tokens.access_token")
+    pub token_field: String,
+
+    /// Optional account ID to send as chatgpt-account-id header
+    /// If set, will override client's chatgpt-account-id header
+    /// If not set, client's header will pass through unchanged
+    pub account_id: Option<String>,
+}
+
+impl Default for CodexAuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auth_file: PathBuf::from("~/.codex/auth.json"),
+            token_field: "tokens.access_token".to_string(),
+            account_id: None,
+        }
+    }
+}
 
 /// OpenAI connector configuration
 #[derive(Debug, Clone)]
@@ -42,6 +74,9 @@ pub struct OpenAIConfig {
 
     /// Response body modifications
     pub response_body_config: Option<ResponseBodyModConfig>,
+
+    /// Codex authentication configuration
+    pub codex_auth: Option<CodexAuthConfig>,
 }
 
 /// Request body modification configuration
@@ -79,6 +114,7 @@ impl OpenAIConfig {
             custom_headers: None,
             request_body_config: None,
             response_body_config: None,
+            codex_auth: None,
         }
     }
 
@@ -99,13 +135,188 @@ impl OpenAIConfig {
 pub struct OpenAIConnector {
     config: OpenAIConfig,
     client: Client,
+    codex_token_cache: Option<Arc<RwLock<Option<String>>>>,
 }
 
 impl OpenAIConnector {
     /// Create a new OpenAI connector
-    pub fn new(config: OpenAIConfig) -> Result<Self> {
+    ///
+    /// If Codex authentication is enabled, reads and caches the access_token
+    /// from auth.json at startup.
+    pub async fn new(config: OpenAIConfig) -> Result<Self> {
         let client = create_client(&config.client_config)?;
-        Ok(Self { config, client })
+
+        // Initialize token cache if Codex auth is enabled
+        let codex_token_cache = if let Some(ref codex_auth) = config.codex_auth {
+            if codex_auth.enabled {
+                let cache = Arc::new(RwLock::new(None));
+
+                // Read access_token from auth.json and cache it
+                debug!("Codex auth enabled, reading access_token from auth.json");
+
+                match crate::codex_auth::read_codex_token(
+                    &codex_auth.auth_file,
+                    "tokens.access_token",
+                ) {
+                    Ok(Some(access_token)) => {
+                        debug!("Successfully read access_token from auth.json");
+                        if let Ok(mut cache_guard) = cache.write() {
+                            *cache_guard = Some(access_token);
+                            debug!("Cached access_token for use in requests");
+                        }
+                    }
+                    Ok(None) => {
+                        debug!(
+                            "No access_token found in auth.json, will use configured token_field: {}",
+                            codex_auth.token_field
+                        );
+                        // Cache remains None, will read from token_field on first request
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to read access_token from auth.json: {}. Will use configured token_field: {}",
+                            e, codex_auth.token_field
+                        );
+                        // Cache remains None, will fall back to token_field
+                    }
+                }
+
+                Some(cache)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Ok(Self {
+            config,
+            client,
+            codex_token_cache,
+        })
+    }
+
+    /// Get Codex authentication token (with caching)
+    ///
+    /// Reads token from configured Codex auth file and caches it in memory.
+    /// Returns None if Codex auth is disabled or token cannot be read.
+    fn get_codex_token(&self) -> Option<String> {
+        // Check if Codex auth is enabled
+        let codex_auth = self.config.codex_auth.as_ref()?;
+        if !codex_auth.enabled {
+            return None;
+        }
+
+        let cache = self.codex_token_cache.as_ref()?;
+
+        // Try to read from cache first
+        if let Ok(cache_guard) = cache.read()
+            && let Some(ref token) = *cache_guard
+        {
+            debug!("Using cached Codex token");
+            return Some(token.clone());
+        }
+
+        // Cache miss - read from file
+        match crate::codex_auth::read_codex_token(&codex_auth.auth_file, &codex_auth.token_field) {
+            Ok(Some(token)) => {
+                // Cache the token
+                if let Ok(mut cache_guard) = cache.write() {
+                    *cache_guard = Some(token.clone());
+                }
+                debug!("Codex token read from file and cached");
+                Some(token)
+            }
+            Ok(None) => {
+                debug!("Codex auth file exists but no valid token found");
+                None
+            }
+            Err(e) => {
+                warn!("Failed to read Codex token: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Get Codex account ID to use for chatgpt-account-id header
+    ///
+    /// Priority order:
+    /// 1. Configured account_id (if set explicitly)
+    /// 2. Account ID from auth.json file (if available)
+    ///
+    /// Returns None if Codex auth is disabled or no account_id is available.
+    fn get_codex_account_id(&self) -> Option<String> {
+        // Check if Codex auth is enabled
+        let codex_auth = self.config.codex_auth.as_ref()?;
+        if !codex_auth.enabled {
+            return None;
+        }
+
+        // 1. Check if account_id is explicitly configured
+        if let Some(ref account_id) = codex_auth.account_id {
+            debug!("Using configured account_id: {}", account_id);
+            return Some(account_id.clone());
+        }
+
+        // 2. Try to read account_id from the auth file (tokens.account_id)
+        match crate::codex_auth::read_codex_token(&codex_auth.auth_file, "tokens.account_id") {
+            Ok(Some(account_id)) => {
+                debug!(
+                    "Successfully read account_id from auth.json: {}",
+                    account_id
+                );
+                Some(account_id)
+            }
+            Ok(None) => {
+                debug!("Codex auth file exists but no account_id found");
+                None
+            }
+            Err(e) => {
+                warn!("Failed to read Codex account_id: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Check if we should override client's chatgpt-account-id header
+    /// Returns true if account_id is explicitly configured (overrides client header)
+    /// Returns false otherwise (client header passes through)
+    fn should_override_account_id(&self) -> bool {
+        if let Some(ref codex_auth) = self.config.codex_auth {
+            codex_auth.enabled && codex_auth.account_id.is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Get the authorization header value to use as fallback (when client doesn't provide one)
+    ///
+    /// Priority order:
+    /// 1. Codex auth token (if enabled and available)
+    /// 2. Configured API key (if not empty)
+    /// 3. None (no fallback available)
+    fn get_fallback_auth_header(&self) -> Option<String> {
+        // 1. Try Codex auth first
+        if let Some(token) = self.get_codex_token() {
+            debug!("Using Codex authentication as fallback");
+            return Some(format!("Bearer {}", token));
+        }
+
+        // 2. Fall back to configured API key
+        if !self.config.api_key.is_empty() {
+            debug!("Using configured API key as fallback");
+            return Some(format!("Bearer {}", self.config.api_key));
+        }
+
+        // 3. No fallback auth available
+        debug!("No fallback auth available");
+        None
+    }
+
+    /// Check if proxy has a configured API key that should override client auth
+    /// (Note: Codex auth is a fallback, not an override - client auth takes precedence)
+    fn has_override_auth(&self) -> bool {
+        !self.config.api_key.is_empty()
     }
 
     /// Send a raw JSON request directly to OpenAI (passthrough mode)
@@ -171,7 +382,6 @@ impl OpenAIConnector {
         let result = with_retry(max_retries, || {
             let request_json = request_json.clone();
             let headers = headers.clone();
-            let config_api_key = self.config.api_key.clone();
             let config = self.config.clone();
             let endpoint = endpoint.to_string();
             async move {
@@ -179,18 +389,43 @@ impl OpenAIConnector {
                     .client
                     .post(format!("{}/{}", config.base_url, endpoint));
 
-                // In passthrough mode, forward ALL headers from client as-is
+                // Check if we have configured API key that should override client auth
+                let has_override_auth = self.has_override_auth();
+                let should_override_account_id = self.should_override_account_id();
+                let mut client_provided_auth = false;
+
+                // Forward headers from client, skipping only if configured API key should override
                 for (name, value) in &headers {
+                    let name_lower = name.to_lowercase();
+
+                    // Track if client provided authorization
+                    if name_lower == "authorization" {
+                        client_provided_auth = true;
+                        if has_override_auth {
+                            debug!("Skipping client Authorization header (configured API key will override)");
+                            continue;
+                        }
+                    }
+
+                    // Skip client's chatgpt-account-id header if we have configured account_id
+                    if should_override_account_id && name_lower == "chatgpt-account-id" {
+                        debug!("Skipping client chatgpt-account-id header (configured account_id will override)");
+                        continue;
+                    }
+
                     request_builder = request_builder.header(name, value);
                 }
 
-                // Only use configured API key if client didn't provide auth
-                let client_has_auth = headers
-                    .iter()
-                    .any(|(k, _)| k.to_lowercase() == "authorization");
-                if !client_has_auth && !config_api_key.is_empty() {
-                    request_builder = request_builder
-                        .header("Authorization", format!("Bearer {}", config_api_key));
+                // Use fallback auth only if client didn't provide auth
+                if !client_provided_auth
+                    && let Some(auth_header) = self.get_fallback_auth_header() {
+                        request_builder = request_builder.header("Authorization", auth_header);
+                    }
+
+                // Add chatgpt-account-id header if configured or available from auth.json
+                if let Some(account_id) = self.get_codex_account_id() {
+                    debug!("Adding chatgpt-account-id header: {}", account_id);
+                    request_builder = request_builder.header("chatgpt-account-id", account_id);
                 }
 
                 // Send raw JSON body without .json() to avoid modifying headers
@@ -234,7 +469,6 @@ impl OpenAIConnector {
         let result = with_retry(max_retries, || {
             let body = body.clone();
             let headers = headers.clone();
-            let config_api_key = self.config.api_key.clone();
             let config = self.config.clone();
             let endpoint = endpoint.to_string();
             async move {
@@ -242,17 +476,43 @@ impl OpenAIConnector {
                     .client
                     .post(format!("{}/{}", config.base_url, endpoint));
 
-                // In passthrough mode, forward ALL headers from client as-is (except auth override)
+                // Check if we have configured API key that should override client auth
+                let has_override_auth = self.has_override_auth();
+                let should_override_account_id = self.should_override_account_id();
+                let mut client_provided_auth = false;
+
+                // Forward headers from client, skipping only if configured API key should override
                 for (name, value) in &headers {
+                    let name_lower = name.to_lowercase();
+
+                    // Track if client provided authorization
+                    if name_lower == "authorization" {
+                        client_provided_auth = true;
+                        if has_override_auth {
+                            debug!("Skipping client Authorization header (configured API key will override)");
+                            continue;
+                        }
+                    }
+
+                    // Skip client's chatgpt-account-id header if we have configured account_id
+                    if should_override_account_id && name_lower == "chatgpt-account-id" {
+                        debug!("Skipping client chatgpt-account-id header (configured account_id will override)");
+                        continue;
+                    }
+
                     request_builder = request_builder.header(name, value);
                 }
 
-                // Only use configured API key if client didn't provide auth
-                // Note: header names are normalized to lowercase in the ingress layer
-                let client_has_auth = headers.contains_key("authorization");
-                if !client_has_auth && !config_api_key.is_empty() {
-                    request_builder = request_builder
-                        .header("Authorization", format!("Bearer {}", config_api_key));
+                // Use fallback auth only if client didn't provide auth
+                if !client_provided_auth
+                    && let Some(auth_header) = self.get_fallback_auth_header() {
+                        request_builder = request_builder.header("Authorization", auth_header);
+                    }
+
+                // Add chatgpt-account-id header if configured or available from auth.json
+                if let Some(account_id) = self.get_codex_account_id() {
+                    debug!("Adding chatgpt-account-id header: {}", account_id);
+                    request_builder = request_builder.header("chatgpt-account-id", account_id);
                 }
 
                 // In passthrough mode, do NOT apply organization header - use only client headers
@@ -354,17 +614,46 @@ impl OpenAIConnector {
             .client
             .post(format!("{}/{}", self.config.base_url, endpoint));
 
-        // In passthrough mode, forward ALL headers from client as-is
+        // Check if we have configured API key that should override client auth
+        let has_override_auth = self.has_override_auth();
+        let should_override_account_id = self.should_override_account_id();
+        let mut client_provided_auth = false;
+
+        // Forward headers from client, skipping only if configured API key should override
         for (name, value) in &headers {
+            let name_lower = name.to_lowercase();
+
+            // Track if client provided authorization
+            if name_lower == "authorization" {
+                client_provided_auth = true;
+                if has_override_auth {
+                    debug!(
+                        "Skipping client Authorization header (configured API key will override)"
+                    );
+                    continue;
+                }
+            }
+
+            // Skip client's chatgpt-account-id header if we have configured account_id
+            if should_override_account_id && name_lower == "chatgpt-account-id" {
+                debug!(
+                    "Skipping client chatgpt-account-id header (configured account_id will override)"
+                );
+                continue;
+            }
+
             request_builder = request_builder.header(name, value);
         }
 
-        // Only use configured API key if client didn't provide auth
-        // Note: header names are normalized to lowercase in the ingress layer
-        let client_has_auth = headers.contains_key("authorization");
-        if !client_has_auth && !self.config.api_key.is_empty() {
-            request_builder =
-                request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
+        // Use fallback auth only if client didn't provide auth
+        if !client_provided_auth && let Some(auth_header) = self.get_fallback_auth_header() {
+            request_builder = request_builder.header("Authorization", auth_header);
+        }
+
+        // Add chatgpt-account-id header if configured or available from auth.json
+        if let Some(account_id) = self.get_codex_account_id() {
+            debug!("Adding chatgpt-account-id header: {}", account_id);
+            request_builder = request_builder.header("chatgpt-account-id", account_id);
         }
 
         // Send raw JSON body without .json() to avoid modifying headers
@@ -417,17 +706,46 @@ impl OpenAIConnector {
             .client
             .get(format!("{}/{}", self.config.base_url, endpoint));
 
-        // Add all passthrough headers
+        // Check if we have configured API key that should override client auth
+        let has_override_auth = self.has_override_auth();
+        let should_override_account_id = self.should_override_account_id();
+        let mut client_provided_auth = false;
+
+        // Forward headers from client, skipping only if configured API key should override
         for (name, value) in &headers {
+            let name_lower = name.to_lowercase();
+
+            // Track if client provided authorization
+            if name_lower == "authorization" {
+                client_provided_auth = true;
+                if has_override_auth {
+                    debug!(
+                        "Skipping client Authorization header (configured API key will override)"
+                    );
+                    continue;
+                }
+            }
+
+            // Skip client's chatgpt-account-id header if we have configured account_id
+            if should_override_account_id && name_lower == "chatgpt-account-id" {
+                debug!(
+                    "Skipping client chatgpt-account-id header (configured account_id will override)"
+                );
+                continue;
+            }
+
             request_builder = request_builder.header(name, value);
         }
 
-        // Only use configured API key if client didn't provide auth
-        // Note: header names are normalized to lowercase in the ingress layer
-        let client_has_auth = headers.contains_key("authorization");
-        if !client_has_auth && !self.config.api_key.is_empty() {
-            request_builder =
-                request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
+        // Use fallback auth only if client didn't provide auth
+        if !client_provided_auth && let Some(auth_header) = self.get_fallback_auth_header() {
+            request_builder = request_builder.header("Authorization", auth_header);
+        }
+
+        // Add chatgpt-account-id header if configured or available from auth.json
+        if let Some(account_id) = self.get_codex_account_id() {
+            debug!("Adding chatgpt-account-id header: {}", account_id);
+            request_builder = request_builder.header("chatgpt-account-id", account_id);
         }
 
         let response = request_builder.send().await?;
@@ -465,38 +783,64 @@ impl OpenAIConnector {
             .client
             .post(format!("{}/{}", self.config.base_url, endpoint));
 
-        // In passthrough mode, forward ALL headers from client as-is (except auth override)
+        // Check if we have configured API key that should override client auth
+        let has_override_auth = self.has_override_auth();
+        let should_override_account_id = self.should_override_account_id();
+        let mut client_provided_auth = false;
+
+        // Forward headers from client, skipping only if configured API key should override
         for (name, value) in &headers {
-            if name.to_lowercase() == "authorization" {
-                debug!(
-                    "Forwarding Authorization header to OpenAI (from client): {} chars",
-                    value.len()
-                );
+            let name_lower = name.to_lowercase();
+
+            // Track if client provided authorization
+            if name_lower == "authorization" {
+                client_provided_auth = true;
+                if has_override_auth {
+                    debug!(
+                        "Skipping client Authorization header (configured API key will override): {} chars",
+                        value.len()
+                    );
+                    continue;
+                }
             }
+
+            // Skip client's chatgpt-account-id header if we have configured account_id
+            if should_override_account_id && name_lower == "chatgpt-account-id" {
+                debug!(
+                    "Skipping client chatgpt-account-id header (configured account_id will override)"
+                );
+                continue;
+            }
+
             request_builder = request_builder.header(name, value);
         }
 
-        debug!("=== ALL HEADERS BEING SENT TO OPENAI ===");
-        for (name, value) in &headers {
-            let display_value = if name.to_lowercase() == "authorization" {
-                format!("[REDACTED {} chars]", value.len())
-            } else {
-                value.clone()
-            };
-            debug!("  {}: {}", name, display_value);
+        // Use fallback auth only if client didn't provide auth
+        if !client_provided_auth && let Some(auth_header) = self.get_fallback_auth_header() {
+            debug!("Using fallback authentication for OpenAI");
+            request_builder = request_builder.header("Authorization", auth_header);
         }
 
-        // Only use configured API key if client didn't provide auth
-        // Note: header names are normalized to lowercase in the ingress layer
-        let client_has_auth = headers.contains_key("authorization");
-        if !client_has_auth && !self.config.api_key.is_empty() {
-            debug!("No client auth - using configured API key");
-            request_builder =
-                request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
-        } else if client_has_auth {
-            debug!("Using client's Authorization header (passthrough mode)");
-        } else {
-            warn!("No Authorization header from client and no configured API key!");
+        // Add chatgpt-account-id header if configured or available from auth.json
+        if let Some(account_id) = self.get_codex_account_id() {
+            debug!("Adding chatgpt-account-id header: {}", account_id);
+            request_builder = request_builder.header("chatgpt-account-id", account_id);
+        }
+
+        debug!("=== ALL HEADERS BEING SENT TO OPENAI ===");
+        // Show actual headers being sent (after filtering)
+        for (name, _value) in request_builder
+            .try_clone()
+            .unwrap()
+            .build()
+            .unwrap()
+            .headers()
+        {
+            if name.as_str().to_lowercase() == "authorization" {
+                debug!("  authorization: [REDACTED]");
+            } else if let Some(value) = headers.get(name.as_str()) {
+                debug!("  {}: {}", name, value);
+            }
         }
 
         // In passthrough mode, do NOT apply organization header - use only client headers
@@ -720,9 +1064,13 @@ impl Provider for OpenAIConnector {
                     let mut request_builder = self
                         .client
                         .post(format!("{}/chat/completions", self.config.base_url))
-                        .header("Authorization", format!("Bearer {}", self.config.api_key))
                         .header("Content-Type", "application/json")
                         .apply_organization_header(&self.config);
+
+                    // Apply fallback authentication (Codex auth → Configured API key)
+                    if let Some(auth_header) = self.get_fallback_auth_header() {
+                        request_builder = request_builder.header("Authorization", auth_header);
+                    }
 
                     // Apply custom headers with templates already substituted
                     for (name, value) in headers_to_apply {
@@ -766,15 +1114,18 @@ impl Provider for OpenAIConnector {
             let result = with_retry(max_retries, || {
                 let openai_req = openai_req.clone();
                 async move {
-                    let response = self
+                    let mut request_builder = self
                         .client
                         .post(format!("{}/chat/completions", self.config.base_url))
-                        .header("Authorization", format!("Bearer {}", self.config.api_key))
                         .header("Content-Type", "application/json")
-                        .apply_organization_header(&self.config)
-                        .json(&openai_req)
-                        .send()
-                        .await?;
+                        .apply_organization_header(&self.config);
+
+                    // Apply fallback authentication (Codex auth → Configured API key)
+                    if let Some(auth_header) = self.get_fallback_auth_header() {
+                        request_builder = request_builder.header("Authorization", auth_header);
+                    }
+
+                    let response = request_builder.json(&openai_req).send().await?;
 
                     debug!("┌─────────────────────────────────────────────────────────");
                     debug!("│ OpenAI Response Headers");
@@ -849,9 +1200,13 @@ impl Provider for OpenAIConnector {
         let mut request_builder = self
             .client
             .post(format!("{}/chat/completions", self.config.base_url))
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
             .apply_organization_header(&self.config);
+
+        // Apply fallback authentication (Codex auth → Configured API key)
+        if let Some(auth_header) = self.get_fallback_auth_header() {
+            request_builder = request_builder.header("Authorization", auth_header);
+        }
 
         // Apply custom headers with templates already substituted
         for (name, value) in headers_to_apply {
@@ -1413,17 +1768,17 @@ mod tests {
         assert_eq!(config.organization, Some("org-123".to_string()));
     }
 
-    #[test]
-    fn test_connector_creation() {
+    #[tokio::test]
+    async fn test_connector_creation() {
         let config = OpenAIConfig::new("test-key");
-        let connector = OpenAIConnector::new(config);
+        let connector = OpenAIConnector::new(config).await;
         assert!(connector.is_ok());
     }
 
-    #[test]
-    fn test_capabilities() {
+    #[tokio::test]
+    async fn test_capabilities() {
         let config = OpenAIConfig::new("test-key");
-        let connector = OpenAIConnector::new(config).unwrap();
+        let connector = OpenAIConnector::new(config).await.unwrap();
         let caps = connector.capabilities();
         assert!(caps.supports_streaming);
         assert!(caps.supports_tools);

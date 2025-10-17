@@ -53,6 +53,12 @@
         <canvas id="hourOfDayChart"></canvas>
     </div>
 
+    <!-- Calls per Model Chart -->
+    <div class="chart-container">
+        <h2 id="calls-chart-title">📞 Calls per Model</h2>
+        <canvas id="callsPerModelChart"></canvas>
+    </div>
+
     <!-- Spending Section -->
     <div class="chart-container">
         <h2 id="spending-title">💸 Spending Analysis</h2>
@@ -146,6 +152,7 @@
         initTokenChart();
         initToolChart();
         initHourOfDayChart();
+        initCallsPerModelChart();
         initSpendingByModelChart();
 
         // Load spending stats
@@ -159,22 +166,26 @@
         const subtitle = document.getElementById('dashboard-subtitle');
         const chartTitle = document.getElementById('token-chart-title');
         const hourChartTitle = document.getElementById('hour-chart-title');
+        const callsChartTitle = document.getElementById('calls-chart-title');
         const spendingTitle = document.getElementById('spending-title');
 
         if (hours == 24) {
             subtitle.textContent = 'Last 24 Hours Overview';
             chartTitle.textContent = '📈 Token Usage (Last 24 Hours)';
             hourChartTitle.textContent = '🕐 Sessions by Hour of Day (Last 24 Hours)';
+            callsChartTitle.textContent = '📞 Calls per Model (Last 24 Hours)';
             spendingTitle.textContent = '💸 Spending Analysis (Last 24 Hours)';
         } else if (hours == 168) {
             subtitle.textContent = 'Last 7 Days Overview';
             chartTitle.textContent = '📈 Token Usage (Last 7 Days)';
             hourChartTitle.textContent = '🕐 Sessions by Hour of Day (Last 7 Days)';
+            callsChartTitle.textContent = '📞 Calls per Model (Last 7 Days)';
             spendingTitle.textContent = '💸 Spending Analysis (Last 7 Days)';
         } else if (hours == 720) {
             subtitle.textContent = 'Last 30 Days Overview';
             chartTitle.textContent = '📈 Token Usage (Last 30 Days)';
             hourChartTitle.textContent = '🕐 Sessions by Hour of Day (Last 30 Days)';
+            callsChartTitle.textContent = '📞 Calls per Model (Last 30 Days)';
             spendingTitle.textContent = '💸 Spending Analysis (Last 30 Days)';
         }
 
@@ -188,6 +199,9 @@
         }
         if (typeof updateHourOfDayChart === 'function') {
             updateHourOfDayChart();
+        }
+        if (typeof updateCallsPerModelChart === 'function') {
+            updateCallsPerModelChart();
         }
         if (typeof updateSpendingByModelChart === 'function') {
             updateSpendingByModelChart();

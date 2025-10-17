@@ -13,6 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 lunaroute-core = { path = "../lunaroute-core" }
+lunaroute-config-file = { path = "../lunaroute-config-file" }
+lunaroute-config-postgres = { path = "../lunaroute-config-postgres", optional = true }
+lunaroute-session-sqlite = { path = "../lunaroute-session-sqlite" }
+lunaroute-session-postgres = { path = "../lunaroute-session-postgres", optional = true }
 lunaroute-ingress = { path = "../lunaroute-ingress" }
 lunaroute-egress = { path = "../lunaroute-egress" }
 lunaroute-routing = { path = "../lunaroute-routing" }
@@ -34,6 +38,12 @@ futures = { workspace = true }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
 anyhow = { workspace = true }
 shellexpand = "3.1"
+uuid = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 serial_test = "3.2"
+
+[features]
+default = []
+postgres = ["lunaroute-session-postgres", "lunaroute-config-postgres"]

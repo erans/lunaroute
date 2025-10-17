@@ -46,8 +46,9 @@ async fn test_openai_real_api_simple_completion() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = OpenAIConnector::new(config).unwrap();
+    let connector = OpenAIConnector::new(config).await.unwrap();
 
     let request = NormalizedRequest {
         messages: vec![Message {
@@ -157,8 +158,9 @@ async fn test_openai_with_system_message() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = OpenAIConnector::new(config).unwrap();
+    let connector = OpenAIConnector::new(config).await.unwrap();
 
     let request = NormalizedRequest {
         messages: vec![Message {
@@ -248,8 +250,9 @@ async fn test_openai_error_handling_invalid_model() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = OpenAIConnector::new(config).unwrap();
+    let connector = OpenAIConnector::new(config).await.unwrap();
 
     let request = NormalizedRequest {
         messages: vec![Message {
@@ -292,8 +295,9 @@ async fn test_both_providers_sequential() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let openai_connector = OpenAIConnector::new(openai_config).unwrap();
+    let openai_connector = OpenAIConnector::new(openai_config).await.unwrap();
 
     let openai_request = NormalizedRequest {
         messages: vec![Message {
@@ -370,8 +374,9 @@ async fn test_openai_streaming_basic() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = OpenAIConnector::new(config).unwrap();
+    let connector = OpenAIConnector::new(config).await.unwrap();
 
     let request = NormalizedRequest {
         messages: vec![Message {
@@ -531,8 +536,9 @@ async fn test_openai_streaming_with_system_prompt() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = OpenAIConnector::new(config).unwrap();
+    let connector = OpenAIConnector::new(config).await.unwrap();
 
     let request = NormalizedRequest {
         messages: vec![Message {
@@ -667,8 +673,9 @@ async fn test_anthropic_request_routed_to_openai_real_api() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let openai_connector = OpenAIConnector::new(openai_config).unwrap();
+    let openai_connector = OpenAIConnector::new(openai_config).await.unwrap();
 
     // Create Anthropic ingress router with OpenAI as backend
     let app = lunaroute_ingress::anthropic::router(Arc::new(openai_connector));
