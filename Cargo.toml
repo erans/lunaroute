@@ -18,6 +18,9 @@ members = [
     "crates/lunaroute-cli",
     "crates/lunaroute-integration-tests",
 ]
+exclude = [
+    "tools/backfill-sqlite",
+]
 
 [workspace.package]
 version = "0.1.0"
