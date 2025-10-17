@@ -11,10 +11,15 @@ pub async fn get_overview_stats(pool: &SqlitePool, hours: i64) -> Result<Overvie
         r#"
         SELECT
             COUNT(DISTINCT s.session_id) as total_sessions,
-            COALESCE(SUM(ss.input_tokens), 0) as total_input_tokens,
-            COALESCE(SUM(ss.output_tokens), 0) as total_output_tokens,
-            COALESCE(SUM(ss.thinking_tokens), 0) as total_thinking_tokens,
-            COALESCE(SUM(ss.input_tokens + ss.output_tokens + COALESCE(ss.thinking_tokens, 0) + COALESCE(ss.reasoning_tokens, 0)), 0) as total_tokens,
+            COALESCE(SUM(COALESCE(ss.input_tokens, s.input_tokens, 0)), 0) as total_input_tokens,
+            COALESCE(SUM(COALESCE(ss.output_tokens, s.output_tokens, 0)), 0) as total_output_tokens,
+            COALESCE(SUM(COALESCE(ss.thinking_tokens, s.thinking_tokens, 0)), 0) as total_thinking_tokens,
+            COALESCE(SUM(
+                COALESCE(ss.input_tokens, s.input_tokens, 0) +
+                COALESCE(ss.output_tokens, s.output_tokens, 0) +
+                COALESCE(ss.thinking_tokens, s.thinking_tokens, 0) +
+                COALESCE(ss.reasoning_tokens, s.reasoning_tokens, 0)
+            ), 0) as total_tokens,
             COALESCE(AVG(s.total_duration_ms), 0.0) as avg_duration_ms,
             COALESCE(AVG(CASE WHEN s.success = 1 THEN 100.0 ELSE 0.0 END), 100.0) as success_rate
         FROM sessions s
@@ -26,18 +31,20 @@ pub async fn get_overview_stats(pool: &SqlitePool, hours: i64) -> Result<Overvie
     .fetch_one(pool)
     .await?;
 
-    // Calculate total cost by fetching all session_stats with model info
+    // Calculate total cost by fetching from both session_stats and sessions
+    // For passthrough sessions, data is in sessions table; for normal sessions, it's in session_stats
     let stats_rows = sqlx::query(
         r#"
         SELECT
-            ss.model_name,
-            ss.input_tokens,
-            ss.output_tokens,
-            ss.thinking_tokens
-        FROM session_stats ss
-        INNER JOIN sessions s ON ss.session_id = s.session_id
+            COALESCE(ss.model_name, s.model_used, s.model_requested) as model_name,
+            COALESCE(ss.input_tokens, s.input_tokens) as input_tokens,
+            COALESCE(ss.output_tokens, s.output_tokens) as output_tokens,
+            COALESCE(ss.thinking_tokens, s.thinking_tokens) as thinking_tokens
+        FROM sessions s
+        LEFT JOIN session_stats ss ON s.session_id = ss.session_id
         WHERE s.started_at >= datetime('now', '-' || ? || ' hours')
-            AND ss.model_name IS NOT NULL
+            AND (ss.model_name IS NOT NULL OR s.model_used IS NOT NULL OR s.model_requested IS NOT NULL)
+            AND (ss.input_tokens IS NOT NULL OR s.input_tokens IS NOT NULL)
         "#,
     )
     .bind(hours)
@@ -348,13 +355,14 @@ pub async fn get_recent_sessions(pool: &SqlitePool, limit: i64) -> Result<Vec<Se
             s.session_id,
             s.started_at,
             s.model_used,
+            s.model_requested,
             s.input_tokens,
             s.output_tokens,
             s.thinking_tokens,
             s.total_tokens,
             s.total_duration_ms,
             s.success,
-            COUNT(DISTINCT ss.id) as request_count,
+            CASE WHEN COUNT(DISTINCT ss.id) = 0 THEN 1 ELSE COUNT(DISTINCT ss.id) END as request_count,
             GROUP_CONCAT(DISTINCT ss.model_name) as all_models
         FROM sessions s
         LEFT JOIN session_stats ss ON s.session_id = ss.session_id
@@ -370,10 +378,14 @@ pub async fn get_recent_sessions(pool: &SqlitePool, limit: i64) -> Result<Vec<Se
     let summaries = sessions
         .into_iter()
         .map(|s| {
-            // Get all models from session_stats, fallback to model_used from sessions table
+            // Get all models from session_stats, fallback to model_used, then model_requested
             let all_models: Option<String> = s.try_get("all_models").ok().flatten();
             let model_used: Option<String> = s.try_get("model_used").ok().flatten();
-            let models = all_models.filter(|m| !m.is_empty()).or(model_used);
+            let model_requested: Option<String> = s.try_get("model_requested").ok().flatten();
+            let models = all_models
+                .filter(|m| !m.is_empty())
+                .or(model_used)
+                .or(model_requested);
 
             let input: Option<i64> = s.try_get("input_tokens").ok().flatten();
             let output: Option<i64> = s.try_get("output_tokens").ok().flatten();
@@ -420,13 +432,14 @@ pub async fn get_sessions_paginated(
             s.session_id,
             s.started_at,
             s.model_used,
+            s.model_requested,
             s.input_tokens,
             s.output_tokens,
             s.thinking_tokens,
             s.total_tokens,
             s.total_duration_ms,
             s.success,
-            COUNT(DISTINCT ss.id) as request_count,
+            CASE WHEN COUNT(DISTINCT ss.id) = 0 THEN 1 ELSE COUNT(DISTINCT ss.id) END as request_count,
             GROUP_CONCAT(DISTINCT ss.model_name) as all_models
         FROM sessions s
         LEFT JOIN session_stats ss ON s.session_id = ss.session_id
@@ -487,10 +500,14 @@ pub async fn get_sessions_paginated(
     let summaries = sessions
         .into_iter()
         .map(|s| {
-            // Get all models from session_stats, fallback to model_used from sessions table
+            // Get all models from session_stats, fallback to model_used, then model_requested
             let all_models: Option<String> = s.try_get("all_models").ok().flatten();
             let model_used: Option<String> = s.try_get("model_used").ok().flatten();
-            let models = all_models.filter(|m| !m.is_empty()).or(model_used);
+            let model_requested: Option<String> = s.try_get("model_requested").ok().flatten();
+            let models = all_models
+                .filter(|m| !m.is_empty())
+                .or(model_used)
+                .or(model_requested);
 
             let input: Option<i64> = s.try_get("input_tokens").ok().flatten();
             let output: Option<i64> = s.try_get("output_tokens").ok().flatten();
@@ -548,14 +565,16 @@ pub async fn get_user_agents(pool: &SqlitePool) -> Result<Vec<String>> {
     Ok(user_agents)
 }
 
-/// Get distinct models from session stats
+/// Get distinct models from session stats and sessions table
 pub async fn get_models(pool: &SqlitePool) -> Result<Vec<String>> {
     let rows = sqlx::query(
         r#"
-        SELECT DISTINCT model_name
-        FROM session_stats
-        WHERE model_name IS NOT NULL
-        ORDER BY model_name ASC
+        SELECT DISTINCT model_name as model FROM session_stats WHERE model_name IS NOT NULL
+        UNION
+        SELECT DISTINCT model_requested as model FROM sessions WHERE model_requested IS NOT NULL
+        UNION
+        SELECT DISTINCT model_used as model FROM sessions WHERE model_used IS NOT NULL
+        ORDER BY model ASC
         "#,
     )
     .fetch_all(pool)
@@ -563,11 +582,7 @@ pub async fn get_models(pool: &SqlitePool) -> Result<Vec<String>> {
 
     let models = rows
         .into_iter()
-        .filter_map(|row| {
-            row.try_get::<Option<String>, _>("model_name")
-                .ok()
-                .flatten()
-        })
+        .filter_map(|row| row.try_get::<Option<String>, _>("model").ok().flatten())
         .collect();
 
     Ok(models)
@@ -604,7 +619,7 @@ pub async fn get_session_detail(pool: &SqlitePool, session_id: &str) -> Result<S
             s.streaming_duration_ms,
             s.client_ip,
             s.user_agent,
-            COUNT(DISTINCT ss.id) as request_count,
+            CASE WHEN COUNT(DISTINCT ss.id) = 0 THEN 1 ELSE COUNT(DISTINCT ss.id) END as request_count,
             GROUP_CONCAT(DISTINCT ss.model_name) as all_models
         FROM sessions s
         LEFT JOIN session_stats ss ON s.session_id = ss.session_id
@@ -617,10 +632,14 @@ pub async fn get_session_detail(pool: &SqlitePool, session_id: &str) -> Result<S
     .await?;
 
     if let Some(s) = session {
-        // Get all models from session_stats, fallback to model_used from sessions table
+        // Get all models from session_stats, fallback to model_used, then model_requested
         let all_models: Option<String> = s.try_get("all_models").ok().flatten();
         let model_used: Option<String> = s.try_get("model_used").ok().flatten();
-        let model: Option<String> = all_models.filter(|m| !m.is_empty()).or(model_used);
+        let model_requested: Option<String> = s.try_get("model_requested").ok().flatten();
+        let model: Option<String> = all_models
+            .filter(|m| !m.is_empty())
+            .or(model_used)
+            .or(model_requested);
         let input: i64 = s.try_get("input_tokens").ok().flatten().unwrap_or(0);
         let output: i64 = s.try_get("output_tokens").ok().flatten().unwrap_or(0);
         let thinking: i64 = s.try_get("thinking_tokens").ok().flatten().unwrap_or(0);
