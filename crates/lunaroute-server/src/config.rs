@@ -8,6 +8,11 @@ pub enum ApiDialect {
     OpenAI,
     #[default]
     Anthropic,
+    /// Accept both OpenAI and Anthropic API formats simultaneously
+    /// - OpenAI format at /v1/chat/completions
+    /// - Anthropic format at /v1/messages
+    /// - Routes to appropriate provider based on model prefix
+    Both,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -363,8 +368,9 @@ impl ServerConfig {
             match val.to_lowercase().as_str() {
                 "openai" => self.api_dialect = ApiDialect::OpenAI,
                 "anthropic" => self.api_dialect = ApiDialect::Anthropic,
+                "both" => self.api_dialect = ApiDialect::Both,
                 _ => eprintln!(
-                    "Warning: Invalid LUNAROUTE_DIALECT '{}', using default",
+                    "Warning: Invalid LUNAROUTE_DIALECT '{}', using default (valid: openai, anthropic, both)",
                     val
                 ),
             }

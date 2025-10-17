@@ -20,6 +20,7 @@ members = [
 ]
 exclude = [
     "tools/backfill-sqlite",
+    "examples",
 ]
 
 [workspace.package]
@@ -97,6 +98,9 @@ mockall = "0.13"
 wiremock = "0.6"
 tempfile = "3.8"
 serial_test = "3.0"
+
+# Machine Learning (Optional - for CUDA examples)
+tch = { git = "https://github.com/LaurentMazare/tch-rs.git", branch = "pytorch-2.8.0" }
 
 [profile.release]
 opt-level = 3

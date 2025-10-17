@@ -539,9 +539,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match dialect_str.to_lowercase().as_str() {
             "openai" => config.api_dialect = ApiDialect::OpenAI,
             "anthropic" => config.api_dialect = ApiDialect::Anthropic,
+            "both" => config.api_dialect = ApiDialect::Both,
             _ => {
                 return Err(format!(
-                    "Invalid dialect '{}'. Use 'openai' or 'anthropic'",
+                    "Invalid dialect '{}'. Use 'openai', 'anthropic', or 'both'",
                     dialect_str
                 )
                 .into());
@@ -802,7 +803,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         && providers.len() == 1
         && providers.contains_key("openai");
 
-    let is_passthrough = is_anthropic_passthrough || is_openai_passthrough;
+    // For dual-dialect mode, enable passthrough if BOTH connectors are available
+    // This allows OpenAI→OpenAI and Anthropic→Anthropic passthrough simultaneously
+    let is_dual_passthrough = config.api_dialect == ApiDialect::Both
+        && openai_connector.is_some()
+        && anthropic_connector.is_some();
+
+    let is_passthrough = is_anthropic_passthrough || is_openai_passthrough || is_dual_passthrough;
 
     // Create router with routing table (not needed in passthrough mode, but keep for consistency)
     let route_table = RouteTable::with_rules(rules);
@@ -865,6 +872,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 anthropic_ingress::router(router)
             }
         }
+        ApiDialect::Both => {
+            info!("📡 API dialect: Both (OpenAI + Anthropic)");
+            info!("   - OpenAI format:   /v1/chat/completions");
+            info!("   - Anthropic format: /v1/messages");
+
+            if is_dual_passthrough {
+                info!(
+                    "⚡ Dual passthrough mode: OpenAI→OpenAI + Anthropic→Anthropic (no normalization)"
+                );
+                info!("   Routes determined by model prefix:");
+                info!("   - gpt-* models    → OpenAI provider (passthrough)");
+                info!("   - claude-* models → Anthropic provider (passthrough)");
+
+                lunaroute_ingress::multi_dialect::passthrough_router(
+                    openai_connector,
+                    anthropic_connector,
+                    Some(stats_tracker_clone),
+                    Some(metrics.clone()),
+                    session_store_for_passthrough.clone(),
+                )
+            } else {
+                info!("🔄 Dual dialect with routing (normalization may occur)");
+                lunaroute_ingress::multi_dialect::router(router)
+            }
+        }
     };
 
     // Create health/metrics router
@@ -879,7 +911,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("");
     info!("✅ LunaRoute gateway listening on http://{}", addr);
-    info!("   API endpoint:");
+    info!("   API endpoints:");
     match config.api_dialect {
         ApiDialect::OpenAI => {
             info!("   - OpenAI API: http://{}/v1/chat/completions", addr);
@@ -888,6 +920,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("   - Anthropic API: http://{}/v1/messages", addr);
             info!(
                 "   💡 For Claude Code: export ANTHROPIC_BASE_URL=http://{}",
+                addr
+            );
+        }
+        ApiDialect::Both => {
+            info!("   - OpenAI API:      http://{}/v1/chat/completions", addr);
+            info!("   - Anthropic API:   http://{}/v1/messages", addr);
+            info!(
+                "   💡 For Claude Code: export ANTHROPIC_BASE_URL=http://{}",
+                addr
+            );
+            info!(
+                "   💡 For Codex:       export OPENAI_BASE_URL=http://{}",
                 addr
             );
         }
