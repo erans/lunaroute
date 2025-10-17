@@ -52,8 +52,9 @@ async fn test_openai_400_error_with_recording() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = Arc::new(OpenAIConnector::new(config).unwrap());
+    let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
 
     // Create passthrough router with recording
     let app =
@@ -146,8 +147,9 @@ async fn test_openai_500_error_with_recording() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = Arc::new(OpenAIConnector::new(config).unwrap());
+    let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
 
     // Create passthrough router with recording
     let app =
@@ -437,8 +439,9 @@ async fn test_openai_streaming_error_with_recording() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = Arc::new(OpenAIConnector::new(config).unwrap());
+    let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
 
     // Create passthrough router with recording
     let app =

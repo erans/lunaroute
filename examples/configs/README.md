@@ -43,7 +43,7 @@ lunaroute-server --config examples/configs/routing-strategies.yaml
 - Automatic fallback chains
 - Production-ready observability
 
-### `claude-code-proxy.yaml`
+### `claude-code-proxy.yaml` ⭐ RECOMMENDED FOR CLAUDE
 Optimized for Claude Code CLI with zero-copy passthrough mode.
 
 ```bash
@@ -82,16 +82,25 @@ lunaroute-server --config examples/configs/anthropic-proxy.yaml
 - Supports client-provided authentication headers
 
 ### `openai-proxy.yaml`
-OpenAI-compatible proxy server.
+OpenAI-compatible proxy server with Codex CLI support.
 
 ```bash
+# Option 1: Use environment variable
 OPENAI_API_KEY=sk-... lunaroute-server --config examples/configs/openai-proxy.yaml
+
+# Option 2: Use with OpenAI Codex CLI (automatic auth from ~/.codex/auth.json)
+lunaroute-server --config examples/configs/openai-proxy.yaml
+export OPENAI_BASE_URL=http://localhost:8081/v1
+codex exec "help me debug this function"
 ```
 
 **Features:**
 - Accepts OpenAI format requests
 - Routes to OpenAI provider
+- **Codex CLI integration** - Automatic auth from `~/.codex/auth.json`
+- **Account ID header injection** for proper Codex routing
 - Request logging enabled
+- Works with all Codex commands (exec, chat, eval)
 
 ### `development.yaml`
 Full-featured development setup.
@@ -127,8 +136,29 @@ All configurations support:
 
 ### Environment Variables
 - `ANTHROPIC_API_KEY` - Anthropic API key
-- `OPENAI_API_KEY` - OpenAI API key
+- `OPENAI_API_KEY` - OpenAI API key (not needed if using Codex CLI)
 - `LUNAROUTE_*` - Override any config value (e.g., `LUNAROUTE_PORT=8080`)
+
+### OpenAI Codex CLI Integration
+
+LunaRoute provides automatic authentication for Codex CLI users:
+
+1. **No API key needed** - Reads from `~/.codex/auth.json` automatically
+2. **Account ID injection** - Adds `chatgpt-account-id` header from your profile
+3. **Zero configuration** - Just point Codex at the proxy
+
+Example:
+```bash
+# Start LunaRoute (no OPENAI_API_KEY needed!)
+lunaroute-server --config examples/configs/openai-proxy.yaml
+
+# Point Codex to the proxy
+export OPENAI_BASE_URL=http://localhost:8081/v1
+
+# Use Codex normally
+codex exec "what is 2+2"
+codex chat
+```
 
 ### API Endpoints
 - `POST /v1/messages` - Anthropic-compatible endpoint

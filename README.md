@@ -2,7 +2,7 @@
 
 **Your AI Coding Assistant's Best Friend**
 
-LunaRoute is a high-performance local proxy for AI coding assistants like Claude Code and OpenCode. Get complete visibility into every LLM interaction with zero-overhead passthrough, comprehensive session recording, and powerful debugging capabilities.
+LunaRoute is a high-performance local proxy for AI coding assistants like Claude Code, OpenAI Codex CLI, and OpenCode. Get complete visibility into every LLM interaction with zero-overhead passthrough, comprehensive session recording, and powerful debugging capabilities.
 
 ```bash
 # Start in 5 seconds (no API key needed!)
@@ -10,6 +10,9 @@ lunaroute-server
 
 # Point Claude Code to it
 export ANTHROPIC_BASE_URL=http://localhost:8081
+
+# Or use with OpenAI Codex CLI
+export OPENAI_BASE_URL=http://localhost:8081/v1
 
 # Done! Start coding with full visibility
 ```
@@ -22,11 +25,23 @@ export ANTHROPIC_BASE_URL=http://localhost:8081
 
 Stop flying blind. LunaRoute records every conversation, token, and tool call:
 
-- **🔍 Debug AI conversations** - See exactly what Claude Code sends and receives
+- **🔍 Debug AI conversations** - See exactly what your AI assistant sends and receives
 - **💰 Track token usage** - Know where your money goes (input/output/thinking tokens)
 - **🔧 Analyze tool performance** - Which tools are slow? Which get used most?
 - **📊 Measure proxy overhead** - Is it the LLM or your code that's slow?
-- **🔎 Search past sessions** - "How did Claude solve that bug last week?"
+- **🔎 Search past sessions** - "How did the AI solve that bug last week?"
+
+### Privacy & Compliance Built-In
+
+Keep your data safe while maintaining visibility:
+
+- **🔒 Automatic PII redaction** - Detect and redact emails, SSN, credit cards, phone numbers
+- **🎯 Multiple redaction modes** - Mask, remove, tokenize, or show partial data
+- **🔐 Deterministic tokenization** - HMAC-based tokens for reversible redaction
+- **📝 Custom patterns** - Add your own regex patterns for API keys, secrets, etc.
+- **✅ Zero trust storage** - Redact before hitting disk, not after
+
+Perfect for regulated industries and security-conscious teams.
 
 ### Zero Configuration Required
 
@@ -36,14 +51,20 @@ Literally just run it:
 lunaroute-server
 ```
 
-**That's it.** No API keys, no config files, nothing. Claude Code provides authentication automatically through client headers. Your API key never touches the proxy server.
+**That's it.** No API keys, no config files, nothing. Your AI assistant provides authentication automatically:
+- **Claude Code** - Uses client headers for authentication
+- **OpenAI Codex CLI** - Reads from `~/.codex/auth.json` automatically
+- **Custom clients** - Pass your own API keys via headers
+
+Your API key never needs to be configured in the proxy.
 
 ### Sub-Millisecond Performance
 
-Built in Rust for speed:
+Built in Rust for speed and security:
 - **0.1-0.2ms added latency** in passthrough mode
 - **100% API fidelity** - preserves extended thinking, all response fields
 - **Zero-copy routing** - no normalization overhead
+- **PII redaction** - protect sensitive data automatically
 - **Production-ready** - 73% code coverage, 544 tests passing
 
 ---
@@ -64,37 +85,262 @@ cargo build --release --package lunaroute-server
 # Add to PATH or run directly
 ```
 
-### Option 1: Zero-Config Passthrough (Recommended) 🔥
+### Configuration Examples
 
-Maximum performance with complete visibility:
+#### Example 1: Passthrough for Claude Code
 
+Zero-overhead passthrough with 100% API fidelity:
+
+```yaml
+# Save as claude-passthrough.yaml
+host: "127.0.0.1"
+port: 8081
+api_dialect: "anthropic"  # Accept Anthropic format
+
+providers:
+  anthropic:
+    enabled: true
+    # No api_key needed - Claude Code sends it via x-api-key header
+
+session_recording:
+  enabled: false  # Disable for maximum performance
+
+logging:
+  level: "info"
+  log_requests: true
+```
+
+**Usage:**
 ```bash
-# 1. Start LunaRoute (no API key needed!)
-lunaroute-server
+# Start server
+lunaroute-server --config claude-passthrough.yaml
 
-# 2. Point Claude Code to the proxy
+# Point Claude Code to proxy
 export ANTHROPIC_BASE_URL=http://localhost:8081
 
-# 3. Use Claude Code normally - full visibility enabled!
+# Use Claude Code normally - zero config needed!
 ```
 
-Your API key stays in Claude Code. The proxy forwards it automatically.
+**Performance:** ~0.1-0.2ms overhead, 100% API fidelity
 
-### Option 2: With Session Recording
+---
 
-Record every conversation for later analysis:
+#### Example 2: Passthrough for OpenAI Codex CLI
+
+Works with your ChatGPT account via Codex authentication:
+
+```yaml
+# Save as codex-passthrough.yaml
+host: "127.0.0.1"
+port: 8081
+api_dialect: "openai"  # Accept OpenAI format
+
+providers:
+  openai:
+    enabled: true
+    # Special base URL for ChatGPT authentication
+    base_url: "https://chatgpt.com/backend-api/codex"
+    codex_auth:
+      enabled: false  # Disabled for pure passthrough
+
+session_recording:
+  enabled: false
+
+logging:
+  level: "info"
+  log_requests: true
+```
+
+**Usage:**
+```bash
+# Start server (reads auth from ~/.codex/auth.json)
+lunaroute-server --config codex-passthrough.yaml
+
+# Point Codex to proxy
+export OPENAI_BASE_URL=http://localhost:8081/v1
+
+# Use Codex normally with your ChatGPT account
+codex exec "help me debug this function"
+```
+
+**Note:** Use `base_url: "https://api.openai.com/v1"` if you have an OpenAI API key instead.
+
+---
+
+#### Example 3: Map Claude Code to Gemini (OpenAI dialect)
+
+Translate Anthropic format to Gemini's OpenAI-compatible endpoint:
+
+```yaml
+# Save as claude-to-gemini.yaml
+host: "127.0.0.1"
+port: 8081
+api_dialect: "anthropic"  # Accept Anthropic format from Claude Code
+
+providers:
+  openai:
+    enabled: true
+    # Gemini's OpenAI-compatible endpoint
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+    api_key: "${GOOGLE_API_KEY}"  # Set via environment variable
+
+  anthropic:
+    enabled: false  # Don't route to Anthropic
+
+session_recording:
+  enabled: true  # Optional: track translations
+
+logging:
+  level: "debug"
+  log_requests: true
+```
+
+**Usage:**
+```bash
+# Set your Google API key
+export GOOGLE_API_KEY="your-gemini-api-key"
+
+# Start server
+lunaroute-server --config claude-to-gemini.yaml
+
+# Point Claude Code to proxy
+export ANTHROPIC_BASE_URL=http://localhost:8081
+
+# Claude Code sends Anthropic format, LunaRoute translates to Gemini!
+```
+
+**What happens:**
+1. Claude Code sends request in Anthropic format
+2. LunaRoute translates to OpenAI format
+3. Request routes to Gemini's OpenAI endpoint
+4. Response translates back to Anthropic format
+5. Claude Code receives native Anthropic response
+
+---
+
+**More examples:** See `examples/configs/` for PII redaction, routing strategies, and advanced features.
+
+---
+
+### Controlling Session Recording
+
+LunaRoute provides two independent recording modes that can be enabled/disabled separately:
+
+#### SQLite Analytics (Session Stats)
+
+Lightweight session statistics and metadata - perfect for tracking usage without storing full content:
+
+```yaml
+session_recording:
+  enabled: true
+  sqlite:
+    enabled: true                        # Enable SQLite analytics
+    path: "~/.lunaroute/sessions.db"     # Database location
+    max_connections: 10                  # Connection pool size
+  jsonl:
+    enabled: false                       # Disable full request/response logs
+```
+
+**What gets recorded:** Session IDs, timestamps, token counts, model names, tool usage stats, durations
+**Storage:** ~1-2KB per session
+**Use case:** Track costs and performance without storing sensitive request/response data
+
+#### JSONL Request/Response Logs
+
+Complete request/response recording for debugging and analysis:
+
+```yaml
+session_recording:
+  enabled: true
+  jsonl:
+    enabled: true                                # Enable full logs
+    directory: "~/.lunaroute/sessions"           # Log directory
+    retention:
+      max_age_days: 30                           # Delete logs older than 30 days
+      max_size_mb: 1024                          # Delete oldest when > 1GB
+  sqlite:
+    enabled: false                               # Disable analytics database
+```
+
+**What gets recorded:** Full request/response bodies, headers, streaming events, tool calls
+**Storage:** ~10KB per request (varies with content size)
+**Use case:** Debug conversations, replay sessions, analyze AI behavior
+
+#### Both Enabled (Recommended)
+
+Get the best of both worlds:
+
+```yaml
+session_recording:
+  enabled: true
+
+  # Quick queryable stats
+  sqlite:
+    enabled: true
+    path: "~/.lunaroute/sessions.db"
+
+  # Full conversation logs
+  jsonl:
+    enabled: true
+    directory: "~/.lunaroute/sessions"
+    retention:
+      max_age_days: 7                            # Keep full logs for 1 week
+      max_size_mb: 512                           # Limit to 512MB
+```
+
+**Use case:** Analytics stay forever, but full logs are cleaned up after 7 days
+
+#### Disable All Recording (Maximum Performance)
+
+```yaml
+session_recording:
+  enabled: false  # Master switch - disables everything
+```
+
+**Or via environment variable:**
+```bash
+LUNAROUTE_ENABLE_SESSION_RECORDING=false lunaroute-server
+```
+
+**Performance:** Sub-millisecond overhead (~0.1-0.2ms), perfect for production
+
+#### Environment Variables
+
+Control recording without a config file:
 
 ```bash
-# Enable recording with environment variables
-LUNAROUTE_ENABLE_SESSION_RECORDING=true \
-LUNAROUTE_LOG_LEVEL=debug \
-lunaroute-server
+# Master switch
+export LUNAROUTE_ENABLE_SESSION_RECORDING=true
 
-# Or use a config file
-lunaroute-server --config examples/configs/claude-code-proxy-with-recording.yaml
+# SQLite analytics
+export LUNAROUTE_ENABLE_SQLITE_WRITER=true
+export LUNAROUTE_SESSIONS_DB_PATH="~/.lunaroute/sessions.db"
+
+# JSONL logs
+export LUNAROUTE_ENABLE_JSONL_WRITER=true
+export LUNAROUTE_SESSIONS_DIR="~/.lunaroute/sessions"
+
+# Start server
+lunaroute-server
 ```
 
-Sessions saved to `~/.lunaroute/sessions/` in both JSONL (human-readable) and SQLite (queryable) formats.
+---
+
+### Zero-Config Quick Start
+
+Prefer to skip config files? Just run:
+
+```bash
+# For Claude Code (Anthropic passthrough)
+lunaroute-server
+export ANTHROPIC_BASE_URL=http://localhost:8081
+
+# For Codex CLI (reads ~/.codex/auth.json automatically)
+lunaroute-server
+export OPENAI_BASE_URL=http://localhost:8081/v1
+```
+
+Your API keys are provided by the client. No configuration needed!
 
 ---
 
@@ -102,7 +348,7 @@ Sessions saved to `~/.lunaroute/sessions/` in both JSONL (human-readable) and SQ
 
 ### 1. Debug Expensive Conversations
 
-**Problem:** Your Claude Code session cost $5 but you don't know why.
+**Problem:** Your AI session cost $5 but you don't know why.
 
 **Solution:** Check the session stats on shutdown:
 
@@ -118,11 +364,11 @@ Session: abc123
     Write: 8 calls (avg 120ms)
 ```
 
-**Result:** Discover Claude's responses are verbose. Adjust system prompt to be more concise.
+**Result:** Discover the AI's responses are verbose. Adjust system prompt to be more concise.
 
 ### 2. Identify Performance Bottlenecks
 
-**Problem:** Claude Code feels slow. Is it the LLM or your tools?
+**Problem:** Your AI assistant feels slow. Is it the LLM or your tools?
 
 **Solution:** Check session statistics:
 
@@ -137,7 +383,7 @@ Tool usage:
 
 ### 3. Search Past Conversations
 
-**Problem:** "How did Claude help me fix that TypeError last week?"
+**Problem:** "How did my AI assistant help me fix that TypeError last week?"
 
 **Solution:**
 
@@ -162,9 +408,16 @@ providers:
   anthropic:
     enabled: true
     # No api_key field = use client headers
+
+  openai:
+    enabled: true
+    # Codex users get automatic auth from ~/.codex/auth.json
 ```
 
-**Result:** Each developer's Claude Code sends their own key. No shared secrets.
+**Result:**
+- Claude Code users send their own API keys via headers
+- Codex CLI users get automatic authentication from their profile
+- No shared secrets, everyone uses their own credentials
 
 ### 5. Privacy & Compliance
 
@@ -337,7 +590,7 @@ LunaRoute is built as a modular Rust workspace:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Claude Code                          │
+│          Claude Code / OpenAI Codex CLI / OpenCode         │
 └─────────────────────────┬───────────────────────────────────┘
                           │ HTTP/SSE
                           ↓
@@ -374,7 +627,7 @@ LunaRoute is built as a modular Rust workspace:
 **Key Crates:**
 - `lunaroute-core` - Types and traits
 - `lunaroute-ingress` - HTTP endpoints (OpenAI, Anthropic)
-- `lunaroute-egress` - Provider connectors with connection pooling
+- `lunaroute-egress` - Provider connectors with connection pooling and Codex auth
 - `lunaroute-session` - Recording and search
 - `lunaroute-pii` - PII detection/redaction
 - `lunaroute-observability` - Metrics and health
@@ -413,12 +666,19 @@ See [Connection Pool Configuration](docs/CONNECTION_POOL_ENV_VARS.md) for comple
 
 ## 📚 Documentation
 
-- **[Claude Code Guide](CLAUDE_CODE_GUIDE.md)** - Complete guide for local development
+- **[Claude Code Guide](CLAUDE_CODE_GUIDE.md)** - Complete guide for Claude Code integration
 - **[Server README](crates/lunaroute-server/README.md)** - Configuration reference
 - **[Config Examples](examples/configs/README.md)** - Pre-built configs for common scenarios
 - **[Connection Pool Configuration](docs/CONNECTION_POOL_ENV_VARS.md)** - HTTP client pool tuning
 - **[PII Detection](crates/lunaroute-pii/README.md)** - PII redaction details
 - **[TODO.md](TODO.md)** - Roadmap and implementation status
+
+### Supported AI Assistants
+
+- ✅ **Claude Code** - Full passthrough support, zero config
+- ✅ **OpenAI Codex CLI** - Automatic auth.json integration
+- ✅ **OpenCode** - Standard OpenAI/Anthropic API compatibility
+- ✅ **Custom Clients** - Any tool using OpenAI or Anthropic APIs
 
 ---
 
@@ -527,6 +787,16 @@ Licensed under the Apache License, Version 2.0 ([LICENSE](LICENSE)).
 Like the moon 🌕 guides travelers at night, LunaRoute illuminates your AI interactions. Every request, every token, every decision - visible and trackable.
 
 **Built with ❤️ for developers who want visibility, control, and performance.**
+
+### OpenAI Codex CLI Support
+
+LunaRoute provides first-class support for OpenAI's Codex CLI:
+- ✅ **Automatic authentication** from `~/.codex/auth.json`
+- ✅ **Account ID header injection** for proper request routing
+- ✅ **Zero configuration** - just point Codex at the proxy
+- ✅ **Full compatibility** with all Codex commands
+
+Works seamlessly with `codex exec`, `codex chat`, `codex eval`, and more!
 
 ---
 

@@ -612,6 +612,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             custom_headers: None,
             request_body_config: None,
             response_body_config: None,
+            codex_auth: openai_config.codex_auth.as_ref().map(|c| {
+                lunaroute_egress::openai::CodexAuthConfig {
+                    enabled: c.enabled,
+                    auth_file: c.auth_file.clone(),
+                    token_field: c.token_field.clone(),
+                    account_id: c.account_id.clone(),
+                }
+            }),
         };
 
         // Wire custom headers and body modifications
@@ -634,7 +642,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
 
-        let conn = OpenAIConnector::new(provider_config)?;
+        let conn = OpenAIConnector::new(provider_config).await?;
 
         // Build the provider stack (order matters!)
         // 1. Start with connector

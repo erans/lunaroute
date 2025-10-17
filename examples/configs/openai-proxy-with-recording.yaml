@@ -10,8 +10,18 @@ api_dialect: "openai"
 providers:
   openai:
     enabled: true
-    api_key: ""
-    base_url: "https://api.openai.com/v1"
+    # api_key: ""  # -> Set to an OpenAI API Key if you need to use a specific key
+
+    # This is the base URL that should be used with an OpenAI API key.
+    # When doing passthrough with the chatgpt authentication from codex, use the 
+    # base url below.
+    #base_url: "https://api.openai.com/v1"
+
+    # When you want to use your chatgpt logged in account from codex
+    # you must set this base_url instead of the standard OpenAI one.
+    base_url: "https://chatgpt.com/backend-api/codex"
+    codex_auth:
+        enabled: false  # Disabled to test pure passthrough
 
   # Explicitly disable other providers for passthrough mode
   anthropic:

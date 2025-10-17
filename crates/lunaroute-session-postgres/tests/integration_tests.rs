@@ -785,7 +785,6 @@ async fn test_concurrent_writes() {
 
     for i in 0..10 {
         let store = store.clone();
-        let tenant_id = tenant_id;
 
         let handle = tokio::spawn(async move {
             let event = SessionEvent::Started {

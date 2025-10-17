@@ -65,8 +65,9 @@ data: [DONE]
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = Arc::new(OpenAIConnector::new(config).unwrap());
+    let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
 
     // Create passthrough router with recording
     let app = lunaroute_ingress::openai::passthrough_router(
@@ -385,8 +386,9 @@ async fn test_openai_passthrough_non_streaming_with_recording() {
         custom_headers: None,
         request_body_config: None,
         response_body_config: None,
+        codex_auth: None,
     };
-    let connector = Arc::new(OpenAIConnector::new(config).unwrap());
+    let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
 
     // Create passthrough router with recording
     let app = lunaroute_ingress::openai::passthrough_router(
