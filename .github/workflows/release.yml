@@ -78,8 +78,15 @@ jobs:
 
       # Strip binaries on Unix systems for smaller size
       - name: Strip binary
-        if: matrix.os != 'windows-latest'
+        if: matrix.os != 'windows-latest' && matrix.cross != true
         run: strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+
+      - name: Strip binary (cross-compiled)
+        if: matrix.cross == true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils-aarch64-linux-gnu
+          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
 
       # Upload artifacts
       - name: Upload binary
