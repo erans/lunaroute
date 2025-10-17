@@ -212,6 +212,11 @@ where
     let mut tool_calls: HashMap<String, u32> = HashMap::new();
     let mut seen_tool_ids: HashSet<String> = HashSet::new(); // Prevent duplicate counting
 
+    // Track tool info for building ToolCallInfo list
+    let mut tool_id_by_index: HashMap<u32, String> = HashMap::new();
+    let mut tool_name_by_id: HashMap<String, String> = HashMap::new();
+    let mut tool_args_by_id: HashMap<String, String> = HashMap::new();
+
     while let Some(event_result) = stream.next().await {
         if let Ok(event) = event_result {
             // Track response size
@@ -262,6 +267,13 @@ where
                                 delta.get("tool_calls").and_then(|t| t.as_array())
                             {
                                 for tool_call in tool_calls_arr {
+                                    // Get index for tracking
+                                    let index = tool_call
+                                        .get("index")
+                                        .and_then(|i| i.as_u64())
+                                        .unwrap_or(0)
+                                        as u32;
+
                                     if let Some(function) = tool_call.get("function")
                                         && let Some(name) =
                                             function.get("name").and_then(|n| n.as_str())
@@ -281,9 +293,26 @@ where
                                                 format!("{}_{}", name, seen_tool_ids.len())
                                             });
 
+                                        // Track tool ID by index
+                                        tool_id_by_index.insert(index, tool_id.clone());
+                                        tool_name_by_id.insert(tool_id.clone(), name.to_string());
+
                                         // Only count if we haven't seen this tool ID before
                                         if seen_tool_ids.insert(tool_id) {
                                             *tool_calls.entry(name.to_string()).or_insert(0) += 1;
+                                        }
+
+                                        // Extract arguments if present
+                                        if let Some(arguments) =
+                                            function.get("arguments").and_then(|a| a.as_str())
+                                        {
+                                            // Append to existing arguments (for streaming)
+                                            if let Some(tool_id) = tool_id_by_index.get(&index) {
+                                                tool_args_by_id
+                                                    .entry(tool_id.clone())
+                                                    .or_default()
+                                                    .push_str(arguments);
+                                            }
                                         }
                                     }
                                 }
@@ -320,6 +349,16 @@ where
         }
     }
 
+    // Build tool_calls list with arguments (same as Anthropic parser)
+    for (tool_id, tool_name) in tool_name_by_id {
+        let tool_arguments = tool_args_by_id.get(&tool_id).cloned().unwrap_or_default();
+        data.tool_calls.push(ToolCallInfo {
+            tool_name,
+            tool_call_id: tool_id,
+            tool_arguments,
+        });
+    }
+
     // Calculate grand total
     data.tokens.grand_total = data.tokens.total_input + data.tokens.total_output;
 
@@ -342,6 +381,7 @@ pub fn spawn_anthropic_parser<E>(
     request_id: String,
     session_store: Arc<dyn SessionStore>,
     user_agent: Option<String>,
+    tool_call_mapper: Option<Arc<lunaroute_session::ToolCallMapper>>,
 ) {
     tokio::spawn(async move {
         // Catch and log any panics/errors in background parsing
@@ -351,6 +391,11 @@ pub fn spawn_anthropic_parser<E>(
 
             // Emit ToolCallRecorded events for each tool call with arguments
             for tool_call in &parsed.tool_calls {
+                // Record to mapper for later lookup (when tool results arrive)
+                if let Some(ref mapper) = tool_call_mapper {
+                    mapper.record_call(tool_call.tool_call_id.clone(), tool_call.tool_name.clone());
+                }
+
                 let store_clone = session_store.clone();
                 let session_id_clone = session_id.clone();
                 let request_id_clone = request_id.clone();
@@ -445,6 +490,7 @@ pub fn spawn_openai_parser<E>(
     request_id: String,
     session_store: Arc<dyn SessionStore>,
     user_agent: Option<String>,
+    tool_call_mapper: Option<Arc<lunaroute_session::ToolCallMapper>>,
 ) {
     tokio::spawn(async move {
         // Catch and log any panics/errors in background parsing
@@ -452,12 +498,47 @@ pub fn spawn_openai_parser<E>(
         let result = std::panic::AssertUnwindSafe(async {
             let parsed = parse_openai_stream::<_, E>(stream).await;
 
-            // Only record if we found meaningful data
+            // Emit ToolCallRecorded events for each tool call with arguments
+            for tool_call in &parsed.tool_calls {
+                // Record to mapper for later lookup (when tool results arrive)
+                if let Some(ref mapper) = tool_call_mapper {
+                    mapper.record_call(tool_call.tool_call_id.clone(), tool_call.tool_name.clone());
+                }
+
+                let store_clone = session_store.clone();
+                let session_id_clone = session_id.clone();
+                let request_id_clone = request_id.clone();
+                let tool_name = tool_call.tool_name.clone();
+                let tool_call_id = tool_call.tool_call_id.clone();
+                let input_size = tool_call.tool_arguments.len();
+                let tool_arguments = tool_call.tool_arguments.clone();
+
+                tokio::spawn(async move {
+                    let event = lunaroute_session::SessionEvent::ToolCallRecorded {
+                        session_id: session_id_clone,
+                        request_id: request_id_clone,
+                        timestamp: chrono::Utc::now(),
+                        tool_name,
+                        tool_call_id,
+                        execution_time_ms: None,
+                        input_size_bytes: input_size,
+                        output_size_bytes: None,
+                        success: None,
+                        tool_arguments: Some(tool_arguments),
+                    };
+                    if let Ok(json) = serde_json::to_value(event) {
+                        let _ = store_clone.write_event(None, json).await;
+                    }
+                });
+            }
+
+            // Only record StatsUpdated if we found meaningful data
             if parsed.tokens.grand_total > 0 || parsed.tool_summary.total_tool_calls > 0 {
                 tracing::debug!(
-                    "Async parsed OpenAI stream: tokens={}, tools={}",
+                    "Async parsed OpenAI stream: tokens={}, tools={}, tool_calls_with_args={}",
                     parsed.tokens.grand_total,
-                    parsed.tool_summary.total_tool_calls
+                    parsed.tool_summary.total_tool_calls,
+                    parsed.tool_calls.len()
                 );
 
                 let store_clone = session_store.clone();
