@@ -1,0 +1,16 @@
+[package]
+name = "backfill-sqlite"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "backfill-sqlite"
+path = "main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls"] }
+serde_json = "1"
+anyhow = "1"
+glob = "0.3"
+shellexpand = "3"
