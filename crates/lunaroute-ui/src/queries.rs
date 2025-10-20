@@ -51,22 +51,36 @@ pub async fn get_overview_stats(pool: &SqlitePool, hours: i64) -> Result<Overvie
     .fetch_all(pool)
     .await?;
 
-    let total_cost: f64 = stats_rows
+    // OPTIMIZATION: Collect unique models and batch-fetch their pricing
+    let unique_models: Vec<String> = stats_rows
         .iter()
-        .map(|s| {
-            let model: Option<String> = s.try_get("model_name").ok();
-            let input: Option<i64> = s.try_get("input_tokens").ok().flatten();
-            let output: Option<i64> = s.try_get("output_tokens").ok().flatten();
-            let thinking: Option<i64> = s.try_get("thinking_tokens").ok().flatten();
+        .filter_map(|s| s.try_get::<Option<String>, _>("model_name").ok().flatten())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
 
-            stats::calculate_cost(
-                input.unwrap_or(0),
-                output.unwrap_or(0),
-                thinking.unwrap_or(0),
-                model.as_deref().unwrap_or(""),
-            )
-        })
-        .sum();
+    let pricing_map = crate::pricing::PRICING_FETCHER
+        .get_batch_pricing(&unique_models)
+        .await;
+
+    // Calculate total cost using the pricing map
+    let mut total_cost = 0.0;
+    for s in &stats_rows {
+        let model: Option<String> = s.try_get("model_name").ok();
+        let input: Option<i64> = s.try_get("input_tokens").ok().flatten();
+        let output: Option<i64> = s.try_get("output_tokens").ok().flatten();
+        let thinking: Option<i64> = s.try_get("thinking_tokens").ok().flatten();
+
+        let cost = stats::calculate_cost_from_map(
+            input.unwrap_or(0),
+            output.unwrap_or(0),
+            thinking.unwrap_or(0),
+            model.as_deref().unwrap_or(""),
+            &pricing_map,
+        );
+
+        total_cost += cost;
+    }
 
     Ok(OverviewStats {
         total_sessions: row.try_get("total_sessions").unwrap_or(0),
@@ -171,6 +185,18 @@ pub async fn get_cost_stats(pool: &SqlitePool) -> Result<CostStats> {
     .fetch_all(pool)
     .await?;
 
+    // OPTIMIZATION: Collect unique models and batch-fetch their pricing
+    let unique_models: Vec<String> = stats_rows
+        .iter()
+        .filter_map(|s| s.try_get::<Option<String>, _>("model_name").ok().flatten())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let pricing_map = crate::pricing::PRICING_FETCHER
+        .get_batch_pricing(&unique_models)
+        .await;
+
     let mut today_cost = 0.0;
     let mut week_cost = 0.0;
     let mut month_cost = 0.0;
@@ -183,11 +209,12 @@ pub async fn get_cost_stats(pool: &SqlitePool) -> Result<CostStats> {
         let output: Option<i64> = stat.try_get("output_tokens").ok().flatten();
         let thinking: Option<i64> = stat.try_get("thinking_tokens").ok().flatten();
 
-        let cost = stats::calculate_cost(
+        let cost = stats::calculate_cost_from_map(
             input.unwrap_or(0),
             output.unwrap_or(0),
             thinking.unwrap_or(0),
             model.as_deref().unwrap_or(""),
+            &pricing_map,
         );
 
         total_cost += cost;
@@ -375,45 +402,64 @@ pub async fn get_recent_sessions(pool: &SqlitePool, limit: i64) -> Result<Vec<Se
     .fetch_all(pool)
     .await?;
 
-    let summaries = sessions
-        .into_iter()
-        .map(|s| {
-            // Get all models from session_stats, fallback to model_used, then model_requested
+    // OPTIMIZATION: Collect unique models and batch-fetch their pricing
+    let unique_models: Vec<String> = sessions
+        .iter()
+        .filter_map(|s| {
             let all_models: Option<String> = s.try_get("all_models").ok().flatten();
             let model_used: Option<String> = s.try_get("model_used").ok().flatten();
             let model_requested: Option<String> = s.try_get("model_requested").ok().flatten();
-            let models = all_models
+            all_models
                 .filter(|m| !m.is_empty())
                 .or(model_used)
-                .or(model_requested);
-
-            let input: Option<i64> = s.try_get("input_tokens").ok().flatten();
-            let output: Option<i64> = s.try_get("output_tokens").ok().flatten();
-            let thinking: Option<i64> = s.try_get("thinking_tokens").ok().flatten();
-
-            let cost = stats::calculate_cost(
-                input.unwrap_or(0),
-                output.unwrap_or(0),
-                thinking.unwrap_or(0),
-                models.as_deref().unwrap_or(""),
-            );
-
-            SessionSummary {
-                session_id: s.try_get("session_id").unwrap_or_default(),
-                started_at: s
-                    .try_get::<Option<String>, _>("started_at")
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                model: models.unwrap_or_else(|| "unknown".to_string()),
-                request_count: s.try_get("request_count").unwrap_or(0),
-                total_tokens: s.try_get("total_tokens").ok().flatten().unwrap_or(0),
-                cost,
-                duration_ms: s.try_get("total_duration_ms").ok().flatten().unwrap_or(0),
-                success: s.try_get("success").ok().flatten().unwrap_or(false),
-            }
+                .or(model_requested)
         })
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
         .collect();
+
+    let pricing_map = crate::pricing::PRICING_FETCHER
+        .get_batch_pricing(&unique_models)
+        .await;
+
+    let mut summaries = Vec::new();
+    for s in sessions {
+        // Get all models from session_stats, fallback to model_used, then model_requested
+        let all_models: Option<String> = s.try_get("all_models").ok().flatten();
+        let model_used: Option<String> = s.try_get("model_used").ok().flatten();
+        let model_requested: Option<String> = s.try_get("model_requested").ok().flatten();
+        let models = all_models
+            .filter(|m| !m.is_empty())
+            .or(model_used)
+            .or(model_requested);
+
+        let input: Option<i64> = s.try_get("input_tokens").ok().flatten();
+        let output: Option<i64> = s.try_get("output_tokens").ok().flatten();
+        let thinking: Option<i64> = s.try_get("thinking_tokens").ok().flatten();
+
+        let cost = stats::calculate_cost_from_map(
+            input.unwrap_or(0),
+            output.unwrap_or(0),
+            thinking.unwrap_or(0),
+            models.as_deref().unwrap_or(""),
+            &pricing_map,
+        );
+
+        summaries.push(SessionSummary {
+            session_id: s.try_get("session_id").unwrap_or_default(),
+            started_at: s
+                .try_get::<Option<String>, _>("started_at")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "unknown".to_string()),
+            model: models.unwrap_or_else(|| "unknown".to_string()),
+            request_count: s.try_get("request_count").unwrap_or(0),
+            total_tokens: s.try_get("total_tokens").ok().flatten().unwrap_or(0),
+            cost,
+            duration_ms: s.try_get("total_duration_ms").ok().flatten().unwrap_or(0),
+            success: s.try_get("success").ok().flatten().unwrap_or(false),
+        });
+    }
 
     Ok(summaries)
 }
@@ -497,45 +543,64 @@ pub async fn get_sessions_paginated(
 
     let sessions = sqlx_query.bind(limit).bind(offset).fetch_all(pool).await?;
 
-    let summaries = sessions
-        .into_iter()
-        .map(|s| {
-            // Get all models from session_stats, fallback to model_used, then model_requested
+    // OPTIMIZATION: Collect unique models and batch-fetch their pricing
+    let unique_models: Vec<String> = sessions
+        .iter()
+        .filter_map(|s| {
             let all_models: Option<String> = s.try_get("all_models").ok().flatten();
             let model_used: Option<String> = s.try_get("model_used").ok().flatten();
             let model_requested: Option<String> = s.try_get("model_requested").ok().flatten();
-            let models = all_models
+            all_models
                 .filter(|m| !m.is_empty())
                 .or(model_used)
-                .or(model_requested);
-
-            let input: Option<i64> = s.try_get("input_tokens").ok().flatten();
-            let output: Option<i64> = s.try_get("output_tokens").ok().flatten();
-            let thinking: Option<i64> = s.try_get("thinking_tokens").ok().flatten();
-
-            let cost = stats::calculate_cost(
-                input.unwrap_or(0),
-                output.unwrap_or(0),
-                thinking.unwrap_or(0),
-                models.as_deref().unwrap_or(""),
-            );
-
-            SessionSummary {
-                session_id: s.try_get("session_id").unwrap_or_default(),
-                started_at: s
-                    .try_get::<Option<String>, _>("started_at")
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                model: models.unwrap_or_else(|| "unknown".to_string()),
-                request_count: s.try_get("request_count").unwrap_or(0),
-                total_tokens: s.try_get("total_tokens").ok().flatten().unwrap_or(0),
-                cost,
-                duration_ms: s.try_get("total_duration_ms").ok().flatten().unwrap_or(0),
-                success: s.try_get("success").ok().flatten().unwrap_or(false),
-            }
+                .or(model_requested)
         })
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
         .collect();
+
+    let pricing_map = crate::pricing::PRICING_FETCHER
+        .get_batch_pricing(&unique_models)
+        .await;
+
+    let mut summaries = Vec::new();
+    for s in sessions {
+        // Get all models from session_stats, fallback to model_used, then model_requested
+        let all_models: Option<String> = s.try_get("all_models").ok().flatten();
+        let model_used: Option<String> = s.try_get("model_used").ok().flatten();
+        let model_requested: Option<String> = s.try_get("model_requested").ok().flatten();
+        let models = all_models
+            .filter(|m| !m.is_empty())
+            .or(model_used)
+            .or(model_requested);
+
+        let input: Option<i64> = s.try_get("input_tokens").ok().flatten();
+        let output: Option<i64> = s.try_get("output_tokens").ok().flatten();
+        let thinking: Option<i64> = s.try_get("thinking_tokens").ok().flatten();
+
+        let cost = stats::calculate_cost_from_map(
+            input.unwrap_or(0),
+            output.unwrap_or(0),
+            thinking.unwrap_or(0),
+            models.as_deref().unwrap_or(""),
+            &pricing_map,
+        );
+
+        summaries.push(SessionSummary {
+            session_id: s.try_get("session_id").unwrap_or_default(),
+            started_at: s
+                .try_get::<Option<String>, _>("started_at")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "unknown".to_string()),
+            model: models.unwrap_or_else(|| "unknown".to_string()),
+            request_count: s.try_get("request_count").unwrap_or(0),
+            total_tokens: s.try_get("total_tokens").ok().flatten().unwrap_or(0),
+            cost,
+            duration_ms: s.try_get("total_duration_ms").ok().flatten().unwrap_or(0),
+            success: s.try_get("success").ok().flatten().unwrap_or(false),
+        });
+    }
 
     Ok(summaries)
 }
@@ -644,7 +709,9 @@ pub async fn get_session_detail(pool: &SqlitePool, session_id: &str) -> Result<S
         let output: i64 = s.try_get("output_tokens").ok().flatten().unwrap_or(0);
         let thinking: i64 = s.try_get("thinking_tokens").ok().flatten().unwrap_or(0);
 
-        let cost = stats::calculate_cost(input, output, thinking, model.as_deref().unwrap_or(""));
+        let cost =
+            stats::calculate_cost_async(input, output, thinking, model.as_deref().unwrap_or(""))
+                .await;
 
         Ok(SessionDetail {
             session_id: s.try_get("session_id").unwrap_or_default(),
@@ -884,6 +951,18 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: Option<i64>) -> Result
 
     let stats_rows = sqlx::query(&query).fetch_all(pool).await?;
 
+    // OPTIMIZATION: Collect unique models and batch-fetch their pricing
+    let unique_models: Vec<String> = stats_rows
+        .iter()
+        .filter_map(|s| s.try_get::<Option<String>, _>("model_name").ok().flatten())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let pricing_map = crate::pricing::PRICING_FETCHER
+        .get_batch_pricing(&unique_models)
+        .await;
+
     // Calculate total cost and per-model breakdown
     // Track: (total_cost, unique_sessions, total_requests)
     let mut total_cost = 0.0;
@@ -899,11 +978,12 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: Option<i64>) -> Result
         let thinking: Option<i64> = stat.try_get("thinking_tokens").ok().flatten();
         let session_id: Option<String> = stat.try_get("session_id").ok();
 
-        let cost = stats::calculate_cost(
+        let cost = stats::calculate_cost_from_map(
             input.unwrap_or(0),
             output.unwrap_or(0),
             thinking.unwrap_or(0),
             model.as_deref().unwrap_or(""),
+            &pricing_map,
         );
 
         total_cost += cost;

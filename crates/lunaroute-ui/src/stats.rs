@@ -1,6 +1,68 @@
 //! Statistics calculations and helpers
 
-/// Calculate estimated cost based on token usage
+use crate::pricing::{ModelPricing, PricingFetcher, PRICING_FETCHER};
+use std::collections::HashMap;
+
+/// Calculate cost using a pre-fetched pricing map (optimized for batch operations)
+pub fn calculate_cost_from_map(
+    input_tokens: i64,
+    output_tokens: i64,
+    thinking_tokens: i64,
+    model: &str,
+    pricing_map: &HashMap<String, ModelPricing>,
+) -> f64 {
+    if let Some(pricing) = pricing_map.get(model) {
+        let input_cost = input_tokens as f64 * pricing.input_cost_per_token;
+        let output_cost = output_tokens as f64 * pricing.output_cost_per_token;
+        let thinking_cost = thinking_tokens as f64 * pricing.input_cost_per_token;
+        return input_cost + output_cost + thinking_cost;
+    }
+
+    // Fallback to hardcoded pricing if model not in map
+    calculate_cost(input_tokens, output_tokens, thinking_tokens, model)
+}
+
+/// Calculate estimated cost based on token usage with online pricing lookup (uses global fetcher)
+pub async fn calculate_cost_async(
+    input_tokens: i64,
+    output_tokens: i64,
+    thinking_tokens: i64,
+    model: &str,
+) -> f64 {
+    calculate_cost_async_with_fetcher(
+        input_tokens,
+        output_tokens,
+        thinking_tokens,
+        model,
+        &PRICING_FETCHER,
+    )
+    .await
+}
+
+/// Calculate estimated cost based on token usage with online pricing lookup (with custom fetcher)
+pub async fn calculate_cost_async_with_fetcher(
+    input_tokens: i64,
+    output_tokens: i64,
+    thinking_tokens: i64,
+    model: &str,
+    pricing_fetcher: &PricingFetcher,
+) -> f64 {
+    // Try to fetch pricing from LiteLLM database
+    if let Some(pricing) = pricing_fetcher.get_model_pricing(model).await {
+        let input_cost = input_tokens as f64 * pricing.input_cost_per_token;
+        let output_cost = output_tokens as f64 * pricing.output_cost_per_token;
+        // Note: LiteLLM doesn't have separate thinking token pricing yet
+        // Using input token pricing as fallback for thinking tokens
+        let thinking_cost = thinking_tokens as f64 * pricing.input_cost_per_token;
+
+        return input_cost + output_cost + thinking_cost;
+    }
+
+    // Fallback to hardcoded pricing
+    calculate_cost(input_tokens, output_tokens, thinking_tokens, model)
+}
+
+/// Calculate estimated cost based on token usage (hardcoded fallback)
 pub fn calculate_cost(
     input_tokens: i64,
     output_tokens: i64,

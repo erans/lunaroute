@@ -6,6 +6,7 @@
 
 pub mod handlers;
 pub mod models;
+pub mod pricing;
 pub mod queries;
 pub mod server;
 pub mod stats;
