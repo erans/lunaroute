@@ -28,11 +28,15 @@ pub fn calculate_cost(
         m if m.contains("claude-haiku") => (0.80 / 1_000_000.0, 4.0 / 1_000_000.0, 0.0), // Default to 3.5 pricing
 
         // OpenAI Models
+        m if m.contains("codex-mini") => (1.50 / 1_000_000.0, 6.0 / 1_000_000.0, 0.0),
+        m if m.contains("gpt-5-codex") || m.contains("gpt-5_codex") => {
+            (1.25 / 1_000_000.0, 10.0 / 1_000_000.0, 0.0)
+        }
         m if m.contains("gpt-4o-mini") => (0.15 / 1_000_000.0, 0.60 / 1_000_000.0, 0.0),
         m if m.contains("gpt-4o") => (2.50 / 1_000_000.0, 10.0 / 1_000_000.0, 0.0),
         m if m.contains("gpt-4-turbo") => (10.0 / 1_000_000.0, 30.0 / 1_000_000.0, 0.0),
         m if m.contains("gpt-4") => (30.0 / 1_000_000.0, 60.0 / 1_000_000.0, 0.0),
-        m if m.contains("gpt-5") => (5.0 / 1_000_000.0, 15.0 / 1_000_000.0, 0.0),
+        m if m.contains("gpt-5") => (1.25 / 1_000_000.0, 10.0 / 1_000_000.0, 0.0),
         m if m.contains("o1-mini") => (3.0 / 1_000_000.0, 12.0 / 1_000_000.0, 0.0),
         m if m.contains("o1") => (15.0 / 1_000_000.0, 60.0 / 1_000_000.0, 0.0),
 
@@ -131,5 +135,23 @@ mod tests {
             "Expected ~$12.50, got ${}",
             cost
         );
+    }
+
+    #[test]
+    fn test_gpt_5_codex_pricing() {
+        // GPT-5-Codex: $1.25 input, $10.00 output per million
+        let cost = calculate_cost(1_000_000, 1_000_000, 0, "gpt-5-codex");
+        assert!(
+            (cost - 11.25).abs() < 0.01,
+            "Expected ~$11.25, got ${}",
+            cost
+        );
+    }
+
+    #[test]
+    fn test_codex_mini_pricing() {
+        // codex-mini-latest: $1.50 input, $6.00 output per million
+        let cost = calculate_cost(1_000_000, 1_000_000, 0, "codex-mini-latest");
+        assert!((cost - 7.50).abs() < 0.01, "Expected ~$7.50, got ${}", cost);
     }
 }
