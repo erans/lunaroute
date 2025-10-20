@@ -1,0 +1,154 @@
+# Dual-Dialect Passthrough Configuration
+#
+# This configuration enables BOTH OpenAI and Anthropic API formats simultaneously
+# in a single server instance using the "both" dialect mode.
+#
+# DUAL-DIALECT MODE:
+# - api_dialect: "both" → accepts BOTH formats:
+#   * OpenAI format at /v1/chat/completions
+#   * Anthropic format at /v1/messages
+# - Routes determined by model prefix:
+#   * gpt-* models → OpenAI provider (passthrough, no normalization)
+#   * claude-* models → Anthropic provider (passthrough, no normalization)
+#
+# BENEFITS:
+# - Single server instance for both Claude Code and Codex
+# - Zero-copy passthrough for both formats (optimal performance)
+# - 100% API fidelity (preserves extended thinking, etc.)
+# - Sub-millisecond overhead for both dialects
+#
+# This is ideal for development environments or when you need a unified
+# gateway that supports both OpenAI and Anthropic clients simultaneously.
+
+# Server configuration
+host: "127.0.0.1"
+port: 8081
+
+# API dialect - determines which format(s) the server accepts
+# openai = accepts POST /v1/chat/completions (OpenAI format only)
+# anthropic = accepts POST /v1/messages (Anthropic format only)
+# both = accepts BOTH formats simultaneously
+api_dialect: both
+
+# Logging
+logging:
+  level: "info"
+  log_requests: true
+
+# Provider definitions
+# Both providers configured, enabling routing to either OpenAI or Anthropic backends
+providers:
+  # OpenAI provider - passthrough for gpt-* models
+  openai:
+    enabled: true
+    # No api_key field = passthrough mode - will use:
+    #   1. OPENAI_API_KEY environment variable, OR
+    #   2. Client's Authorization header (Codex provides this)
+    # Use ChatGPT backend API for Codex compatibility
+    base_url: "https://chatgpt.com/backend-api/codex"
+    codex_auth:
+      enabled: true  # Required for ChatGPT Codex backend
+
+  # Anthropic provider - passthrough for claude-* models
+  anthropic:
+    enabled: true
+    # No api_key field = passthrough mode - will use:
+    #   1. ANTHROPIC_API_KEY environment variable, OR
+    #   2. Client's x-api-key header (Claude Code provides this)
+    # No base_url specified = uses default https://api.anthropic.com
+
+# Routing configuration
+# NOTE: Routing rules are automatically generated based on providers and model patterns.
+# The code will create rules that route:
+# - gpt-* models → OpenAI provider
+# - claude-* models → Anthropic provider
+# No explicit routing configuration needed in passthrough mode.
+
+# Session recording (required for analytics dashboard)
+session_recording:
+  enabled: true
+
+  # SQLite backend - stores session metadata and stats
+  sqlite:
+    enabled: true
+    path: "~/.lunaroute/sessions.db"
+    max_connections: 10
+
+  # JSONL backend - full request/response recording
+  jsonl:
+    enabled: true
+    directory: "~/.lunaroute/sessions"
+    retention:
+      max_age_days: 30        # Delete sessions older than 30 days
+      max_size_mb: 1024       # Delete oldest when total size exceeds 1GB
+
+# Analytics Dashboard / UI Server
+ui:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8082
+  refresh_interval: 5  # Auto-refresh interval in seconds
+
+# Example usage:
+#
+# 1. Set environment variables:
+#    export OPENAI_API_KEY="sk-..."
+#    export ANTHROPIC_API_KEY="sk-ant-..."
+#
+# 2. Start the server:
+#    lunaroute-server --config examples/configs/dual-dialect-passthrough.yaml
+#
+# 3. Access the analytics dashboard:
+#    Open http://localhost:8082 in your browser
+#    - View real-time request metrics and session statistics
+#    - Monitor provider performance and routing decisions
+#    - Export session data for analysis
+#
+# 4. Test with Claude Code (Anthropic format):
+#    export ANTHROPIC_BASE_URL=http://localhost:8081
+#    # Claude Code will send requests to /v1/messages
+#    # Routed to Anthropic provider (passthrough, no normalization)
+#
+# 5. Test with Codex (OpenAI Responses API):
+#    # NOTE: Codex v0.47.0 has known issues with OPENAI_BASE_URL environment variable.
+#    # You may need to configure Codex via config.toml instead. See openai-proxy-with-recording.yaml
+#    # for an example of Codex configuration.
+#    export OPENAI_BASE_URL=http://localhost:8081
+#    codex exec "what is 2+2"
+#    # Sends requests to /responses (Responses API)
+#    # Routed to OpenAI provider (passthrough, no normalization)
+#
+# 6. Test Claude model with Anthropic format (passthrough):
+#    curl http://localhost:8081/v1/messages \
+#      -H "Content-Type: application/json" \
+#      -H "x-api-key: $ANTHROPIC_API_KEY" \
+#      -H "anthropic-version: 2023-06-01" \
+#      -d '{
+#        "model": "claude-3-5-sonnet-20241022",
+#        "messages": [{"role": "user", "content": "Hello"}],
+#        "max_tokens": 100
+#      }'
+#    # Direct passthrough to Anthropic (no normalization)
+#
+# 7. Test GPT model with OpenAI format (passthrough):
+#    curl http://localhost:8081/v1/chat/completions \
+#      -H "Content-Type: application/json" \
+#      -H "Authorization: Bearer $OPENAI_API_KEY" \
+#      -d '{
+#        "model": "gpt-4",
+#        "messages": [{"role": "user", "content": "Hello"}]
+#      }'
+#    # Direct passthrough to OpenAI (no normalization)
+#
+# ROUTING BEHAVIOR:
+# - OpenAI format at /v1/chat/completions:
+#   * gpt-* models → OpenAI provider (passthrough)
+#   * claude-* models → Anthropic provider (WITH normalization OpenAI→Anthropic→OpenAI)
+#
+# - Anthropic format at /v1/messages:
+#   * claude-* models → Anthropic provider (passthrough)
+#   * gpt-* models → OpenAI provider (WITH normalization Anthropic→OpenAI→Anthropic)
+#
+# For OPTIMAL performance (zero normalization overhead):
+# - Use Claude models with Anthropic format (/v1/messages)
+# - Use GPT models with OpenAI format (/v1/chat/completions)

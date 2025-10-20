@@ -84,6 +84,11 @@ lunaroute-server --config examples/configs/claude-code-proxy.yaml
 
 # With recording
 lunaroute-server --config examples/configs/claude-code-proxy-with-recording.yaml
+
+# Or dual-dialect mode (serves both Claude Code AND Codex simultaneously)
+lunaroute-server --config examples/configs/dual-dialect-passthrough.yaml
+# Now you can use both: export ANTHROPIC_BASE_URL=http://localhost:8081
+# And also: export OPENAI_BASE_URL=http://localhost:8081
 ```
 
 **📝 Note:** All example configs use client authentication by default (no `api_key` field). If you want server-side keys, add `api_key: "${ANTHROPIC_API_KEY}"` to the config.

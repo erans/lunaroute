@@ -1931,7 +1931,9 @@ pub fn passthrough_router(
     Router::new()
         .route("/v1/chat/completions", post(chat_completions_passthrough))
         .route("/v1/responses", post(responses_passthrough))
+        .route("/responses", post(responses_passthrough)) // For Codex compatibility (base_url without /v1)
         .route("/v1/models", axum::routing::get(models_passthrough))
+        .route("/models", axum::routing::get(models_passthrough)) // For Codex compatibility (base_url without /v1)
         .with_state(state)
 }
 

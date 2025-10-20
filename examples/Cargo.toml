@@ -1,0 +1,15 @@
+[package]
+name = "lunaroute-examples"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "cuda_test"
+path = "cuda_test.rs"
+
+[[bin]]
+name = "cuda_check"
+path = "cuda_check.rs"
+
+[dependencies]
+tch = { git = "https://github.com/LaurentMazare/tch-rs.git", branch = "pytorch-2.8.0" }
