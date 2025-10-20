@@ -37,5 +37,5 @@ prometheus = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = "0.4"
 serial_test = { workspace = true }
-testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["postgres"] }
+testcontainers = "0.25"
+testcontainers-modules = { version = "0.13", features = ["postgres"] }
