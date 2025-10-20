@@ -185,7 +185,100 @@ codex exec "help me debug this function"
 
 ---
 
-#### Example 3: Map Claude Code to Gemini (OpenAI dialect)
+#### Example 3: Dual-Dialect Passthrough (Both Claude Code & Codex)
+
+Run a single proxy that accepts both OpenAI and Anthropic formats simultaneously:
+
+```yaml
+# Save as dual-passthrough.yaml
+host: "127.0.0.1"
+port: 8081
+api_dialect: "both"  # Accept BOTH OpenAI and Anthropic formats
+
+providers:
+  openai:
+    enabled: true
+    # For Codex with ChatGPT account
+    base_url: "https://chatgpt.com/backend-api/codex"
+    codex_auth:
+      enabled: true  # Reads auth from ~/.codex/auth.json automatically
+    # For OpenAI API instead, use: base_url: "https://api.openai.com/v1"
+
+  anthropic:
+    enabled: true
+    # No api_key needed - Claude Code sends it via x-api-key header
+
+session_recording:
+  enabled: true
+
+  # SQLite analytics - lightweight session stats
+  sqlite:
+    enabled: true
+    path: "~/.lunaroute/sessions.db"
+    max_connections: 10
+
+  # JSONL logs - full request/response recording
+  jsonl:
+    enabled: true
+    directory: "~/.lunaroute/sessions"
+    retention:
+      max_age_days: 30
+      max_size_mb: 1024
+
+# Web UI for browsing sessions
+ui:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8082
+  refresh_interval: 5
+
+logging:
+  level: "info"
+  log_requests: true
+```
+
+**Usage:**
+```bash
+# Start server - ONE proxy for BOTH tools!
+lunaroute-server --config dual-passthrough.yaml
+
+# Point Claude Code to proxy
+export ANTHROPIC_BASE_URL=http://localhost:8081
+
+# Point Codex to proxy (in another terminal or project)
+export OPENAI_BASE_URL=http://localhost:8081
+
+# Use both tools simultaneously - same proxy!
+# Claude Code → /v1/messages → Anthropic
+# Codex CLI   → /v1/chat/completions → OpenAI
+
+# All sessions recorded to ~/.lunaroute/sessions/
+# Analytics stored in ~/.lunaroute/sessions.db
+# Browse sessions at http://localhost:8082
+```
+
+**What happens:**
+1. LunaRoute accepts requests at both `/v1/messages` (Anthropic) and `/v1/chat/completions` (OpenAI)
+2. Anthropic requests → passthrough to Anthropic provider
+3. OpenAI requests → passthrough to OpenAI provider (with Codex auth)
+4. Both formats work simultaneously with zero normalization overhead
+5. Each tool gets native responses in its expected format
+6. All sessions recorded with full request/response logs + SQLite analytics
+7. Web UI available at http://localhost:8082 for session browsing and analysis
+
+**Performance:** ~0.5-1ms overhead (async recording), 100% API fidelity for both formats
+
+**Use Cases:**
+- Use Claude Code and Codex in the same development environment
+- Single proxy for team using mixed AI tools
+- Consolidated logging and metrics for all AI interactions
+- Unified session recording across both OpenAI and Anthropic APIs
+- Visual session analysis through web UI
+- Simplified infrastructure (one proxy instead of two)
+
+---
+
+#### Example 4: Map Claude Code to Gemini (OpenAI dialect)
 
 Translate Anthropic format to Gemini's OpenAI-compatible endpoint:
 

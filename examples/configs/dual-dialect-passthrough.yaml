@@ -67,10 +67,20 @@ providers:
 # Session recording (required for analytics dashboard)
 session_recording:
   enabled: true
-  # SQLite backend - stores sessions for the UI dashboard
+
+  # SQLite backend - stores session metadata and stats
   sqlite:
     enabled: true
     path: "~/.lunaroute/sessions.db"
+    max_connections: 10
+
+  # JSONL backend - full request/response recording
+  jsonl:
+    enabled: true
+    directory: "~/.lunaroute/sessions"
+    retention:
+      max_age_days: 30        # Delete sessions older than 30 days
+      max_size_mb: 1024       # Delete oldest when total size exceeds 1GB
 
 # Analytics Dashboard / UI Server
 ui:

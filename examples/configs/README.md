@@ -4,6 +4,38 @@ This directory contains example configurations for common LunaRoute deployment s
 
 ## Available Configurations
 
+### `dual-dialect-passthrough.yaml` ⭐ NEW - RECOMMENDED FOR MIXED ENVIRONMENTS
+Unified proxy accepting both OpenAI and Anthropic formats simultaneously.
+
+```bash
+lunaroute-server --config examples/configs/dual-dialect-passthrough.yaml
+
+# Point Claude Code to the proxy
+export ANTHROPIC_BASE_URL=http://localhost:8081
+
+# Point Codex CLI to the same proxy
+export OPENAI_BASE_URL=http://localhost:8081
+
+# Both tools work simultaneously through the same proxy!
+```
+
+**Features:**
+- **Dual-dialect mode**: Accepts both OpenAI (`/v1/chat/completions`) and Anthropic (`/v1/messages`) formats
+- **Dual passthrough**: Zero normalization overhead for both formats
+- **Codex authentication**: Automatic auth from `~/.codex/auth.json`
+- **Claude Code compatibility**: Forwards client's `x-api-key` header
+- **Session recording**: Full JSONL logs + SQLite analytics
+- **Web UI**: Browse sessions at http://localhost:8082
+- **Unified observability**: Single metrics endpoint for all traffic
+
+**Performance:** ~0.5-1ms overhead (with recording), 100% API fidelity for both formats
+
+**Use Cases:**
+- Development teams using both Claude Code and Codex
+- Consolidated logging and metrics across different AI tools
+- Single proxy infrastructure instead of multiple proxies
+- Unified session analytics for all AI interactions
+
 ### `connection-pool-example.yaml` ⭐ NEW
 HTTP client connection pool configuration for optimal performance.
 

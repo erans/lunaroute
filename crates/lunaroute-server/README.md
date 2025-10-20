@@ -27,7 +27,7 @@ host: "127.0.0.1"
 port: 3000
 
 # API dialect - which format to accept
-api_dialect: "anthropic"  # or "openai"
+api_dialect: "anthropic"  # or "openai" or "both"
 
 providers:
   anthropic:
@@ -82,7 +82,7 @@ lunaroute-server --config config.yaml --dialect anthropic
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `LUNAROUTE_CONFIG` | Path to config file | none |
-| `LUNAROUTE_DIALECT` | API format to accept (anthropic/openai) | anthropic |
+| `LUNAROUTE_DIALECT` | API format to accept (anthropic/openai/both) | anthropic |
 | `ANTHROPIC_API_KEY` | Anthropic API key (no prefix) | none |
 | `OPENAI_API_KEY` | OpenAI API key (no prefix) | none |
 | `LUNAROUTE_HOST` | Server bind address | 127.0.0.1 |
@@ -168,11 +168,15 @@ export ANTHROPIC_BASE_URL=http://localhost:3000
 Once running, the server exposes:
 
 ### Main API
-- `POST /v1/messages` - Anthropic-compatible endpoint
-- `POST /v1/chat/completions` - OpenAI-compatible endpoint
+- `POST /v1/messages` - Anthropic-compatible endpoint (Anthropic or Both dialect)
+- `POST /v1/chat/completions` - OpenAI-compatible endpoint (OpenAI or Both dialect)
+- `POST /v1/responses` - OpenAI responses endpoint (OpenAI or Both dialect)
+- `GET /v1/models` - Models endpoint (OpenAI or Both dialect)
 - `GET /healthz` - Liveness check
 - `GET /readyz` - Readiness check (includes provider status)
 - `GET /metrics` - Prometheus metrics
+
+**Note:** When using `api_dialect: "both"`, all endpoints are available simultaneously, allowing you to serve both Claude Code (Anthropic) and Codex CLI (OpenAI) from the same proxy instance.
 
 ### Session API (when recording is enabled)
 - `GET /sessions` - List sessions (with filters)
