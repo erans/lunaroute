@@ -58,7 +58,7 @@ toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 opentelemetry = { version = "0.31", features = ["trace"] }
-opentelemetry-otlp = "0.31"
+opentelemetry-otlp = { version = "0.31", features = ["http-proto", "reqwest-client", "reqwest-rustls"], default-features = false }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 prometheus = "0.14"
 
