@@ -91,9 +91,25 @@ Built in Rust for speed and security:
 
 ### Installation
 
+#### Option 1: Download Pre-built Binary (Recommended)
+
+Download the latest release for your platform from the [GitHub Releases page](https://github.com/erans/lunaroute/releases):
+
+```bash
+# Linux/macOS: Extract and make executable
+tar -xzf lunaroute-server-*.tar.gz
+chmod +x lunaroute-server
+./lunaroute-server
+
+# Or add to PATH for global access
+sudo mv lunaroute-server /usr/local/bin/
+```
+
+#### Option 2: Build from Source
+
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/lunaroute.git
+git clone https://github.com/erans/lunaroute.git
 cd lunaroute
 
 # Build (one time only)
