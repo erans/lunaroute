@@ -335,9 +335,11 @@ impl SessionStore for SqliteSessionStore {
     }
 
     async fn flush(&self) -> Result<()> {
-        // MultiWriterRecorder uses shutdown instead of flush
-        // For now, we'll just return Ok since events are batched automatically
-        // In production, you might want to call shutdown on drop or explicitly
+        // Call flush on the multi-writer recorder to ensure all pending events are written
+        self.recorder
+            .flush()
+            .await
+            .map_err(|e| Error::SessionStore(format!("Failed to flush session events: {}", e)))?;
         Ok(())
     }
 

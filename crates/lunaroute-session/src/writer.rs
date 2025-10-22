@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 #[derive(Error, Debug)]
@@ -59,7 +59,8 @@ pub trait SessionWriter: Send + Sync {
 /// Multi-writer recorder that dispatches events to multiple writers asynchronously
 pub struct MultiWriterRecorder {
     tx: mpsc::Sender<SessionEvent>,
-    worker_handle: Option<JoinHandle<()>>,
+    shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    worker_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl MultiWriterRecorder {
@@ -71,14 +72,16 @@ impl MultiWriterRecorder {
     /// Create with custom configuration
     pub fn with_config(writers: Vec<Arc<dyn SessionWriter>>, config: RecorderConfig) -> Self {
         let (tx, rx) = mpsc::channel(config.channel_buffer_size);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         let worker_handle = tokio::spawn(async move {
-            Self::worker_loop(rx, writers, config).await;
+            Self::worker_loop(rx, shutdown_rx, writers, config).await;
         });
 
         Self {
             tx,
-            worker_handle: Some(worker_handle),
+            shutdown_tx: Mutex::new(Some(shutdown_tx)),
+            worker_handle: Mutex::new(Some(worker_handle)),
         }
     }
 
@@ -101,6 +104,7 @@ impl MultiWriterRecorder {
     /// Background worker loop
     async fn worker_loop(
         mut rx: mpsc::Receiver<SessionEvent>,
+        mut shutdown_rx: oneshot::Receiver<()>,
         writers: Vec<Arc<dyn SessionWriter>>,
         config: RecorderConfig,
     ) {
@@ -122,6 +126,14 @@ impl MultiWriterRecorder {
                     if !buffer.is_empty() {
                         Self::flush_buffer(&writers, &mut buffer).await;
                     }
+                }
+                _ = &mut shutdown_rx => {
+                    // Explicit shutdown signal received, flush remaining and exit
+                    tracing::info!("Session recorder received shutdown signal, flushing {} pending events", buffer.len());
+                    if !buffer.is_empty() {
+                        Self::flush_buffer(&writers, &mut buffer).await;
+                    }
+                    break;
                 }
                 else => {
                     // Channel closed, flush remaining and exit
@@ -183,31 +195,65 @@ impl MultiWriterRecorder {
         let _ = futures::future::join_all(flush_futures).await;
     }
 
-    /// Gracefully shutdown and flush all pending events
-    /// This consumes the recorder and waits for the worker to finish
-    pub async fn shutdown(mut self) -> WriterResult<()> {
-        // tx will be automatically dropped when self is consumed, signaling shutdown to the worker
+    /// Flush all pending events and wait for them to be written
+    /// This can be called multiple times and through a shared reference
+    pub async fn flush(&self) -> WriterResult<()> {
+        // Take the shutdown sender (if not already taken)
+        let shutdown_tx = {
+            let mut guard = self.shutdown_tx.lock().await;
+            guard.take()
+        };
 
-        // Wait for worker to finish flushing and exit
-        if let Some(handle) = self.worker_handle.take() {
-            handle
-                .await
-                .map_err(|_| WriterError::Database("Worker task panicked".to_string()))?;
+        if let Some(shutdown_tx) = shutdown_tx {
+            // Send shutdown signal to worker
+            let _ = shutdown_tx.send(());
+
+            // Take the worker handle
+            let handle = {
+                let mut guard = self.worker_handle.lock().await;
+                guard.take()
+            };
+
+            if let Some(handle) = handle {
+                // Wait for worker to finish flushing and exit
+                handle
+                    .await
+                    .map_err(|_| WriterError::Database("Worker task panicked".to_string()))?;
+
+                tracing::info!("Session recorder flushed and shut down");
+            }
+        } else {
+            // Already flushed/shutdown
+            tracing::debug!("Session recorder already shut down");
         }
 
-        tracing::info!("Session recorder shutdown complete");
+        Ok(())
+    }
+
+    /// Gracefully shutdown and flush all pending events
+    /// This consumes the recorder and waits for the worker to finish
+    pub async fn shutdown(self) -> WriterResult<()> {
+        // Just call flush since we now support it through &self
+        self.flush().await?;
         Ok(())
     }
 }
 
 impl Drop for MultiWriterRecorder {
     fn drop(&mut self) {
-        // Worker will automatically shut down when tx is dropped
-        // But log a warning if shutdown() wasn't called explicitly
-        if self.worker_handle.is_some() {
+        // Check if flush/shutdown was called by seeing if the handle is still there
+        // Note: We can't call async flush() from Drop, so we just warn
+        let handle_exists = self
+            .worker_handle
+            .try_lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(true); // If locked, assume it exists
+
+        if handle_exists {
             tracing::warn!(
-                "MultiWriterRecorder dropped without calling shutdown(). \
-                 Worker will exit but pending events may not be fully flushed."
+                "MultiWriterRecorder dropped without calling flush() or shutdown(). \
+                 Worker will exit when channel closes but pending events may not be fully flushed. \
+                 Call flush() before dropping to ensure all events are written."
             );
         }
     }
