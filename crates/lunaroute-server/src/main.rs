@@ -977,6 +977,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
+    // Flush session events before exit to ensure all pending events are written
+    if let Some(ref store) = session_store_for_passthrough {
+        info!("Flushing pending session events...");
+        if let Err(e) = store.flush().await {
+            warn!("Failed to flush session events during shutdown: {}", e);
+        } else {
+            info!("✓ Session events flushed successfully");
+        }
+    }
+
     // Print stats one final time in case the shutdown handler didn't run
     // Only print if debug logging is enabled
     if tracing::level_filters::LevelFilter::current() >= tracing::level_filters::LevelFilter::DEBUG
