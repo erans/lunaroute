@@ -111,16 +111,31 @@ impl AnthropicConnector {
                     .post(format!("{}/v1/messages", self.config.base_url))
                     .header("Content-Type", "application/json");
 
-                // Add all passthrough headers first
-                for (name, value) in &headers {
-                    request_builder = request_builder.header(name, value);
+                // If we have a configured API key, filter out client auth headers and use our key
+                // If not, pass through all headers including client's auth
+                if !config_api_key.is_empty() {
+                    // Add all headers except authorization headers
+                    for (name, value) in &headers {
+                        let name_lower = name.to_lowercase();
+                        if name_lower != "authorization" && name_lower != "x-api-key" {
+                            request_builder = request_builder.header(name, value);
+                        } else {
+                            debug!("│ [FILTERED] {}: <removed>", name);
+                        }
+                    }
+                    // Use configured API key
+                    request_builder = request_builder.header("x-api-key", &config_api_key);
+                    debug!("│ [OVERRIDE] x-api-key: <configured_api_key>");
+                } else {
+                    // No configured API key, pass through all headers
+                    for (name, value) in &headers {
+                        request_builder = request_builder.header(name, value);
+                    }
                 }
 
-                // If we have a configured API key, override any client-provided auth
-                // If not, rely on client's x-api-key or authorization header
-                if !config_api_key.is_empty() {
-                    request_builder = request_builder.header("x-api-key", &config_api_key);
-                }
+                debug!("├─────────────────────────────────────────────────────────");
+                debug!("│ Final headers being sent to Anthropic API");
+                debug!("└─────────────────────────────────────────────────────────");
 
                 let response = request_builder.json(&request_json).send().await?;
 
@@ -259,16 +274,31 @@ impl AnthropicConnector {
             .post(format!("{}/v1/messages", self.config.base_url))
             .header("Content-Type", "application/json");
 
-        // Add all passthrough headers first
-        for (name, value) in &headers {
-            request_builder = request_builder.header(name, value);
+        // If we have a configured API key, filter out client auth headers and use our key
+        // If not, pass through all headers including client's auth
+        if !self.config.api_key.is_empty() {
+            // Add all headers except authorization headers
+            for (name, value) in &headers {
+                let name_lower = name.to_lowercase();
+                if name_lower != "authorization" && name_lower != "x-api-key" {
+                    request_builder = request_builder.header(name, value);
+                } else {
+                    debug!("│ [FILTERED] {}: <removed>", name);
+                }
+            }
+            // Use configured API key
+            request_builder = request_builder.header("x-api-key", &self.config.api_key);
+            debug!("│ [OVERRIDE] x-api-key: <configured_api_key>");
+        } else {
+            // No configured API key, pass through all headers
+            for (name, value) in &headers {
+                request_builder = request_builder.header(name, value);
+            }
         }
 
-        // If we have a configured API key, override any client-provided auth
-        // If not, rely on client's x-api-key or authorization header
-        if !self.config.api_key.is_empty() {
-            request_builder = request_builder.header("x-api-key", &self.config.api_key);
-        }
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ Final headers being sent to Anthropic API");
+        debug!("└─────────────────────────────────────────────────────────");
 
         let response = request_builder
             .json(&request_json)
