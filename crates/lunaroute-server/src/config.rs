@@ -584,7 +584,7 @@ mod tests {
         assert_eq!(config.timeout_secs, 600);
         assert_eq!(config.connect_timeout_secs, 10);
         assert_eq!(config.pool_max_idle_per_host, 32);
-        assert_eq!(config.pool_idle_timeout_secs, 50);
+        assert_eq!(config.pool_idle_timeout_secs, 600); // Updated from 50s to 600s in v0.1.4
         assert_eq!(config.tcp_keepalive_secs, 60);
         assert_eq!(config.max_retries, 3);
         assert!(config.enable_pool_metrics);
@@ -630,7 +630,7 @@ mod tests {
         assert_eq!(config.timeout_secs, 300); // Custom
         assert_eq!(config.connect_timeout_secs, 10); // Default
         assert_eq!(config.pool_max_idle_per_host, 64); // Custom
-        assert_eq!(config.pool_idle_timeout_secs, 50); // Default
+        assert_eq!(config.pool_idle_timeout_secs, 600); // Default (updated to 600s in v0.1.4)
     }
 
     #[test]

@@ -57,6 +57,25 @@ providers:
     #   2. Client's x-api-key header (Claude Code provides this)
     # No base_url specified = uses default https://api.anthropic.com
 
+    # Optional: HTTP client configuration for connection pooling
+    # Uncomment to customize timeouts (uses sensible defaults if not specified)
+    # http_client:
+    #   # Request timeout - how long to wait for entire request (including streaming)
+    #   timeout_secs: 600              # Default: 600s (10 min)
+    #
+    #   # Connection timeout - how long to wait when establishing connection
+    #   connect_timeout_secs: 10       # Default: 10s
+    #
+    #   # Pool idle timeout - how long idle connections stay in pool
+    #   # Increase this if you see "poor internet connection" errors after 5-10 minutes
+    #   pool_idle_timeout_secs: 600    # Default: 600s (10 min), was 50s before v0.1.4
+    #
+    #   # TCP keepalive - send keepalive packets during long requests
+    #   tcp_keepalive_secs: 60         # Default: 60s
+    #
+    #   # Max retries for transient errors
+    #   max_retries: 3                 # Default: 3
+
 # Routing configuration
 # NOTE: Routing rules are automatically generated based on providers and model patterns.
 # The code will create rules that route:
