@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn test_cache_not_expired() {
         let metadata = DiskCacheMetadata {
-            downloaded_at: SystemTime::now() - Duration::from_secs(1 * 60 * 60), // 1 hour ago
+            downloaded_at: SystemTime::now() - Duration::from_secs(60 * 60), // 1 hour ago
         };
         assert!(!metadata.is_expired());
     }
