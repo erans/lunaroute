@@ -865,6 +865,8 @@ pub struct PassthroughState {
     pub metrics: Option<Arc<lunaroute_observability::Metrics>>,
     pub session_store: Option<Arc<dyn SessionStore>>,
     pub tool_call_mapper: Arc<lunaroute_session::ToolCallMapper>,
+    pub sse_keepalive_interval_secs: u64,
+    pub sse_keepalive_enabled: bool,
 }
 
 /// Passthrough handler for Anthropic→Anthropic routing (no normalization)
@@ -1274,6 +1276,10 @@ pub async fn messages_passthrough(
         let before_provider_clone = before_provider;
         let tool_call_mapper_for_parser = state.tool_call_mapper.clone();
 
+        // Clone SSE config before state is moved
+        let sse_keepalive_interval = state.sse_keepalive_interval_secs;
+        let sse_keepalive_enabled_flag = state.sse_keepalive_enabled;
+
         let completion_stream = tracked_stream.chain(futures::stream::once(async move {
             // Record StreamStarted and Completed events after stream ends
             if let (Some(session_store), Some(session_id), Some(request_id)) =
@@ -1375,8 +1381,15 @@ pub async fn messages_passthrough(
             })
         });
 
-        // Create SSE response with forwarded headers
-        let sse_response = Sse::new(final_stream).keep_alive(KeepAlive::default());
+        // Create SSE response with configured keepalive
+        let sse_keepalive = if sse_keepalive_enabled_flag {
+            KeepAlive::new().interval(std::time::Duration::from_secs(sse_keepalive_interval))
+        } else {
+            // Disable keepalive by setting a very long interval
+            KeepAlive::new().interval(std::time::Duration::from_secs(86400)) // 24 hours
+        };
+
+        let sse_response = Sse::new(final_stream).keep_alive(sse_keepalive);
         let mut response = sse_response.into_response();
 
         // Add the response headers from Anthropic
@@ -1729,6 +1742,8 @@ pub fn passthrough_router(
     stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
     metrics: Option<Arc<lunaroute_observability::Metrics>>,
     session_store: Option<Arc<dyn SessionStore>>,
+    sse_keepalive_interval_secs: u64,
+    sse_keepalive_enabled: bool,
 ) -> Router {
     let state = Arc::new(PassthroughState {
         connector,
@@ -1736,6 +1751,8 @@ pub fn passthrough_router(
         metrics,
         session_store,
         tool_call_mapper: Arc::new(lunaroute_session::ToolCallMapper::new()),
+        sse_keepalive_interval_secs,
+        sse_keepalive_enabled,
     });
 
     Router::new()

@@ -57,6 +57,8 @@ pub fn passthrough_router(
     stats_tracker: Option<Arc<dyn SessionStatsTracker>>,
     metrics: Option<Arc<Metrics>>,
     session_store: Option<Arc<dyn SessionStore>>,
+    sse_keepalive_interval_secs: u64,
+    sse_keepalive_enabled: bool,
 ) -> Router {
     let mut router = Router::new();
 
@@ -67,14 +69,22 @@ pub fn passthrough_router(
             stats_tracker.clone(),
             metrics.clone(),
             session_store.clone(),
+            sse_keepalive_interval_secs,
+            sse_keepalive_enabled,
         );
         router = router.merge(openai_router);
     }
 
     // Add Anthropic passthrough routes if connector available
     if let Some(connector) = anthropic_connector {
-        let anthropic_router =
-            crate::anthropic::passthrough_router(connector, stats_tracker, metrics, session_store);
+        let anthropic_router = crate::anthropic::passthrough_router(
+            connector,
+            stats_tracker,
+            metrics,
+            session_store,
+            sse_keepalive_interval_secs,
+            sse_keepalive_enabled,
+        );
         router = router.merge(anthropic_router);
     }
 

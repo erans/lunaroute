@@ -57,8 +57,14 @@ async fn test_openai_400_error_with_recording() {
     let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
 
     // Create passthrough router with recording
-    let app =
-        lunaroute_ingress::openai::passthrough_router(connector, None, None, Some(store.clone()));
+    let app = lunaroute_ingress::openai::passthrough_router(
+        connector,
+        None,
+        None,
+        Some(store.clone()),
+        15,
+        true,
+    );
 
     // Send request that will trigger 400 error
     let request = json!({
@@ -152,8 +158,14 @@ async fn test_openai_500_error_with_recording() {
     let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
 
     // Create passthrough router with recording
-    let app =
-        lunaroute_ingress::openai::passthrough_router(connector, None, None, Some(store.clone()));
+    let app = lunaroute_ingress::openai::passthrough_router(
+        connector,
+        None,
+        None,
+        Some(store.clone()),
+        15,
+        true,
+    );
 
     // Send request that will trigger 500 error
     let request = json!({
@@ -246,6 +258,8 @@ async fn test_anthropic_401_unauthorized_with_recording() {
         None,
         None,
         Some(store.clone()),
+        15,
+        true,
     );
 
     // Send request with invalid API key
@@ -347,6 +361,8 @@ async fn test_anthropic_rate_limit_429_with_recording() {
         None,
         None,
         Some(store.clone()),
+        15,
+        true,
     );
 
     // Send request that will hit rate limit
@@ -444,8 +460,14 @@ async fn test_openai_streaming_error_with_recording() {
     let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
 
     // Create passthrough router with recording
-    let app =
-        lunaroute_ingress::openai::passthrough_router(connector, None, None, Some(store.clone()));
+    let app = lunaroute_ingress::openai::passthrough_router(
+        connector,
+        None,
+        None,
+        Some(store.clone()),
+        15,
+        true,
+    );
 
     // Send streaming request that will fail
     let request = json!({

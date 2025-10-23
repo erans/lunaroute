@@ -24,6 +24,22 @@
 host: "127.0.0.1"
 port: 8081
 
+# HTTP server settings (optional - controls server-side HTTP/TCP behavior)
+# Uncomment to customize from defaults
+# http_server:
+#   # TCP settings - disable Nagle's algorithm for low-latency streaming
+#   tcp_nodelay: true              # Default: true - Essential for SSE performance
+#   tcp_keepalive_secs: 60         # Default: 60 - Detect dead connections
+#
+#   # SSE streaming settings - keep connections alive during long operations
+#   sse_keepalive_enabled: true    # Default: true - Send keepalive comments
+#   sse_keepalive_interval_secs: 15 # Default: 15 - Interval between keepalives
+#                                   # Lower values (10-15s) recommended for proxies
+#
+#   # Buffer settings (null = use OS defaults)
+#   send_buffer_size: null         # TCP send buffer in bytes
+#   recv_buffer_size: null         # TCP receive buffer in bytes
+
 # API dialect - determines which format(s) the server accepts
 # openai = accepts POST /v1/chat/completions (OpenAI format only)
 # anthropic = accepts POST /v1/messages (Anthropic format only)
@@ -56,6 +72,25 @@ providers:
     #   1. ANTHROPIC_API_KEY environment variable, OR
     #   2. Client's x-api-key header (Claude Code provides this)
     # No base_url specified = uses default https://api.anthropic.com
+
+    # Optional: HTTP client configuration for connection pooling
+    # Uncomment to customize timeouts (uses sensible defaults if not specified)
+    # http_client:
+    #   # Request timeout - how long to wait for entire request (including streaming)
+    #   timeout_secs: 600              # Default: 600s (10 min)
+    #
+    #   # Connection timeout - how long to wait when establishing connection
+    #   connect_timeout_secs: 10       # Default: 10s
+    #
+    #   # Pool idle timeout - how long idle connections stay in pool
+    #   # Increase this if you see "poor internet connection" errors after 5-10 minutes
+    #   pool_idle_timeout_secs: 600    # Default: 600s (10 min), was 50s before v0.1.4
+    #
+    #   # TCP keepalive - send keepalive packets during long requests
+    #   tcp_keepalive_secs: 60         # Default: 60s
+    #
+    #   # Max retries for transient errors
+    #   max_retries: 3                 # Default: 3
 
 # Routing configuration
 # NOTE: Routing rules are automatically generated based on providers and model patterns.
