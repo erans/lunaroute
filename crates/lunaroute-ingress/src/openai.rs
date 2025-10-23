@@ -909,6 +909,10 @@ async fn responses_passthrough(
     let start_time = std::time::Instant::now();
     tracing::debug!("OpenAI Responses API passthrough mode");
 
+    // Clone SSE config early before state is moved into closures
+    let sse_keepalive_interval = state.sse_keepalive_interval_secs;
+    let sse_keepalive_enabled_flag = state.sse_keepalive_enabled;
+
     // Extract user-agent from headers for session tracking
     // Truncate to 255 chars to prevent database issues with extremely long user agents
     let user_agent = headers
@@ -1584,8 +1588,16 @@ async fn responses_passthrough(
             }
         });
 
+        // Create SSE response with configured keepalive
+        let sse_keepalive = if sse_keepalive_enabled_flag {
+            KeepAlive::new().interval(std::time::Duration::from_secs(sse_keepalive_interval))
+        } else {
+            // Disable keepalive by setting a very long interval
+            KeepAlive::new().interval(std::time::Duration::from_secs(86400)) // 24 hours
+        };
+
         Ok(Sse::new(mapped_stream)
-            .keep_alive(KeepAlive::default())
+            .keep_alive(sse_keepalive)
             .into_response())
     } else {
         // Send directly to OpenAI API (non-streaming) - pass raw bytes
@@ -1911,6 +1923,8 @@ pub struct OpenAIPassthroughState {
     pub metrics: Option<Arc<lunaroute_observability::Metrics>>,
     pub session_store: Option<Arc<dyn SessionStore>>,
     pub tool_call_mapper: Arc<lunaroute_session::ToolCallMapper>,
+    pub sse_keepalive_interval_secs: u64,
+    pub sse_keepalive_enabled: bool,
 }
 
 /// Create OpenAI passthrough router (for OpenAI→OpenAI direct routing)
@@ -1919,6 +1933,8 @@ pub fn passthrough_router(
     stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
     metrics: Option<Arc<lunaroute_observability::Metrics>>,
     session_store: Option<Arc<dyn SessionStore>>,
+    sse_keepalive_interval_secs: u64,
+    sse_keepalive_enabled: bool,
 ) -> Router {
     let state = Arc::new(OpenAIPassthroughState {
         connector,
@@ -1926,6 +1942,8 @@ pub fn passthrough_router(
         metrics,
         session_store,
         tool_call_mapper: Arc::new(lunaroute_session::ToolCallMapper::new()),
+        sse_keepalive_interval_secs,
+        sse_keepalive_enabled,
     });
 
     Router::new()
@@ -2428,6 +2446,10 @@ pub async fn chat_completions_passthrough(
         let metrics_for_finalize = state.metrics.clone();
         let model_for_finalize = model.clone();
 
+        // Clone SSE config before state is moved
+        let sse_keepalive_interval = state.sse_keepalive_interval_secs;
+        let sse_keepalive_enabled_flag = state.sse_keepalive_enabled;
+
         let completion_stream = tracked_stream.chain(futures::stream::once(async move {
             // Finalize metrics using shared module
             let finalized = tracker_for_finalize.finalize(start_clone, before_provider_clone);
@@ -2538,8 +2560,15 @@ pub async fn chat_completions_passthrough(
             })
         });
 
-        // Create SSE response
-        let sse_response = Sse::new(final_stream).keep_alive(KeepAlive::default());
+        // Create SSE response with configured keepalive
+        let sse_keepalive = if sse_keepalive_enabled_flag {
+            KeepAlive::new().interval(std::time::Duration::from_secs(sse_keepalive_interval))
+        } else {
+            // Disable keepalive by setting a very long interval
+            KeepAlive::new().interval(std::time::Duration::from_secs(86400)) // 24 hours
+        };
+
+        let sse_response = Sse::new(final_stream).keep_alive(sse_keepalive);
 
         return Ok(sse_response.into_response());
     }

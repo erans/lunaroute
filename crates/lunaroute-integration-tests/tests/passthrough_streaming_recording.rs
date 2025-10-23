@@ -75,6 +75,8 @@ data: [DONE]
         None, // no stats tracker
         None, // no metrics
         Some(store.clone()),
+        15,   // SSE keepalive interval
+        true, // SSE keepalive enabled
     );
 
     // Send streaming request
@@ -250,6 +252,8 @@ data: {"type":"message_stop"}
         None, // no stats tracker
         None, // no metrics
         Some(store.clone()),
+        15,   // SSE keepalive interval
+        true, // SSE keepalive enabled
     );
 
     // Send streaming request
@@ -396,6 +400,8 @@ async fn test_openai_passthrough_non_streaming_with_recording() {
         None, // no stats tracker
         None, // no metrics
         Some(store.clone()),
+        15,   // SSE keepalive interval
+        true, // SSE keepalive enabled
     );
 
     // Send non-streaming request
@@ -540,6 +546,8 @@ async fn test_anthropic_passthrough_non_streaming_with_recording() {
         None, // no stats tracker
         None, // no metrics
         Some(store.clone()),
+        15,   // SSE keepalive interval
+        true, // SSE keepalive enabled
     );
 
     // Send non-streaming request

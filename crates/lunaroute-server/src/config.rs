@@ -26,6 +26,10 @@ pub struct ServerConfig {
     #[serde(default)]
     pub api_dialect: ApiDialect,
 
+    /// HTTP server settings (TCP/SSE configuration)
+    #[serde(default)]
+    pub http_server: HttpServerSettings,
+
     #[serde(default)]
     pub providers: ProvidersConfig,
 
@@ -145,6 +149,56 @@ impl HttpClientSettings {
     }
 }
 
+/// HTTP server configuration settings (server-side HTTP/TCP behavior)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpServerSettings {
+    /// Enable TCP_NODELAY (disable Nagle's algorithm)
+    /// Set to true for low-latency streaming (SSE), false for bulk transfers
+    /// Default: true
+    #[serde(default = "default_tcp_nodelay")]
+    pub tcp_nodelay: bool,
+
+    /// TCP keepalive interval in seconds
+    /// Sends keepalive packets to detect dead connections
+    /// Default: 60
+    #[serde(default = "default_tcp_keepalive_secs")]
+    pub tcp_keepalive_secs: u64,
+
+    /// SSE keepalive interval in seconds
+    /// Sends comment lines to keep streaming connections alive
+    /// Default: 15
+    #[serde(default = "default_sse_keepalive_interval_secs")]
+    pub sse_keepalive_interval_secs: u64,
+
+    /// Enable SSE keepalive comments
+    /// Default: true
+    #[serde(default = "default_true")]
+    pub sse_keepalive_enabled: bool,
+
+    /// TCP send buffer size in bytes (null = OS default)
+    /// Default: null
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_buffer_size: Option<usize>,
+
+    /// TCP receive buffer size in bytes (null = OS default)
+    /// Default: null
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recv_buffer_size: Option<usize>,
+}
+
+impl Default for HttpServerSettings {
+    fn default() -> Self {
+        Self {
+            tcp_nodelay: default_tcp_nodelay(),
+            tcp_keepalive_secs: default_tcp_keepalive_secs(),
+            sse_keepalive_interval_secs: default_sse_keepalive_interval_secs(),
+            sse_keepalive_enabled: true,
+            send_buffer_size: None,
+            recv_buffer_size: None,
+        }
+    }
+}
+
 /// Configuration for custom HTTP headers
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeadersConfig {
@@ -256,6 +310,7 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             api_dialect: ApiDialect::default(),
+            http_server: HttpServerSettings::default(),
             providers: ProvidersConfig::default(),
             session_recording: lunaroute_session::SessionRecordingConfig::default(),
             logging: LoggingConfig::default(),
@@ -558,6 +613,18 @@ fn default_codex_auth_file() -> PathBuf {
 
 fn default_codex_token_field() -> String {
     "tokens.access_token".to_string()
+}
+
+fn default_tcp_nodelay() -> bool {
+    true
+}
+
+fn default_tcp_keepalive_secs() -> u64 {
+    60
+}
+
+fn default_sse_keepalive_interval_secs() -> u64 {
+    15
 }
 
 #[cfg(test)]
