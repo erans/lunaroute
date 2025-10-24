@@ -110,12 +110,24 @@ jobs:
           path: artifacts
       - name: Prepare release assets
         run: |
+          # Extract version from tag (remove 'v' prefix)
+          VERSION=${GITHUB_REF_NAME#v}
+
           mkdir -p release
           for dir in artifacts/*/; do
             artifact_name=$(basename "$dir")
             for file in "$dir"*; do
               if [ -f "$file" ]; then
-                mv "$file" "release/$artifact_name"
+                # Insert version before the file extension or at the end
+                if [[ "$artifact_name" == *.exe ]]; then
+                  # Windows binary - insert version before .exe
+                  base_name="${artifact_name%.exe}"
+                  new_name="${base_name}-${VERSION}.exe"
+                else
+                  # Unix binary - append version
+                  new_name="${artifact_name}-${VERSION}"
+                fi
+                mv "$file" "release/$new_name"
               fi
             done
           done
