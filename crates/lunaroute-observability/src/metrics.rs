@@ -60,6 +60,14 @@ pub struct Metrics {
     /// Fallback trigger count
     pub fallback_triggered: CounterVec,
 
+    // Rate limit metrics
+    /// Rate limit errors encountered
+    pub rate_limits_total: CounterVec,
+    /// Alternative provider usage due to rate limits
+    pub rate_limit_alternatives_used: CounterVec,
+    /// Rate limit backoff duration
+    pub rate_limit_backoff_seconds: HistogramVec,
+
     // Tool call metrics
     /// Tool calls made during requests
     pub tool_calls_total: CounterVec,
@@ -250,6 +258,32 @@ impl Metrics {
             &["from_provider", "to_provider", "reason"],
         )?;
 
+        // Rate limit metrics
+        let rate_limits_total = CounterVec::new(
+            Opts::new(
+                "lunaroute_rate_limits_total",
+                "Total number of rate limit errors encountered",
+            ),
+            &["provider", "model"],
+        )?;
+
+        let rate_limit_alternatives_used = CounterVec::new(
+            Opts::new(
+                "lunaroute_rate_limit_alternatives_used_total",
+                "Number of times alternative providers were used due to rate limits",
+            ),
+            &["primary_provider", "alternative_provider", "model"],
+        )?;
+
+        let rate_limit_backoff_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "lunaroute_rate_limit_backoff_seconds",
+                "Rate limit backoff duration in seconds",
+            )
+            .buckets(vec![60.0, 120.0, 240.0, 480.0, 960.0, 1920.0, 3840.0]),
+            &["provider"],
+        )?;
+
         // Tool call metrics
         let tool_calls_total = CounterVec::new(
             Opts::new(
@@ -399,6 +433,9 @@ impl Metrics {
         registry.register(Box::new(tokens_completion.clone()))?;
         registry.register(Box::new(tokens_total.clone()))?;
         registry.register(Box::new(fallback_triggered.clone()))?;
+        registry.register(Box::new(rate_limits_total.clone()))?;
+        registry.register(Box::new(rate_limit_alternatives_used.clone()))?;
+        registry.register(Box::new(rate_limit_backoff_seconds.clone()))?;
         registry.register(Box::new(tool_calls_total.clone()))?;
         registry.register(Box::new(tool_result_failures_total.clone()))?;
         registry.register(Box::new(post_processing_duration_seconds.clone()))?;
@@ -432,6 +469,9 @@ impl Metrics {
             tokens_completion,
             tokens_total,
             fallback_triggered,
+            rate_limits_total,
+            rate_limit_alternatives_used,
+            rate_limit_backoff_seconds,
             tool_calls_total,
             tool_result_failures_total,
             post_processing_duration_seconds,
@@ -517,6 +557,29 @@ impl Metrics {
     pub fn record_fallback(&self, from_provider: &str, to_provider: &str, reason: &str) {
         self.fallback_triggered
             .with_label_values(&[from_provider, to_provider, reason])
+            .inc();
+    }
+
+    /// Record a rate limit event
+    pub fn record_rate_limit(&self, provider: &str, model: &str, backoff_secs: f64) {
+        self.rate_limits_total
+            .with_label_values(&[provider, model])
+            .inc();
+
+        self.rate_limit_backoff_seconds
+            .with_label_values(&[provider])
+            .observe(backoff_secs);
+    }
+
+    /// Record alternative provider usage due to rate limit
+    pub fn record_alternative_used(
+        &self,
+        primary_provider: &str,
+        alternative_provider: &str,
+        model: &str,
+    ) {
+        self.rate_limit_alternatives_used
+            .with_label_values(&[primary_provider, alternative_provider, model])
             .inc();
     }
 

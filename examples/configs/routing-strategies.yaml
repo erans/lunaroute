@@ -120,6 +120,29 @@ routing:
           - id: "emergency-fallback"
             weight: 5   # Emergency only (low usage)
 
+    # GPT-4 models: Rate limit protection with automatic failover
+    # When OpenAI hits rate limits, automatically switch to Anthropic
+    - name: "gpt4-with-rate-limit-protection"
+      priority: 18
+      matcher:
+        model_pattern: "^gpt-4.*"
+      strategy:
+        type: "limits-alternative"
+        # Try OpenAI providers first (in order)
+        primary_providers:
+          - "openai-primary"
+          - "openai-backup"
+        # Fall back to Anthropic if both OpenAI providers are rate-limited
+        # Note: LunaRoute will automatically translate between OpenAI and Anthropic formats
+        alternative_providers:
+          - "anthropic-primary"
+          - "anthropic-backup"
+        # Exponential backoff base: 60s, 120s, 240s, etc.
+        # Only used when provider doesn't send retry-after header
+        exponential_backoff_base_secs: 60
+      fallbacks:
+        - "emergency-fallback"
+
     # Default route: Old-style primary + fallbacks (still works!)
     - name: "default-fallback"
       priority: 1
