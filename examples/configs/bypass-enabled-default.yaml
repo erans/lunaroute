@@ -1,0 +1,23 @@
+# LunaRoute Configuration - Bypass Enabled (Default)
+#
+# This example shows the default behavior where bypass is enabled.
+# Unknown API paths (like /v1/embeddings, /v1/audio/*, etc.) are automatically
+# proxied directly to the provider without routing overhead.
+
+host: "127.0.0.1"
+port: 8081
+api_dialect: openai
+
+providers:
+  openai:
+    enabled: true
+    api_key: ${OPENAI_API_KEY}
+
+# Bypass configuration (optional - defaults shown)
+# bypass:
+#   enabled: true          # Default: true - bypass is ON by default
+#   provider: "openai"     # Default: null (uses first available provider)
+
+# With bypass enabled (default):
+# - Intercepted paths use routing: /v1/chat/completions, /v1/messages, /v1/models
+# - Unknown paths are bypassed: /v1/embeddings, /v1/audio/*, /v1/images/*, etc.

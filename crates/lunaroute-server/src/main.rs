@@ -69,9 +69,9 @@ use lunaroute_egress::{
     anthropic::{AnthropicConfig, AnthropicConnector},
     openai::{OpenAIConfig, OpenAIConnector, RequestBodyModConfig, ResponseBodyModConfig},
 };
-use lunaroute_ingress::{anthropic as anthropic_ingress, openai};
+use lunaroute_ingress::{BypassProvider, anthropic as anthropic_ingress, openai, with_bypass};
 use lunaroute_observability::{HealthState, Metrics, health_router};
-use lunaroute_routing::{RouteTable, Router, RoutingRule, RuleMatcher};
+use lunaroute_routing::{PathClassifier, RouteTable, Router, RoutingRule, RuleMatcher};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -811,6 +811,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let is_passthrough = is_anthropic_passthrough || is_openai_passthrough || is_dual_passthrough;
 
+    // Capture bypass provider info BEFORE connectors are moved
+    let bypass_provider_info = if config.bypass.enabled {
+        // Determine which provider to use for bypass
+        let provider_name = if let Some(name) = &config.bypass.provider {
+            Some(name.as_str())
+        } else if openai_connector.is_some() {
+            Some("openai")
+        } else if anthropic_connector.is_some() {
+            Some("anthropic")
+        } else {
+            None
+        };
+
+        match provider_name {
+            Some("openai") if openai_connector.is_some() => {
+                let base_url = config
+                    .providers
+                    .openai
+                    .as_ref()
+                    .and_then(|p| p.base_url.clone())
+                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+                let api_key = config
+                    .providers
+                    .openai
+                    .as_ref()
+                    .and_then(|p| p.api_key.clone())
+                    .unwrap_or_default();
+
+                Some(("openai".to_string(), base_url, api_key))
+            }
+            Some("anthropic") if anthropic_connector.is_some() => {
+                let base_url = config
+                    .providers
+                    .anthropic
+                    .as_ref()
+                    .and_then(|p| p.base_url.clone())
+                    .unwrap_or_else(|| "https://api.anthropic.com/v1".to_string());
+                let api_key = config
+                    .providers
+                    .anthropic
+                    .as_ref()
+                    .and_then(|p| p.api_key.clone())
+                    .unwrap_or_default();
+
+                Some(("anthropic".to_string(), base_url, api_key))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     // Create router with routing table (not needed in passthrough mode, but keep for consistency)
     let route_table = RouteTable::with_rules(rules);
     let router = Arc::new(Router::with_defaults(route_table, providers));
@@ -904,6 +956,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     };
+
+    // Initialize bypass functionality (if enabled)
+    let path_classifier = Arc::new(PathClassifier::new(config.bypass.enabled));
+
+    if config.bypass.enabled {
+        info!("🚀 Bypass enabled for unknown API paths");
+        info!(
+            "   Intercepted paths: /v1/chat/completions, /v1/messages, /v1/models, /healthz, /readyz, /metrics"
+        );
+        info!("   Bypassed paths: /v1/embeddings, /v1/audio/*, /v1/images/*, and others");
+    }
+
+    // Create bypass provider from captured info
+    let bypass_provider = bypass_provider_info.map(|(name, base_url, api_key)| {
+        info!("   Bypass provider: {} ({})", name, base_url);
+        Arc::new(BypassProvider::new(
+            base_url,
+            api_key,
+            name,
+            Arc::new(reqwest::Client::new()),
+        ))
+    });
+
+    if config.bypass.enabled && bypass_provider.is_none() {
+        warn!("⚠️  Bypass enabled but no valid provider configured. Bypass will be disabled.");
+    }
+
+    // Wrap api_router with bypass functionality
+    let api_router = with_bypass(api_router, bypass_provider, path_classifier);
 
     // Create health/metrics router
     let health_router = health_router(health_state);

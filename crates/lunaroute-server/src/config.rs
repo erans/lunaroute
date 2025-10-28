@@ -42,6 +42,10 @@ pub struct ServerConfig {
     #[serde(default)]
     pub routing: RoutingConfig,
 
+    /// Bypass configuration for unknown paths
+    #[serde(default)]
+    pub bypass: BypassConfig,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_stats_max_sessions: Option<usize>,
 
@@ -287,6 +291,33 @@ pub struct LoggingConfig {
     pub log_sql_queries: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BypassConfig {
+    /// Enable automatic bypass for unknown paths (default: true)
+    /// When enabled, paths not in the intercepted list are proxied directly
+    /// to the provider without routing engine overhead
+    #[serde(default = "default_bypass_enabled")]
+    pub enabled: bool,
+
+    /// Provider to use for bypassed requests (default: None = first available)
+    /// If not specified, uses the first available provider
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+impl Default for BypassConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_bypass_enabled(),
+            provider: None,
+        }
+    }
+}
+
+fn default_bypass_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RoutingConfig {
     #[serde(default)]
@@ -315,6 +346,7 @@ impl Default for ServerConfig {
             session_recording: lunaroute_session::SessionRecordingConfig::default(),
             logging: LoggingConfig::default(),
             routing: RoutingConfig::default(),
+            bypass: BypassConfig::default(),
             session_stats_max_sessions: Some(100),
             ui: lunaroute_ui::UiConfig::default(),
         }
@@ -557,6 +589,15 @@ impl ServerConfig {
 
         if let Some(enabled) = parse_bool_env("LUNAROUTE_UI_LOG_REQUESTS") {
             self.ui.log_requests = enabled;
+        }
+
+        // Bypass settings
+        if let Some(enabled) = parse_bool_env("LUNAROUTE_BYPASS_ENABLED") {
+            self.bypass.enabled = enabled;
+        }
+
+        if let Ok(val) = std::env::var("LUNAROUTE_BYPASS_PROVIDER") {
+            self.bypass.provider = Some(val);
         }
     }
 }
