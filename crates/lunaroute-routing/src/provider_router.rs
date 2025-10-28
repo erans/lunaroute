@@ -10,7 +10,7 @@ use crate::{
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
     health::{HealthMonitor, HealthMonitorConfig},
     router::{RouteTable, RoutingContext},
-    strategy::StrategyState,
+    strategy::{RoutingStrategy, StrategyState},
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -22,6 +22,7 @@ use lunaroute_core::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_stream::Stream;
+use tracing::{debug, info, warn};
 
 /// Router that delegates to multiple providers based on routing rules
 pub struct Router {
@@ -120,17 +121,41 @@ impl Router {
             .map_err(|e| Error::Provider(format!("Strategy selection failed: {}", e)))
     }
 
+    /// Extract rate limit information from error message
+    /// Returns (retry_after_secs, backoff_base_secs) if rate limit detected
+    fn extract_rate_limit_info(&self, error: &Error) -> Option<(Option<u64>, u64)> {
+        let error_msg = error.to_string();
+
+        // Check if this is a rate limit error
+        if error_msg.contains("Rate limit exceeded") || error_msg.contains("rate limit") {
+            // Try to extract retry-after from error message
+            // Error format: "Rate limit exceeded: retry after 60s"
+            let retry_after = error_msg
+                .split("retry after ")
+                .nth(1)
+                .and_then(|s| s.trim_end_matches('s').parse::<u64>().ok());
+
+            // Default backoff base is 60 seconds
+            Some((retry_after, 60))
+        } else {
+            None
+        }
+    }
+
     /// Try to send request to a provider, respecting circuit breaker
+    /// If strategy is provided, rate limits will be tracked
     async fn try_provider(
         &self,
         provider_id: &str,
         request: &NormalizedRequest,
+        strategy: Option<&RoutingStrategy>,
+        rule_name: Option<&str>,
     ) -> Result<NormalizedResponse> {
         let circuit_breaker = self.get_circuit_breaker(provider_id);
 
         // Check circuit breaker
         if !circuit_breaker.allow_request() {
-            tracing::warn!(
+            warn!(
                 provider = provider_id,
                 state = ?circuit_breaker.state(),
                 "Circuit breaker is open, skipping provider"
@@ -146,7 +171,7 @@ impl Router {
             .get(provider_id)
             .ok_or_else(|| Error::Provider(format!("Provider '{}' not found", provider_id)))?;
 
-        tracing::debug!(
+        debug!(
             provider = provider_id,
             model = %request.model,
             "Attempting request to provider"
@@ -158,7 +183,7 @@ impl Router {
                 circuit_breaker.record_success();
                 self.health_monitor.record_success(provider_id);
 
-                tracing::info!(
+                info!(
                     provider = provider_id,
                     model = %request.model,
                     tokens = response.usage.total_tokens,
@@ -172,7 +197,35 @@ impl Router {
                 circuit_breaker.record_failure();
                 self.health_monitor.record_failure(provider_id);
 
-                tracing::warn!(
+                // Check if this is a rate limit error
+                if let Some((retry_after_secs, _backoff_base)) = self.extract_rate_limit_info(&err)
+                {
+                    // Record rate limit in strategy state (only for LimitsAlternative strategy)
+                    if let (
+                        Some(RoutingStrategy::LimitsAlternative {
+                            exponential_backoff_base_secs,
+                            ..
+                        }),
+                        Some(rule),
+                    ) = (strategy, rule_name)
+                    {
+                        let state = self.get_strategy_state(rule);
+                        state.record_rate_limit(
+                            provider_id,
+                            retry_after_secs,
+                            *exponential_backoff_base_secs,
+                        );
+
+                        warn!(
+                            provider = provider_id,
+                            model = %request.model,
+                            retry_after_secs = ?retry_after_secs,
+                            "Provider rate limited, will switch to alternative"
+                        );
+                    }
+                }
+
+                warn!(
                     provider = provider_id,
                     model = %request.model,
                     error = %err,
@@ -199,22 +252,23 @@ impl Provider for Router {
                 Error::Provider(format!("No route found for model '{}'", request.model))
             })?;
 
+        let rule_name = decision.matched_rule.as_deref().unwrap_or("unknown");
+
         // Determine primary provider (from strategy or direct)
-        let primary_provider = if let Some(strategy) = &decision.strategy {
-            let rule_name = decision.matched_rule.as_deref().unwrap_or("unknown");
+        let (primary_provider, strategy_ref) = if let Some(strategy) = &decision.strategy {
             let selected = self.select_provider_from_strategy(strategy, rule_name)?;
 
-            tracing::info!(
+            info!(
                 model = %request.model,
                 selected_provider = %selected,
-                strategy = "round-robin/weighted",
+                strategy = ?strategy,
                 rule = ?decision.matched_rule,
                 "Route decision made (strategy)"
             );
 
-            selected
+            (selected, Some(strategy))
         } else if let Some(primary) = &decision.primary {
-            tracing::info!(
+            info!(
                 model = %request.model,
                 primary = %primary,
                 fallbacks = ?decision.fallbacks,
@@ -222,7 +276,7 @@ impl Provider for Router {
                 "Route decision made (primary)"
             );
 
-            primary.clone()
+            (primary.clone(), None)
         } else {
             return Err(Error::Provider(
                 "No primary provider or strategy specified".to_string(),
@@ -230,10 +284,13 @@ impl Provider for Router {
         };
 
         // Try primary/selected provider
-        match self.try_provider(&primary_provider, &request).await {
+        match self
+            .try_provider(&primary_provider, &request, strategy_ref, Some(rule_name))
+            .await
+        {
             Ok(response) => return Ok(response),
             Err(err) => {
-                tracing::warn!(
+                warn!(
                     provider = %primary_provider,
                     error = %err,
                     "Primary/selected provider failed, trying fallbacks"
@@ -243,16 +300,19 @@ impl Provider for Router {
 
         // Try fallback providers
         for fallback in &decision.fallbacks {
-            match self.try_provider(fallback, &request).await {
+            match self
+                .try_provider(fallback, &request, strategy_ref, Some(rule_name))
+                .await
+            {
                 Ok(response) => {
-                    tracing::info!(
+                    info!(
                         fallback = %fallback,
                         "Fallback provider succeeded"
                     );
                     return Ok(response);
                 }
                 Err(err) => {
-                    tracing::warn!(
+                    warn!(
                         fallback = %fallback,
                         error = %err,
                         "Fallback provider failed"
