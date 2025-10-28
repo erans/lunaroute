@@ -284,12 +284,61 @@ impl Provider for Router {
         };
 
         // Try primary/selected provider
+        let mut tried_providers = vec![primary_provider.clone()];
+
         match self
             .try_provider(&primary_provider, &request, strategy_ref, Some(rule_name))
             .await
         {
             Ok(response) => return Ok(response),
             Err(err) => {
+                // If using LimitsAlternative strategy and got rate limit, retry strategy selection immediately
+                if let Some(RoutingStrategy::LimitsAlternative { .. }) = strategy_ref
+                    && self.extract_rate_limit_info(&err).is_some()
+                {
+                    // Keep trying alternatives until we find one that works or run out
+                    while let Ok(alternative) =
+                        self.select_provider_from_strategy(strategy_ref.unwrap(), rule_name)
+                    {
+                        if tried_providers.contains(&alternative) {
+                            // Already tried this provider, no more alternatives available
+                            break;
+                        }
+
+                        info!(
+                            original = %tried_providers[0],
+                            alternative = %alternative,
+                            "Rate limit detected, switching to alternative provider"
+                        );
+
+                        tried_providers.push(alternative.clone());
+
+                        match self
+                            .try_provider(&alternative, &request, strategy_ref, Some(rule_name))
+                            .await
+                        {
+                            Ok(response) => return Ok(response),
+                            Err(alt_err) => {
+                                // Check if this was also a rate limit
+                                if self.extract_rate_limit_info(&alt_err).is_none() {
+                                    // Not a rate limit error, stop trying alternatives
+                                    warn!(
+                                        alternative = %alternative,
+                                        error = %alt_err,
+                                        "Alternative provider failed with non-rate-limit error"
+                                    );
+                                    break;
+                                }
+                                // Rate limit, loop will try next alternative
+                                warn!(
+                                    alternative = %alternative,
+                                    "Alternative provider also rate-limited, trying next"
+                                );
+                            }
+                        }
+                    }
+                }
+
                 warn!(
                     provider = %primary_provider,
                     error = %err,
