@@ -324,6 +324,7 @@ async fn test_e2e_streaming_with_router_fallback() {
         providers,
         lunaroute_routing::HealthMonitorConfig::default(),
         cb_config,
+        None,
     ));
 
     // Create OpenAI ingress router

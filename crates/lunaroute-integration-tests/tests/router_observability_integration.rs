@@ -232,7 +232,7 @@ async fn test_circuit_breaker_with_metrics_tracking() {
     };
 
     let health_config = HealthMonitorConfig::default();
-    let router = Router::new(route_table, providers, health_config, cb_config);
+    let router = Router::new(route_table, providers, health_config, cb_config, None);
 
     let request = create_test_request("test-model");
 
@@ -484,6 +484,7 @@ async fn test_health_status_with_metrics() {
         providers,
         health_config,
         CircuitBreakerConfig::default(),
+        None,
     );
 
     let request = create_test_request("test-model");

@@ -14,6 +14,7 @@ use lunaroute_core::normalized::{Message, MessageContent, NormalizedRequest, Rol
 use lunaroute_core::provider::Provider;
 use lunaroute_egress::anthropic::{AnthropicConfig, AnthropicConnector};
 use lunaroute_egress::openai::{OpenAIConfig, OpenAIConnector};
+use lunaroute_observability::metrics::Metrics;
 use lunaroute_routing::provider_router::Router;
 use lunaroute_routing::router::{RouteTable, RoutingRule, RuleMatcher};
 use lunaroute_routing::strategy::RoutingStrategy;
@@ -144,11 +145,16 @@ async fn test_basic_rate_limit_switch() {
     };
 
     let route_table = RouteTable::with_rules(vec![rule]);
+
+    // Create metrics to verify observability
+    let metrics = Arc::new(Metrics::new().unwrap());
+
     let router = Router::new(
         route_table,
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        Some(metrics.clone()),
     );
 
     // Send request - should succeed via alternative
@@ -158,6 +164,41 @@ async fn test_basic_rate_limit_switch() {
     assert_eq!(
         response.choices[0].message.content,
         MessageContent::Text("Hello from alternative!".to_string())
+    );
+
+    // Verify metrics were recorded
+    let gathered = metrics.registry().gather();
+
+    // Check rate_limits_total metric
+    let rate_limit_metric = gathered
+        .iter()
+        .find(|m| m.name() == "lunaroute_rate_limits_total")
+        .expect("rate_limits_total metric should exist");
+    assert!(
+        rate_limit_metric.metric[0]
+            .counter
+            .as_ref()
+            .unwrap()
+            .value
+            .unwrap()
+            >= 1.0,
+        "rate_limits_total should be at least 1"
+    );
+
+    // Check rate_limit_alternatives_used metric
+    let alternatives_metric = gathered
+        .iter()
+        .find(|m| m.name() == "lunaroute_rate_limit_alternatives_used_total")
+        .expect("rate_limit_alternatives_used_total metric should exist");
+    assert!(
+        alternatives_metric.metric[0]
+            .counter
+            .as_ref()
+            .unwrap()
+            .value
+            .unwrap()
+            >= 1.0,
+        "rate_limit_alternatives_used should be at least 1"
     );
 }
 
@@ -253,6 +294,7 @@ async fn test_cross_dialect_alternative() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
     );
 
     // Send request - should succeed via Anthropic with dialect translation
@@ -365,6 +407,7 @@ async fn test_cascade_through_alternatives() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
     );
 
     // Send request - should succeed via alt2
@@ -480,6 +523,7 @@ async fn test_auto_recovery_to_primary() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
     );
 
     // First request: should use alternative due to rate limit
@@ -567,6 +611,7 @@ async fn test_all_providers_rate_limited() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
     );
 
     // Send request - should fail with all providers rate-limited error
@@ -660,6 +705,7 @@ async fn test_exponential_backoff_without_retry_after() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
     );
 
     // Send request - should use alternative due to rate limit

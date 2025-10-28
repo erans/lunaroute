@@ -19,6 +19,7 @@ use lunaroute_core::{
     normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
     provider::{Provider, ProviderCapabilities},
 };
+use lunaroute_observability::metrics::Metrics;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_stream::Stream;
@@ -43,6 +44,9 @@ pub struct Router {
 
     /// Strategy state for routing strategies (uses DashMap for lock-free concurrent access)
     strategy_states: DashMap<String, Arc<StrategyState>>,
+
+    /// Metrics collector (optional for observability)
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl Router {
@@ -52,6 +56,7 @@ impl Router {
         providers: HashMap<String, Arc<dyn Provider>>,
         health_config: HealthMonitorConfig,
         circuit_breaker_config: CircuitBreakerConfig,
+        metrics: Option<Arc<Metrics>>,
     ) -> Self {
         let health_monitor = Arc::new(HealthMonitor::new(health_config));
 
@@ -67,6 +72,7 @@ impl Router {
             circuit_breakers: DashMap::new(),
             circuit_breaker_config,
             strategy_states: DashMap::new(),
+            metrics,
         }
     }
 
@@ -80,6 +86,7 @@ impl Router {
             providers,
             HealthMonitorConfig::default(),
             CircuitBreakerConfig::default(),
+            None,
         )
     }
 
@@ -216,6 +223,13 @@ impl Router {
                             *exponential_backoff_base_secs,
                         );
 
+                        // Record rate limit metrics
+                        if let Some(metrics) = &self.metrics {
+                            let backoff_secs =
+                                retry_after_secs.unwrap_or(*exponential_backoff_base_secs) as f64;
+                            metrics.record_rate_limit(provider_id, &request.model, backoff_secs);
+                        }
+
                         warn!(
                             provider = provider_id,
                             model = %request.model,
@@ -317,7 +331,17 @@ impl Provider for Router {
                             .try_provider(&alternative, &request, strategy_ref, Some(rule_name))
                             .await
                         {
-                            Ok(response) => return Ok(response),
+                            Ok(response) => {
+                                // Record alternative usage metrics
+                                if let Some(metrics) = &self.metrics {
+                                    metrics.record_alternative_used(
+                                        &tried_providers[0], // primary provider that was rate-limited
+                                        &alternative,
+                                        &request.model,
+                                    );
+                                }
+                                return Ok(response);
+                            }
                             Err(alt_err) => {
                                 // Check if this was also a rate limit
                                 if self.extract_rate_limit_info(&alt_err).is_none() {
@@ -712,6 +736,7 @@ mod tests {
             providers,
             HealthMonitorConfig::default(),
             circuit_breaker_config,
+            None,
         );
 
         // First two requests should fail normally
@@ -767,6 +792,7 @@ mod tests {
             providers,
             health_config,
             CircuitBreakerConfig::default(),
+            None,
         );
 
         // Send enough successful requests
