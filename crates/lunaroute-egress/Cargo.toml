@@ -37,6 +37,7 @@ flate2 = { workspace = true }
 uuid = { workspace = true }
 dirs = "5.0"
 base64 = "0.22"
+chrono = { workspace = true }
 
 [dev-dependencies]
 mockall = { workspace = true }

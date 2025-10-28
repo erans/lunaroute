@@ -10,9 +10,11 @@ pub mod anthropic;
 pub mod client;
 pub mod codex_auth;
 pub mod openai;
+mod retry_after;
 
 // Re-export commonly used types
 pub use client::HttpClientConfig;
+pub use retry_after::parse_retry_after;
 
 /// Egress-specific errors
 #[derive(Debug, Error)]
