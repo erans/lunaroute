@@ -11,6 +11,7 @@ rust-version.workspace = true
 lunaroute-core = { path = "../lunaroute-core" }
 lunaroute-egress = { path = "../lunaroute-egress" }
 lunaroute-observability = { path = "../lunaroute-observability" }
+lunaroute-routing = { path = "../lunaroute-routing" }
 lunaroute-session = { path = "../lunaroute-session" }
 
 tokio = { workspace = true }
@@ -29,3 +30,4 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 eventsource-stream = { workspace = true }
 flate2 = { workspace = true }
+reqwest = { workspace = true }

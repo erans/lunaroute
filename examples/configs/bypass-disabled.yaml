@@ -1,0 +1,22 @@
+# LunaRoute Configuration - Bypass Disabled
+#
+# This example shows how to disable the bypass feature.
+# All requests will go through the routing engine, and unknown paths will return 404.
+
+host: "127.0.0.1"
+port: 8081
+api_dialect: openai
+
+providers:
+  openai:
+    enabled: true
+    api_key: ${OPENAI_API_KEY}
+
+# Disable bypass - all requests must match defined routes
+bypass:
+  enabled: false
+
+# With bypass disabled:
+# - Only explicitly defined routes work
+# - Unknown paths return 404
+# - More control over which endpoints are exposed

@@ -1,0 +1,38 @@
+# LunaRoute Configuration - Bypass with Explicit Provider
+#
+# This example shows how to explicitly configure which provider
+# should handle bypassed requests in a multi-provider setup.
+
+host: "127.0.0.1"
+port: 8081
+api_dialect: both
+
+providers:
+  openai:
+    enabled: true
+    api_key: ${OPENAI_API_KEY}
+
+  anthropic:
+    enabled: true
+    api_key: ${ANTHROPIC_API_KEY}
+
+# Explicitly configure bypass provider
+bypass:
+  enabled: true
+  provider: "openai"  # Use OpenAI for all bypassed paths
+
+routing:
+  rules:
+    - name: "claude-to-anthropic"
+      model_pattern: "^claude-.*"
+      primary: "anthropic"
+
+    - name: "gpt-to-openai"
+      model_pattern: "^gpt-.*"
+      primary: "openai"
+
+# Flow:
+# - /v1/chat/completions with claude-* model → Anthropic (routed)
+# - /v1/chat/completions with gpt-* model → OpenAI (routed)
+# - /v1/embeddings → OpenAI (bypassed, as configured)
+# - /v1/audio/* → OpenAI (bypassed, as configured)
