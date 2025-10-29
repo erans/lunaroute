@@ -170,7 +170,7 @@ mod tests {
         // Should be approximately 120 seconds (allow some tolerance for test execution time)
         let seconds = result.unwrap();
         assert!(
-            seconds >= 118 && seconds <= 122,
+            (118..=122).contains(&seconds),
             "Expected ~120 seconds, got {}",
             seconds
         );

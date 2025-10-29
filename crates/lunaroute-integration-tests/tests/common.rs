@@ -7,10 +7,12 @@ use std::sync::{Arc, Mutex};
 
 /// In-memory session store for testing
 #[derive(Clone, Default)]
+#[allow(dead_code)]
 pub struct InMemorySessionStore {
     events: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
+#[allow(dead_code)]
 impl InMemorySessionStore {
     pub fn new() -> Self {
         Self::default()

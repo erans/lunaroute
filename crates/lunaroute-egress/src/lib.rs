@@ -57,7 +57,12 @@ pub type Result<T> = std::result::Result<T, EgressError>;
 
 impl From<EgressError> for lunaroute_core::Error {
     fn from(err: EgressError) -> Self {
-        // Convert egress errors to core errors
-        lunaroute_core::Error::Provider(err.to_string())
+        // Preserve structured rate limit errors, convert others to generic Provider errors
+        match err {
+            EgressError::RateLimitExceeded { retry_after_secs } => {
+                lunaroute_core::Error::RateLimitExceeded { retry_after_secs }
+            }
+            other => lunaroute_core::Error::Provider(other.to_string()),
+        }
     }
 }

@@ -128,27 +128,6 @@ impl Router {
             .map_err(|e| Error::Provider(format!("Strategy selection failed: {}", e)))
     }
 
-    /// Extract rate limit information from error message
-    /// Returns (retry_after_secs, backoff_base_secs) if rate limit detected
-    fn extract_rate_limit_info(&self, error: &Error) -> Option<(Option<u64>, u64)> {
-        let error_msg = error.to_string();
-
-        // Check if this is a rate limit error
-        if error_msg.contains("Rate limit exceeded") || error_msg.contains("rate limit") {
-            // Try to extract retry-after from error message
-            // Error format: "Rate limit exceeded: retry after 60s"
-            let retry_after = error_msg
-                .split("retry after ")
-                .nth(1)
-                .and_then(|s| s.trim_end_matches('s').parse::<u64>().ok());
-
-            // Default backoff base is 60 seconds
-            Some((retry_after, 60))
-        } else {
-            None
-        }
-    }
-
     /// Try to send request to a provider, respecting circuit breaker
     /// If strategy is provided, rate limits will be tracked
     async fn try_provider(
@@ -205,8 +184,7 @@ impl Router {
                 self.health_monitor.record_failure(provider_id);
 
                 // Check if this is a rate limit error
-                if let Some((retry_after_secs, _backoff_base)) = self.extract_rate_limit_info(&err)
-                {
+                if let Error::RateLimitExceeded { retry_after_secs } = &err {
                     // Record rate limit in strategy state (only for LimitsAlternative strategy)
                     if let (
                         Some(RoutingStrategy::LimitsAlternative {
@@ -219,7 +197,7 @@ impl Router {
                         let state = self.get_strategy_state(rule);
                         state.record_rate_limit(
                             provider_id,
-                            retry_after_secs,
+                            *retry_after_secs,
                             *exponential_backoff_base_secs,
                         );
 
@@ -308,7 +286,7 @@ impl Provider for Router {
             Err(err) => {
                 // If using LimitsAlternative strategy and got rate limit, retry strategy selection immediately
                 if let Some(RoutingStrategy::LimitsAlternative { .. }) = strategy_ref
-                    && self.extract_rate_limit_info(&err).is_some()
+                    && matches!(err, Error::RateLimitExceeded { .. })
                 {
                     // Keep trying alternatives until we find one that works or run out
                     while let Ok(alternative) =
@@ -344,7 +322,7 @@ impl Provider for Router {
                             }
                             Err(alt_err) => {
                                 // Check if this was also a rate limit
-                                if self.extract_rate_limit_info(&alt_err).is_none() {
+                                if !matches!(alt_err, Error::RateLimitExceeded { .. }) {
                                     // Not a rate limit error, stop trying alternatives
                                     warn!(
                                         alternative = %alternative,
