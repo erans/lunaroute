@@ -66,6 +66,15 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+use tracing::warn;
+
+/// Maximum number of rate limit state entries to prevent unbounded memory growth
+/// This protects against scenarios where many unique provider IDs accumulate.
+/// In normal operation, this should never be reached since expired entries are
+/// cleaned up regularly. If this limit is hit, it indicates either:
+/// - A very large number of configured providers
+/// - A potential attack attempting to exhaust memory
+const MAX_RATE_LIMIT_ENTRIES: usize = 1000;
 
 /// Tracks rate limit state for a provider
 #[derive(Debug, Clone)]
@@ -241,6 +250,11 @@ impl StrategyState {
     }
 
     /// Record a rate limit event for a provider
+    ///
+    /// This method tracks rate limit events with protection against unbounded memory growth.
+    /// If the rate limit state map approaches capacity, expired entries are cleaned up.
+    /// If the map is still at capacity after cleanup, the new entry is not added and a
+    /// warning is logged. This prevents memory exhaustion attacks.
     pub fn record_rate_limit(
         &self,
         provider_id: &str,
@@ -248,6 +262,30 @@ impl StrategyState {
         backoff_base_secs: u64,
     ) {
         let now = Instant::now();
+
+        // Check if we're approaching capacity (90% threshold for early cleanup)
+        let current_size = self.rate_limit_states.len();
+        if current_size >= (MAX_RATE_LIMIT_ENTRIES * 9 / 10) {
+            warn!(
+                current_size = current_size,
+                max_size = MAX_RATE_LIMIT_ENTRIES,
+                "Rate limit state map approaching capacity, cleaning expired entries"
+            );
+            self.clear_expired_rate_limits();
+
+            // If still at or above capacity after cleanup, refuse to add new entry
+            let size_after_cleanup = self.rate_limit_states.len();
+            if size_after_cleanup >= MAX_RATE_LIMIT_ENTRIES {
+                warn!(
+                    provider_id = provider_id,
+                    size = size_after_cleanup,
+                    max_size = MAX_RATE_LIMIT_ENTRIES,
+                    "Rate limit state map at maximum capacity, refusing new entry. \
+                     This may indicate a large number of providers or a potential attack."
+                );
+                return;
+            }
+        }
 
         self.rate_limit_states
             .entry(provider_id.to_string())
