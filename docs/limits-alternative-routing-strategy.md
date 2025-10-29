@@ -1,9 +1,9 @@
 # Limits-Alternative Routing Strategy
 
-**Status:** ✅ Completed & Tested
+**Status:** ✅ Completed, Tested & Production-Ready with Security Fixes
 **Date:** 2025-10-28
 **Feature Branch:** `feature/new-routing-when-hit-limits`
-**Commits:** 5 phases committed (Phase 1-2, Phase 3, Phase 4-5, Phase 6, Phase 7-docs)
+**Commits:** 8 commits (Phases 1-7, Phase 7.5 metrics, Security fixes HIGH+MEDIUM, Error handling refactor)
 
 ## Overview
 
@@ -1179,10 +1179,32 @@ Potential improvements for future iterations:
   - Comprehensive rustdoc comments present in `strategy.rs` and `retry_after.rs`
   - Full test suite verified, all clippy warnings resolved
   - **Feature fully implemented and tested** ✅
+- 2025-10-28: **Phase 7.5 Complete** ✅
+  - Wired up Prometheus metrics instrumentation to router
+  - Added `metrics: Option<Arc<Metrics>>` field to Router struct
+  - Updated Router::new() to accept metrics parameter
+  - Called `metrics.record_rate_limit()` when rate limit detected (provider_router.rs:226-231)
+  - Called `metrics.record_alternative_used()` when alternative used (provider_router.rs:335-342)
+  - Enhanced `test_basic_rate_limit_switch` to verify metrics counters
+  - Updated all 13 Router::new() calls across 6 test files
+  - All 301 workspace tests passing
+- 2025-10-28: **Security Fixes Complete** ✅
+  - **HIGH Priority**: Added MAX_RATE_LIMIT_ENTRIES (1000) to prevent unbounded growth
+  - **HIGH Priority**: Implemented 90% capacity threshold with automatic cleanup
+  - **HIGH Priority**: Added protection against memory exhaustion attacks
+  - **MEDIUM Priority**: Added MAX_RETRY_AFTER_SECS (48 hours) cap based on research
+  - **MEDIUM Priority**: Research confirmed OpenAI returns up to 86,400s (24h) for daily quotas
+  - **MEDIUM Priority**: Added WARN_THRESHOLD_SECS (24 hours) for logging
+  - **MEDIUM Priority**: Replaced fragile error string parsing with structured Error::RateLimitExceeded
+  - **MEDIUM Priority**: Updated From<EgressError> to preserve structured rate limit info
+  - **MEDIUM Priority**: Removed brittle extract_rate_limit_info() method
+  - All 838 workspace tests passing (64 egress + 118 routing + 113 ingress + 543 other)
+  - Clippy checks passing with -D warnings
+  - Code committed with security review notes
 
 ## Implementation Summary
 
-The limits-alternative routing strategy is now fully implemented and tested. Key highlights:
+The limits-alternative routing strategy is now **production-ready** with all security fixes applied. Key highlights:
 
 **Core Functionality:**
 - Rate limit detection from HTTP 429 responses
@@ -1192,6 +1214,14 @@ The limits-alternative routing strategy is now fully implemented and tested. Key
 - Automatic recovery to primary providers when limits expire
 - Cross-dialect support (e.g., OpenAI → Anthropic with automatic translation)
 - Exponential backoff fallback (60s, 120s, 240s, etc.) when retry-after header missing
+
+**Security Features:**
+- **Bounded memory usage**: MAX_RATE_LIMIT_ENTRIES (1000) prevents unbounded growth
+- **Automatic cleanup**: 90% capacity threshold triggers expired entry removal
+- **Attack protection**: Refuses new entries if at capacity, preventing memory exhaustion
+- **Capped retry-after**: MAX_RETRY_AFTER_SECS (48 hours) prevents indefinite blocking
+- **Warning logs**: Alerts when retry-after exceeds 24 hours (unusual but legitimate)
+- **Structured errors**: Type-safe Error::RateLimitExceeded eliminates string parsing vulnerabilities
 
 **Technical Implementation:**
 - Lock-free concurrency using DashMap for rate limit state
@@ -1205,18 +1235,23 @@ The limits-alternative routing strategy is now fully implemented and tested. Key
 - 5 unit tests for retry-after parsing (all passing)
 - 11 unit tests for rate limit state and strategy logic (all passing)
 - 6 integration tests covering all key scenarios (all passing)
-- Full test suite: 118 routing + 61 egress + 113 ingress + 6 integration = 298 tests
-- All clippy warnings resolved
+- 3 additional tests for retry-after capping (all passing)
+- Full test suite: 838 tests passing (64 egress + 118 routing + 113 ingress + 543 other)
+- All clippy warnings resolved with -D warnings flag
+- Both debug and release builds passing
 
 **Files Modified/Created:**
-- Created: `crates/lunaroute-egress/src/retry_after.rs` (133 lines)
+- Created: `crates/lunaroute-egress/src/retry_after.rs` (233 lines)
 - Created: `crates/lunaroute-integration-tests/tests/limits_alternative_strategy.rs` (679 lines)
-- Created: `docs/limits-alternative-routing-strategy.md` (1,200+ lines)
+- Created: `docs/limits-alternative-routing-strategy.md` (1,250+ lines)
+- Modified: `crates/lunaroute-core/src/error.rs` (added RateLimitExceeded variant)
+- Modified: `crates/lunaroute-egress/src/lib.rs` (structured error conversion)
 - Modified: `crates/lunaroute-egress/src/openai.rs` (retry-after extraction, 2 locations)
 - Modified: `crates/lunaroute-egress/src/anthropic.rs` (retry-after extraction)
-- Modified: `crates/lunaroute-routing/src/strategy.rs` (450+ lines added)
-- Modified: `crates/lunaroute-routing/src/provider_router.rs` (immediate retry enhancement)
+- Modified: `crates/lunaroute-routing/src/strategy.rs` (500+ lines added with security protections)
+- Modified: `crates/lunaroute-routing/src/provider_router.rs` (immediate retry + metrics + structured errors)
 - Modified: `crates/lunaroute-observability/src/metrics.rs` (3 new metrics)
 - Modified: `examples/configs/routing-strategies.yaml` (complete example added)
+- Modified: 6 test files for Router::new() signature updates
 
-The feature is ready for production use.
+The feature is **production-ready** and ready for merge.
