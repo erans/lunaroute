@@ -77,6 +77,74 @@ routing:
 - Capacity-based distribution (higher weights for more powerful instances)
 - A/B testing with traffic percentages
 
+#### Limits-Alternative Strategy
+
+Automatically switches to alternative providers when rate limits are encountered, with intelligent backoff and automatic recovery:
+
+```yaml
+routing:
+  rules:
+    - name: "gpt-with-rate-limit-protection"
+      priority: 100
+      matcher:
+        model_pattern: "^gpt-.*"
+      strategy:
+        type: "limits-alternative"
+        primary_providers:
+          - "openai-primary"
+          - "openai-backup"
+        alternative_providers:
+          - "anthropic-primary"
+          - "anthropic-backup"
+        exponential_backoff_base_secs: 60  # Optional, default: 60
+```
+
+**Characteristics:**
+- **Automatic rate limit detection**: Monitors HTTP 429 responses with `retry-after` header parsing
+- **Immediate failover**: Switches to alternatives within same request when rate limit detected
+- **Cross-dialect support**: Can failover from OpenAI → Anthropic (with automatic translation)
+- **Auto-recovery**: Returns to primary providers when rate limits expire
+- **Cascading alternatives**: Tries all alternatives sequentially if multiple are rate-limited
+- **Smart timing**: Prioritizes `retry-after` header, falls back to exponential backoff (60s, 120s, 240s, etc.)
+- **Security hardened**:
+  - Bounded memory with MAX_RATE_LIMIT_ENTRIES (1000)
+  - Capped retry-after at 48 hours to prevent indefinite blocking
+  - Automatic cleanup at 90% capacity
+  - Type-safe error handling eliminates string parsing vulnerabilities
+
+**Use cases:**
+- Rate limit protection for high-traffic applications
+- Cross-provider failover (OpenAI ↔ Anthropic)
+- Quota management across multiple accounts
+- Resilient production deployments
+- Multi-region rate limit handling
+
+**Observability:**
+The strategy exposes three Prometheus metrics:
+- `lunaroute_rate_limits_total{provider, model}`: Total rate limit events
+- `lunaroute_rate_limit_alternatives_used{primary_provider, alternative_provider, model}`: Alternative usage
+- `lunaroute_rate_limit_backoff_seconds{provider}`: Backoff durations
+
+**How it works:**
+1. **Normal operation**: Requests go to primary providers in order
+2. **Rate limit detected**: Provider returns HTTP 429 with `retry-after` header
+3. **Immediate switch**: Router tries alternatives within same request (no retry needed)
+4. **State tracking**: Provider marked as rate-limited with expiration timestamp
+5. **Alternative cascade**: If alternative is also rate-limited, try next alternative
+6. **Automatic recovery**: Primary providers become available again after rate limit expires
+7. **Backoff fallback**: If no `retry-after` header, uses exponential backoff (60s, 120s, 240s, etc.)
+
+**Example flow:**
+```
+Request 1: openai-primary (200 OK) ✓
+Request 2: openai-primary (200 OK) ✓
+Request 3: openai-primary (429 Rate Limit) → anthropic-primary (200 OK) ✓
+Request 4: anthropic-primary (200 OK) ✓  [primary still rate-limited]
+Request 5: anthropic-primary (200 OK) ✓  [primary still rate-limited]
+[Rate limit expires after retry-after seconds]
+Request 6: openai-primary (200 OK) ✓  [recovered automatically]
+```
+
 ### Provider Configuration
 
 Each provider can be configured with type, credentials, and custom settings:
@@ -215,6 +283,23 @@ let rules = vec![
         }),
         primary: None,
         fallbacks: vec!["openai-fallback".to_string()],
+    },
+    RoutingRule {
+        priority: 15,
+        name: Some("gpt-rate-limit-protection".to_string()),
+        matcher: RuleMatcher::model_pattern("^gpt-.*"),
+        strategy: Some(RoutingStrategy::LimitsAlternative {
+            primary_providers: vec![
+                "openai-primary".to_string(),
+                "openai-backup".to_string(),
+            ],
+            alternative_providers: vec![
+                "anthropic-primary".to_string(),
+            ],
+            exponential_backoff_base_secs: 60,
+        }),
+        primary: None,
+        fallbacks: vec![],
     },
 ];
 
@@ -404,7 +489,41 @@ routing:
       fallbacks: ["emergency"]
 ```
 
-### Example 3: Mixed Configuration
+### Example 3: Rate Limit Protection
+
+```yaml
+providers:
+  openai-primary:
+    type: "openai"
+    api_key: "$OPENAI_API_KEY"
+  openai-backup:
+    type: "openai"
+    api_key: "$OPENAI_BACKUP_KEY"
+  anthropic-primary:
+    type: "anthropic"
+    api_key: "$ANTHROPIC_KEY"
+  anthropic-backup:
+    type: "anthropic"
+    api_key: "$ANTHROPIC_BACKUP_KEY"
+
+routing:
+  rules:
+    - name: "gpt-with-rate-limit-protection"
+      priority: 100
+      matcher:
+        model_pattern: "^gpt-.*"
+      strategy:
+        type: "limits-alternative"
+        primary_providers:
+          - "openai-primary"
+          - "openai-backup"
+        alternative_providers:
+          - "anthropic-primary"  # Cross-dialect alternative
+          - "anthropic-backup"
+        exponential_backoff_base_secs: 60
+```
+
+### Example 4: Mixed Configuration
 
 ```yaml
 routing:

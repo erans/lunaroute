@@ -13,6 +13,9 @@ pub enum Error {
     #[error("Provider error: {0}")]
     Provider(String),
 
+    #[error("Rate limit exceeded{}", retry_after_secs.map(|s| format!(": retry after {}s", s)).unwrap_or_default())]
+    RateLimitExceeded { retry_after_secs: Option<u64> },
+
     #[error("Internal error: {0}")]
     Internal(String),
 

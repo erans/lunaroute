@@ -167,6 +167,13 @@ impl AnthropicConnector {
     ) -> Result<(bytes::Bytes, std::collections::HashMap<String, String>)> {
         let status = response.status();
 
+        // Capture retry-after header before consuming response
+        let retry_after_secs = response
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(crate::parse_retry_after);
+
         if !status.is_success() {
             let status_code = status.as_u16();
             let body = response
@@ -175,9 +182,11 @@ impl AnthropicConnector {
                 .unwrap_or_else(|_| "Unable to read error body".to_string());
 
             return Err(if status_code == 429 {
-                EgressError::RateLimitExceeded {
-                    retry_after_secs: None,
-                }
+                debug!(
+                    retry_after_secs = ?retry_after_secs,
+                    "Anthropic rate limit exceeded"
+                );
+                EgressError::RateLimitExceeded { retry_after_secs }
             } else {
                 EgressError::ProviderError {
                     status_code,
