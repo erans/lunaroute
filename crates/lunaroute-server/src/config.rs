@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "lowercase")]
 pub enum ApiDialect {
     OpenAI,
-    #[default]
     Anthropic,
     /// Accept both OpenAI and Anthropic API formats simultaneously
     /// - OpenAI format at /v1/chat/completions
     /// - Anthropic format at /v1/messages
     /// - Routes to appropriate provider based on model prefix
+    #[default]
     Both,
 }
 
@@ -54,10 +54,39 @@ pub struct ServerConfig {
     pub ui: lunaroute_ui::UiConfig,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvidersConfig {
     pub openai: Option<ProviderSettings>,
     pub anthropic: Option<ProviderSettings>,
+}
+
+impl Default for ProvidersConfig {
+    fn default() -> Self {
+        Self {
+            // Enable both providers in passthrough mode by default
+            // No api_key = passthrough (will use env vars or client headers)
+            openai: Some(ProviderSettings {
+                api_key: None,
+                base_url: None,
+                enabled: true,
+                http_client: None,
+                request_headers: None,
+                request_body: None,
+                response_body: None,
+                codex_auth: None,
+            }),
+            anthropic: Some(ProviderSettings {
+                api_key: None,
+                base_url: None,
+                enabled: true,
+                http_client: None,
+                request_headers: None,
+                request_body: None,
+                response_body: None,
+                codex_auth: None,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

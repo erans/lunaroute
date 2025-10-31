@@ -181,6 +181,17 @@ enum Commands {
         #[arg(long, default_value = "false")]
         dry_run: bool,
     },
+    /// Start server in background and output shell commands to set environment variables
+    /// Usage: eval $(lunaroute-server env)
+    Env {
+        /// Host to bind to (default: 127.0.0.1)
+        #[arg(long)]
+        host: Option<String>,
+
+        /// Port to bind to (default: 8081)
+        #[arg(long)]
+        port: Option<u16>,
+    },
 }
 
 /// Logging provider that prints all requests and responses to stdout
@@ -316,6 +327,111 @@ impl Provider for LoggingProvider {
     }
 }
 
+/// Handle the 'env' subcommand - start server in background and output export commands
+fn handle_env_command(
+    host: Option<String>,
+    port: Option<u16>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::Duration;
+
+    let host = host.unwrap_or_else(|| "127.0.0.1".to_string());
+    let port = port.unwrap_or(8081);
+
+    // Get the current executable path
+    let exe_path = std::env::current_exe()?;
+
+    // Build the command to start the server
+    let mut cmd = Command::new(&exe_path);
+    cmd.arg("serve")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null());
+
+    // Add environment variables if they exist in the current environment
+    if let Ok(val) = std::env::var("LUNAROUTE_HOST") {
+        cmd.env("LUNAROUTE_HOST", val);
+    } else {
+        cmd.env("LUNAROUTE_HOST", &host);
+    }
+
+    if let Ok(val) = std::env::var("LUNAROUTE_PORT") {
+        cmd.env("LUNAROUTE_PORT", val);
+    } else {
+        cmd.env("LUNAROUTE_PORT", port.to_string());
+    }
+
+    // Preserve other relevant environment variables
+    for (key, value) in std::env::vars() {
+        if key.starts_with("LUNAROUTE_") || key == "OPENAI_API_KEY" || key == "ANTHROPIC_API_KEY" {
+            cmd.env(key, value);
+        }
+    }
+
+    // Spawn the server process in background
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                // Create a new session to detach from parent
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
+    let child = cmd.spawn()?;
+
+    // Detach the child process so it continues running
+    #[cfg(unix)]
+    {
+        // The process is already detached via setsid()
+        // Just forget about it so we don't wait for it
+        std::mem::forget(child);
+    }
+
+    #[cfg(not(unix))]
+    {
+        // On non-Unix systems, just spawn and forget
+        std::mem::forget(child);
+    }
+
+    // Wait briefly for server to start
+    thread::sleep(Duration::from_millis(500));
+
+    // Try to connect to verify server is running
+    let addr = format!("{}:{}", host, port);
+    let mut retries = 0;
+    let max_retries = 10;
+
+    while retries < max_retries {
+        match std::net::TcpStream::connect(&addr) {
+            Ok(_) => break,
+            Err(_) => {
+                retries += 1;
+                if retries < max_retries {
+                    thread::sleep(Duration::from_millis(200));
+                }
+            }
+        }
+    }
+
+    if retries == max_retries {
+        eprintln!("# Warning: Could not verify server started on {}", addr);
+        eprintln!("# Check logs for errors");
+    }
+
+    // Output shell export commands
+    println!("export ANTHROPIC_BASE_URL=http://{}:{}", host, port);
+    println!("export OPENAI_BASE_URL=http://{}:{}/v1", host, port);
+    eprintln!("# LunaRoute server started on http://{}:{}", host, port);
+    eprintln!("# Web UI available at http://{}:8082", host);
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse CLI arguments
@@ -345,6 +461,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             lunaroute_session::import_sessions(config).await?;
+            return Ok(());
+        }
+        Some(Commands::Env { host, port }) => {
+            // Start server in background and output shell export commands
+            handle_env_command(host, port)?;
             return Ok(());
         }
         Some(Commands::Serve) | None => {
