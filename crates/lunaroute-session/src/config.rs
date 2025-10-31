@@ -3,18 +3,18 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecordingConfig {
     /// Enable session recording
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
 
     /// JSONL writer configuration
-    #[serde(default)]
+    #[serde(default = "default_jsonl_config")]
     pub jsonl: Option<JsonlConfig>,
 
     /// SQLite writer configuration
-    #[serde(default)]
+    #[serde(default = "default_sqlite_config")]
     pub sqlite: Option<SqliteConfig>,
 
     /// PostgreSQL writer configuration (for multi-tenant mode)
@@ -36,6 +36,21 @@ pub struct SessionRecordingConfig {
     /// Maximum length for user_agent strings (truncates if longer)
     #[serde(default = "default_max_user_agent_length")]
     pub max_user_agent_length: usize,
+}
+
+impl Default for SessionRecordingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            jsonl: Some(JsonlConfig::default()),
+            sqlite: Some(SqliteConfig::default()),
+            postgres: None,
+            worker: WorkerConfig::default(),
+            pii: None,
+            capture_user_agent: true,
+            max_user_agent_length: default_max_user_agent_length(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -234,6 +249,14 @@ impl Default for WorkerConfig {
 // Default value functions for serde
 fn default_true() -> bool {
     true
+}
+
+fn default_jsonl_config() -> Option<JsonlConfig> {
+    Some(JsonlConfig::default())
+}
+
+fn default_sqlite_config() -> Option<SqliteConfig> {
+    Some(SqliteConfig::default())
 }
 
 fn default_max_connections() -> u32 {
@@ -459,8 +482,10 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = SessionRecordingConfig::default();
-        assert!(!config.enabled);
-        assert!(!config.has_writers());
+        assert!(config.enabled);
+        assert!(config.has_writers());
+        assert!(config.is_jsonl_enabled());
+        assert!(config.is_sqlite_enabled());
     }
 
     #[test]
