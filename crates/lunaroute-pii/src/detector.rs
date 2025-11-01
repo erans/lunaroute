@@ -97,20 +97,15 @@ impl Default for DetectorConfig {
 }
 
 /// Redaction mode for custom patterns
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CustomRedactionMode {
     /// Use HMAC tokenization (deterministic, reversible)
     Tokenize,
 
     /// Use placeholder masking (simple string replacement)
+    #[default]
     Mask,
-}
-
-impl Default for CustomRedactionMode {
-    fn default() -> Self {
-        Self::Mask
-    }
 }
 
 /// Custom regex pattern for detection
