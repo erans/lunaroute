@@ -12,19 +12,14 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Configuration source type
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigSource {
     /// Load configuration from a file (single-tenant mode)
+    #[default]
     File,
     /// Load configuration from PostgreSQL database (multi-tenant mode)
     Database,
-}
-
-impl Default for ConfigSource {
-    fn default() -> Self {
-        Self::File
-    }
 }
 
 /// Bootstrap configuration
