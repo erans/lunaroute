@@ -24,7 +24,8 @@ pub async fn get_overview_stats(pool: &SqlitePool, hours: i64) -> Result<Overvie
             COALESCE(AVG(CASE WHEN s.success = 1 THEN 100.0 ELSE 0.0 END), 100.0) as success_rate
         FROM sessions s
         LEFT JOIN session_stats ss ON s.session_id = ss.session_id
-        WHERE s.started_at >= datetime('now', '-' || ? || ' hours')
+        WHERE s.started_at <= datetime('now')
+            AND (s.completed_at IS NULL OR s.completed_at >= datetime('now', '-' || ? || ' hours'))
         "#
     )
     .bind(hours)
@@ -42,7 +43,8 @@ pub async fn get_overview_stats(pool: &SqlitePool, hours: i64) -> Result<Overvie
             COALESCE(ss.thinking_tokens, s.thinking_tokens) as thinking_tokens
         FROM sessions s
         LEFT JOIN session_stats ss ON s.session_id = ss.session_id
-        WHERE s.started_at >= datetime('now', '-' || ? || ' hours')
+        WHERE s.started_at <= datetime('now')
+            AND (s.completed_at IS NULL OR s.completed_at >= datetime('now', '-' || ? || ' hours'))
             AND (ss.model_name IS NOT NULL OR s.model_used IS NOT NULL OR s.model_requested IS NOT NULL)
             AND (ss.input_tokens IS NOT NULL OR s.input_tokens IS NOT NULL)
         "#,
@@ -105,7 +107,8 @@ pub async fn get_token_time_series(pool: &SqlitePool, days: i64) -> Result<Vec<T
             COALESCE(SUM(ss.thinking_tokens), 0) as thinking_tokens
         FROM sessions s
         LEFT JOIN session_stats ss ON s.session_id = ss.session_id
-        WHERE s.started_at >= datetime('now', '-' || ? || ' days')
+        WHERE s.started_at <= datetime('now')
+            AND (s.completed_at IS NULL OR s.completed_at >= datetime('now', '-' || ? || ' days'))
         GROUP BY DATE(s.started_at)
         ORDER BY date ASC
         "#,
@@ -281,7 +284,10 @@ pub async fn get_model_usage(
 
     let time_filter;
     if hours > 0 {
-        time_filter = format!("s.started_at >= datetime('now', '-{} hours')", hours);
+        time_filter = format!(
+            "s.started_at <= datetime('now') AND (s.completed_at IS NULL OR s.completed_at >= datetime('now', '-{} hours'))",
+            hours
+        );
         where_conditions.push(&time_filter);
     }
 
@@ -894,7 +900,8 @@ pub async fn get_sessions_by_hour(pool: &SqlitePool, hours: i64) -> Result<Vec<H
             CAST(strftime('%H', started_at) AS INTEGER) as hour,
             COUNT(*) as session_count
         FROM sessions
-        WHERE started_at >= datetime('now', '-' || ? || ' hours')
+        WHERE started_at <= datetime('now')
+            AND (completed_at IS NULL OR completed_at >= datetime('now', '-' || ? || ' hours'))
         GROUP BY hour
         ORDER BY hour ASC
         "#,
@@ -928,7 +935,8 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: Option<i64>) -> Result
                 ss.thinking_tokens
             FROM session_stats ss
             INNER JOIN sessions s ON ss.session_id = s.session_id
-            WHERE s.started_at >= datetime('now', '-{} hours')
+            WHERE s.started_at <= datetime('now')
+                AND (s.completed_at IS NULL OR s.completed_at >= datetime('now', '-{} hours'))
                 AND ss.model_name IS NOT NULL
             "#,
             h
@@ -1007,7 +1015,8 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: Option<i64>) -> Result
             r#"
             SELECT COUNT(DISTINCT session_id) as count
             FROM sessions
-            WHERE started_at >= datetime('now', '-{} hours')
+            WHERE started_at <= datetime('now')
+                AND (completed_at IS NULL OR completed_at >= datetime('now', '-{} hours'))
             "#,
             h
         )
