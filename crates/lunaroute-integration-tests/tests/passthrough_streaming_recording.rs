@@ -66,6 +66,7 @@ data: [DONE]
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
 
@@ -243,6 +244,7 @@ data: {"type":"message_stop"}
         base_url: mock_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let connector = Arc::new(AnthropicConnector::new(config).unwrap());
 
@@ -391,6 +393,7 @@ async fn test_openai_passthrough_non_streaming_with_recording() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
 
@@ -537,6 +540,7 @@ async fn test_anthropic_passthrough_non_streaming_with_recording() {
         base_url: mock_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let connector = Arc::new(AnthropicConnector::new(config).unwrap());
 

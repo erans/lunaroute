@@ -753,6 +753,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     account_id: c.account_id.clone(),
                 }
             }),
+            switch_notification_message: None,
         };
 
         // Wire custom headers and body modifications
@@ -827,6 +828,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             base_url,
             api_version: "2023-06-01".to_string(),
             client_config,
+            switch_notification_message: None,
         };
         let conn = AnthropicConnector::new(provider_config)?;
 

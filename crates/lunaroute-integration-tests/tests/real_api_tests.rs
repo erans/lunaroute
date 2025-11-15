@@ -47,6 +47,7 @@ async fn test_openai_real_api_simple_completion() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -102,6 +103,7 @@ async fn test_anthropic_real_api_simple_completion() {
         base_url: "https://api.anthropic.com".to_string(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let connector = AnthropicConnector::new(config).unwrap();
 
@@ -159,6 +161,7 @@ async fn test_openai_with_system_message() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -203,6 +206,7 @@ async fn test_anthropic_with_system_message() {
         base_url: "https://api.anthropic.com".to_string(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let connector = AnthropicConnector::new(config).unwrap();
 
@@ -251,6 +255,7 @@ async fn test_openai_error_handling_invalid_model() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -296,6 +301,7 @@ async fn test_both_providers_sequential() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let openai_connector = OpenAIConnector::new(openai_config).await.unwrap();
 
@@ -330,6 +336,7 @@ async fn test_both_providers_sequential() {
         base_url: "https://api.anthropic.com".to_string(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let anthropic_connector = AnthropicConnector::new(anthropic_config).unwrap();
 
@@ -375,6 +382,7 @@ async fn test_openai_streaming_basic() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -454,6 +462,7 @@ async fn test_anthropic_streaming_basic() {
         base_url: "https://api.anthropic.com".to_string(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let connector = AnthropicConnector::new(config).unwrap();
 
@@ -537,6 +546,7 @@ async fn test_openai_streaming_with_system_prompt() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -596,6 +606,7 @@ async fn test_anthropic_streaming_with_system_prompt() {
         base_url: "https://api.anthropic.com".to_string(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let connector = AnthropicConnector::new(config).unwrap();
 
@@ -674,6 +685,7 @@ async fn test_anthropic_request_routed_to_openai_real_api() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let openai_connector = OpenAIConnector::new(openai_config).await.unwrap();
 
@@ -815,6 +827,7 @@ async fn test_openai_request_routed_to_anthropic_real_api() {
         base_url: "https://api.anthropic.com".to_string(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let anthropic_connector = AnthropicConnector::new(anthropic_config).unwrap();
 

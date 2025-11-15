@@ -57,6 +57,7 @@ async fn test_openai_request_translates_to_anthropic_api() {
         base_url: mock_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let anthropic_connector = AnthropicConnector::new(config).unwrap();
 
@@ -129,6 +130,7 @@ async fn test_openai_request_with_temperature_translates_to_anthropic() {
         base_url: mock_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let anthropic_connector = AnthropicConnector::new(config).unwrap();
     let app = openai::router(Arc::new(anthropic_connector));
@@ -198,6 +200,7 @@ async fn test_openai_system_message_translates_to_anthropic() {
         base_url: mock_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let anthropic_connector = AnthropicConnector::new(config).unwrap();
     let app = openai::router(Arc::new(anthropic_connector));
@@ -275,6 +278,7 @@ data: {"type":"message_stop"}
         base_url: mock_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let anthropic_connector = AnthropicConnector::new(config).unwrap();
     let app = openai::router(Arc::new(anthropic_connector));

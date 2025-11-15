@@ -32,6 +32,9 @@ pub struct AnthropicConfig {
 
     /// HTTP client configuration
     pub client_config: HttpClientConfig,
+
+    /// Optional custom notification message when this provider is used as alternative
+    pub switch_notification_message: Option<String>,
 }
 
 impl AnthropicConfig {
@@ -42,6 +45,7 @@ impl AnthropicConfig {
             base_url: "https://api.anthropic.com".to_string(),
             api_version: "2023-06-01".to_string(),
             client_config: HttpClientConfig::default(),
+            switch_notification_message: None,
         }
     }
 
@@ -2064,5 +2068,21 @@ mod tests {
             assert!(has_text_delta);
             assert!(has_tool_delta);
         }
+    }
+
+    #[test]
+    fn test_config_with_switch_notification_message() {
+        let config = AnthropicConfig {
+            api_key: "test-key".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            api_version: "2023-06-01".to_string(),
+            client_config: Default::default(),
+            switch_notification_message: Some("Custom switch message".to_string()),
+        };
+
+        assert_eq!(
+            config.switch_notification_message.unwrap(),
+            "Custom switch message"
+        );
     }
 }
