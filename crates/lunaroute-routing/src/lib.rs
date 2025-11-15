@@ -61,6 +61,7 @@
 
 pub mod circuit_breaker;
 pub mod health;
+pub mod notification;
 pub mod path_classifier;
 pub mod provider_config;
 pub mod provider_router;
