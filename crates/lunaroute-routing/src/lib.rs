@@ -73,6 +73,7 @@ pub use circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitState, SharedCircuitBreaker,
 };
 pub use health::{HealthMetrics, HealthMonitor, HealthMonitorConfig, HealthStatus};
+pub use notification::{ProviderSwitchNotificationConfig, SwitchReason};
 pub use path_classifier::PathClassifier;
 pub use provider_config::{ProviderConfig, ProviderConfigError, ProviderType};
 pub use provider_router::Router;
