@@ -59,6 +59,33 @@ fn default_notification_message() -> String {
         .to_string()
 }
 
+/// Build notification message for provider switch
+///
+/// # Arguments
+/// * `original_provider` - Provider ID that failed
+/// * `new_provider` - Provider ID being switched to
+/// * `switch_reason` - Reason for the switch
+/// * `model` - Model name from request
+/// * `provider_override` - Optional provider-specific message override
+/// * `global_config` - Global notification configuration
+pub fn build_notification_message(
+    original_provider: &str,
+    new_provider: &str,
+    switch_reason: SwitchReason,
+    model: &str,
+    provider_override: Option<&str>,
+    global_config: &ProviderSwitchNotificationConfig,
+) -> String {
+    // Use provider override if available, otherwise use global default
+    let template = provider_override.unwrap_or(&global_config.default_message);
+
+    // Get generic reason message
+    let reason = switch_reason.to_generic_message();
+
+    // Substitute variables
+    substitute_template_variables(template, original_provider, new_provider, reason, model)
+}
+
 /// Substitute template variables in a notification message
 ///
 /// Supported variables:
@@ -194,5 +221,63 @@ mod tests {
         );
 
         assert_eq!(result, "anthropic-backup-2!");
+    }
+
+    #[test]
+    fn test_build_notification_uses_default() {
+        let global_config = ProviderSwitchNotificationConfig::default();
+
+        let message = build_notification_message(
+            "openai-primary",
+            "anthropic-backup",
+            SwitchReason::RateLimit,
+            "gpt-4",
+            None, // No provider override
+            &global_config,
+        );
+
+        assert!(message.contains("IMPORTANT"));
+        assert!(message.contains("alternative AI service provider"));
+    }
+
+    #[test]
+    fn test_build_notification_uses_provider_override() {
+        let global_config = ProviderSwitchNotificationConfig::default();
+        let provider_message = Some("Custom: Switched to ${new_provider}".to_string());
+
+        let message = build_notification_message(
+            "openai-primary",
+            "anthropic-backup",
+            SwitchReason::RateLimit,
+            "gpt-4",
+            provider_message.as_deref(),
+            &global_config,
+        );
+
+        assert_eq!(message, "Custom: Switched to anthropic-backup");
+    }
+
+    #[test]
+    fn test_build_notification_substitutes_variables() {
+        let global_config = ProviderSwitchNotificationConfig {
+            enabled: true,
+            default_message:
+                "From ${original_provider} to ${new_provider} due to ${reason} (${model})"
+                    .to_string(),
+        };
+
+        let message = build_notification_message(
+            "openai-primary",
+            "anthropic-backup",
+            SwitchReason::ServiceIssue,
+            "gpt-4",
+            None,
+            &global_config,
+        );
+
+        assert_eq!(
+            message,
+            "From openai-primary to anthropic-backup due to a temporary service issue (gpt-4)"
+        );
     }
 }
