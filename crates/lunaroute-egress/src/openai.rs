@@ -1268,6 +1268,10 @@ impl Provider for OpenAIConnector {
             supports_vision: true,
         }
     }
+
+    fn get_notification_message(&self) -> Option<&str> {
+        self.config.switch_notification_message.as_deref()
+    }
 }
 
 // OpenAI API types (simplified, matching ingress types)

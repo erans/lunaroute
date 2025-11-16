@@ -466,6 +466,10 @@ impl Provider for AnthropicConnector {
             supports_vision: true,
         }
     }
+
+    fn get_notification_message(&self) -> Option<&str> {
+        self.config.switch_notification_message.as_deref()
+    }
 }
 
 // Anthropic API types

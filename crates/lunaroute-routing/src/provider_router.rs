@@ -9,6 +9,10 @@
 use crate::{
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
     health::{HealthMonitor, HealthMonitorConfig},
+    notification::{
+        ProviderSwitchNotificationConfig, SwitchReason, build_notification_message,
+        has_notification_already,
+    },
     router::{RouteTable, RoutingContext},
     strategy::{RoutingStrategy, StrategyState},
 };
@@ -16,7 +20,9 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use lunaroute_core::{
     error::{Error, Result},
-    normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
+    normalized::{
+        Message, MessageContent, NormalizedRequest, NormalizedResponse, NormalizedStreamEvent, Role,
+    },
     provider::{Provider, ProviderCapabilities},
 };
 use lunaroute_observability::metrics::Metrics;
@@ -47,6 +53,10 @@ pub struct Router {
 
     /// Metrics collector (optional for observability)
     metrics: Option<Arc<Metrics>>,
+
+    /// Provider switch notification configuration
+    #[allow(dead_code)] // Will be used in Phase 5 integration
+    notification_config: Option<ProviderSwitchNotificationConfig>,
 }
 
 impl Router {
@@ -57,6 +67,7 @@ impl Router {
         health_config: HealthMonitorConfig,
         circuit_breaker_config: CircuitBreakerConfig,
         metrics: Option<Arc<Metrics>>,
+        notification_config: Option<ProviderSwitchNotificationConfig>,
     ) -> Self {
         let health_monitor = Arc::new(HealthMonitor::new(health_config));
 
@@ -73,6 +84,7 @@ impl Router {
             circuit_breaker_config,
             strategy_states: DashMap::new(),
             metrics,
+            notification_config,
         }
     }
 
@@ -86,6 +98,7 @@ impl Router {
             providers,
             HealthMonitorConfig::default(),
             CircuitBreakerConfig::default(),
+            None,
             None,
         )
     }
@@ -114,6 +127,64 @@ impl Router {
             .entry(rule_name.to_string())
             .or_insert_with(|| Arc::new(StrategyState::new()))
             .clone()
+    }
+
+    /// Get notification message override from provider config if available
+    #[allow(dead_code)] // Will be used in Phase 5 integration
+    fn get_provider_notification_message(&self, provider_id: &str) -> Option<String> {
+        self.providers
+            .get(provider_id)
+            .and_then(|provider| provider.get_notification_message().map(|s| s.to_string()))
+    }
+
+    /// Inject notification message if needed
+    ///
+    /// Returns true if notification was injected, false otherwise
+    #[allow(dead_code)] // Will be used in Phase 5 integration
+    fn inject_notification_if_needed(
+        &self,
+        request: &mut NormalizedRequest,
+        original_provider_id: &str,
+        new_provider_id: &str,
+        switch_reason: SwitchReason,
+    ) -> bool {
+        // Check if notifications are enabled
+        let notification_config = match &self.notification_config {
+            Some(config) if config.enabled => config,
+            _ => return false, // Disabled
+        };
+
+        // Check idempotency - already has notification?
+        if has_notification_already(request) {
+            return false;
+        }
+
+        // Get provider-specific message override if available
+        let provider_override = self.get_provider_notification_message(new_provider_id);
+
+        // Build notification message
+        let notification_text = build_notification_message(
+            original_provider_id,
+            new_provider_id,
+            switch_reason,
+            &request.model,
+            provider_override.as_deref(),
+            notification_config,
+        );
+
+        // Create notification message
+        let notification_message = Message {
+            role: Role::User,
+            content: MessageContent::Text(notification_text),
+            name: None,
+            tool_calls: vec![],
+            tool_call_id: None,
+        };
+
+        // Prepend to messages array
+        request.messages.insert(0, notification_message);
+
+        true
     }
 
     /// Select provider using strategy
@@ -715,6 +786,7 @@ mod tests {
             HealthMonitorConfig::default(),
             circuit_breaker_config,
             None,
+            None,
         );
 
         // First two requests should fail normally
@@ -770,6 +842,7 @@ mod tests {
             providers,
             health_config,
             CircuitBreakerConfig::default(),
+            None,
             None,
         );
 

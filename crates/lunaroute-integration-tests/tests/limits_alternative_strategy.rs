@@ -157,6 +157,7 @@ async fn test_basic_rate_limit_switch() {
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
         Some(metrics.clone()),
+        None,
     );
 
     // Send request - should succeed via alternative
@@ -299,6 +300,7 @@ async fn test_cross_dialect_alternative() {
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
         None,
+        None,
     );
 
     // Send request - should succeed via Anthropic with dialect translation
@@ -412,6 +414,7 @@ async fn test_cascade_through_alternatives() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
         None,
     );
 
@@ -530,6 +533,7 @@ async fn test_auto_recovery_to_primary() {
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
         None,
+        None,
     );
 
     // First request: should use alternative due to rate limit
@@ -618,6 +622,7 @@ async fn test_all_providers_rate_limited() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
         None,
     );
 
@@ -713,6 +718,7 @@ async fn test_exponential_backoff_without_retry_after() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
         None,
     );
 

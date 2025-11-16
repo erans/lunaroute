@@ -193,7 +193,7 @@ async fn test_circuit_breaker_opens_and_closes() {
     };
 
     let health_config = HealthMonitorConfig::default();
-    let router = Router::new(route_table, providers, health_config, cb_config, None);
+    let router = Router::new(route_table, providers, health_config, cb_config, None, None);
 
     let request = create_test_request("test-model");
 
@@ -246,7 +246,7 @@ async fn test_health_monitoring_tracks_failures() {
     };
 
     let cb_config = CircuitBreakerConfig::default();
-    let router = Router::new(route_table, providers, health_config, cb_config, None);
+    let router = Router::new(route_table, providers, health_config, cb_config, None, None);
 
     let request = create_test_request("test-model");
 

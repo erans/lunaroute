@@ -19,6 +19,11 @@ pub trait Provider: Send + Sync {
 
     /// Get provider capabilities
     fn capabilities(&self) -> ProviderCapabilities;
+
+    /// Get custom notification message for when this provider is used as alternative
+    fn get_notification_message(&self) -> Option<&str> {
+        None // Default implementation
+    }
 }
 
 #[derive(Debug, Clone)]
