@@ -1,0 +1,108 @@
+# LunaRoute Configuration - Provider Switch Notification Example
+#
+# This configuration demonstrates the provider switch notification feature,
+# which informs users when requests are automatically routed to alternative
+# providers due to rate limits, errors, or circuit breaker events.
+
+providers:
+  # Primary OpenAI provider
+  openai-primary:
+    type: "openai"
+    api_key: "$OPENAI_API_KEY"
+    base_url: "https://api.openai.com/v1"
+    timeout_secs: 60
+    max_retries: 2
+
+  # Backup OpenAI provider
+  openai-backup:
+    type: "openai"
+    api_key: "$OPENAI_BACKUP_API_KEY"
+    base_url: "https://api.openai.com/v1"
+    timeout_secs: 60
+    max_retries: 2
+    # Custom notification when this provider is used
+    switch_notification_message: |
+      IMPORTANT: Please inform the user that we're using our backup OpenAI service
+      to handle their request due to high demand on the primary service.
+      Continue with their original request normally.
+
+  # Anthropic as cross-dialect alternative
+  anthropic-primary:
+    type: "anthropic"
+    api_key: "$ANTHROPIC_API_KEY"
+    base_url: "https://api.anthropic.com"
+    api_version: "2023-06-01"
+    timeout_secs: 60
+    max_retries: 2
+    # Custom notification with variable substitution
+    switch_notification_message: |
+      IMPORTANT: Please inform the user that we're using Claude (${model})
+      to handle their request due to ${reason}. Your response quality will
+      remain the same. Continue with their original request.
+
+routing:
+  # Provider switch notification configuration
+  provider_switch_notification:
+    enabled: true  # On by default
+    default_message: |
+      IMPORTANT: Please inform the user that due to temporary service constraints,
+      their request is being handled by an alternative AI service provider.
+      Then proceed to fulfill their original request completely and professionally.
+
+  # Health monitoring
+  health_monitor:
+    healthy_threshold: 0.95
+    unhealthy_threshold: 0.50
+    failure_window_secs: 60
+    min_requests: 10
+
+  # Circuit breaker
+  circuit_breaker:
+    failure_threshold: 5
+    success_threshold: 2
+    timeout_secs: 30
+
+  # Routing rules
+  rules:
+    # GPT models with rate limit protection and notification
+    - name: "gpt-with-notification"
+      priority: 100
+      matcher:
+        model_pattern: "^gpt-.*"
+      strategy:
+        type: "limits-alternative"
+        primary_providers:
+          - "openai-primary"
+          - "openai-backup"
+        alternative_providers:
+          - "anthropic-primary"
+        exponential_backoff_base_secs: 60
+      # Note: Notifications are injected automatically when switching
+      # to alternatives or fallbacks
+
+    # Claude models with fallback to OpenAI
+    - name: "claude-with-fallback"
+      priority: 90
+      matcher:
+        model_pattern: "^claude-.*"
+      primary: "anthropic-primary"
+      fallbacks:
+        - "openai-primary"
+        - "openai-backup"
+
+listeners:
+  - type: "http"
+    address: "0.0.0.0:8081"
+    dialect: "openai"
+
+session_recording:
+  type: "jsonl"
+  path: "~/.lunaroute/sessions"
+  enabled: true
+
+observability:
+  metrics:
+    enabled: true
+    port: 9090
+  logging:
+    level: "info"
