@@ -55,7 +55,6 @@ pub struct Router {
     metrics: Option<Arc<Metrics>>,
 
     /// Provider switch notification configuration
-    #[allow(dead_code)] // Will be used in Phase 5 integration
     notification_config: Option<ProviderSwitchNotificationConfig>,
 }
 
@@ -130,7 +129,6 @@ impl Router {
     }
 
     /// Get notification message override from provider config if available
-    #[allow(dead_code)] // Will be used in Phase 5 integration
     fn get_provider_notification_message(&self, provider_id: &str) -> Option<String> {
         self.providers
             .get(provider_id)
@@ -140,7 +138,6 @@ impl Router {
     /// Inject notification message if needed
     ///
     /// Returns true if notification was injected, false otherwise
-    #[allow(dead_code)] // Will be used in Phase 5 integration
     fn inject_notification_if_needed(
         &self,
         request: &mut NormalizedRequest,
@@ -185,6 +182,24 @@ impl Router {
         request.messages.insert(0, notification_message);
 
         true
+    }
+
+    /// Check if an error is a 5xx server error
+    fn is_5xx_error(error: &Error) -> bool {
+        match error {
+            Error::Provider(msg) => {
+                // Check if error message contains 5xx status codes
+                msg.contains("500")
+                    || msg.contains("502")
+                    || msg.contains("503")
+                    || msg.contains("504")
+                    || msg.contains("Internal Server Error")
+                    || msg.contains("Bad Gateway")
+                    || msg.contains("Service Unavailable")
+                    || msg.contains("Gateway Timeout")
+            }
+            _ => false,
+        }
     }
 
     /// Select provider using strategy
@@ -349,15 +364,23 @@ impl Provider for Router {
         // Try primary/selected provider
         let mut tried_providers = vec![primary_provider.clone()];
 
+        // Track error type for determining switch reason in fallback logic
+        let is_rate_limit_error;
+        let is_5xx_error;
+
         match self
             .try_provider(&primary_provider, &request, strategy_ref, Some(rule_name))
             .await
         {
             Ok(response) => return Ok(response),
             Err(err) => {
+                // Store error details for determining switch reason in fallback logic
+                is_rate_limit_error = matches!(err, Error::RateLimitExceeded { .. });
+                is_5xx_error = Self::is_5xx_error(&err);
+
                 // If using LimitsAlternative strategy and got rate limit, retry strategy selection immediately
                 if let Some(RoutingStrategy::LimitsAlternative { .. }) = strategy_ref
-                    && matches!(err, Error::RateLimitExceeded { .. })
+                    && is_rate_limit_error
                 {
                     // Keep trying alternatives until we find one that works or run out
                     while let Ok(alternative) =
@@ -376,8 +399,24 @@ impl Provider for Router {
 
                         tried_providers.push(alternative.clone());
 
+                        // Clone request to inject notification
+                        let mut alternative_request = request.clone();
+
+                        // Inject notification before trying alternative provider
+                        self.inject_notification_if_needed(
+                            &mut alternative_request,
+                            &tried_providers[0], // Original primary provider
+                            &alternative,
+                            SwitchReason::RateLimit,
+                        );
+
                         match self
-                            .try_provider(&alternative, &request, strategy_ref, Some(rule_name))
+                            .try_provider(
+                                &alternative,
+                                &alternative_request,
+                                strategy_ref,
+                                Some(rule_name),
+                            )
                             .await
                         {
                             Ok(response) => {
@@ -422,8 +461,34 @@ impl Provider for Router {
 
         // Try fallback providers
         for fallback in &decision.fallbacks {
+            // Determine switch reason based on primary error
+            let switch_reason = if is_rate_limit_error {
+                SwitchReason::RateLimit
+            } else if is_5xx_error {
+                SwitchReason::ServiceIssue
+            } else {
+                // Check if circuit breaker is open for primary
+                let cb = self.get_circuit_breaker(&primary_provider);
+                if !cb.allow_request() {
+                    SwitchReason::CircuitBreaker
+                } else {
+                    SwitchReason::ServiceIssue // Default for other errors
+                }
+            };
+
+            // Clone request to inject notification
+            let mut fallback_request = request.clone();
+
+            // Inject notification before trying fallback
+            self.inject_notification_if_needed(
+                &mut fallback_request,
+                &primary_provider,
+                fallback,
+                switch_reason,
+            );
+
             match self
-                .try_provider(fallback, &request, strategy_ref, Some(rule_name))
+                .try_provider(fallback, &fallback_request, strategy_ref, Some(rule_name))
                 .await
             {
                 Ok(response) => {
@@ -514,13 +579,24 @@ impl Provider for Router {
                         Error::Provider(format!("Fallback provider '{}' not found", fallback))
                     })?;
 
+                    // Clone request to inject notification
+                    let mut fallback_request = request.clone();
+
+                    // Inject notification for circuit breaker triggered switch
+                    self.inject_notification_if_needed(
+                        &mut fallback_request,
+                        &primary_provider,
+                        fallback,
+                        SwitchReason::CircuitBreaker,
+                    );
+
                     tracing::info!(
                         fallback = %fallback,
                         "Using fallback provider for streaming due to circuit breaker"
                     );
 
                     // TODO: Wrap stream to track success/failure
-                    return provider.stream(request).await;
+                    return provider.stream(fallback_request).await;
                 }
             }
 
