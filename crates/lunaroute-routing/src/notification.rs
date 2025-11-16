@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use lunaroute_core::normalized::{MessageContent, NormalizedRequest};
+
 /// Reason for switching providers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwitchReason {
@@ -86,6 +88,21 @@ pub fn build_notification_message(
     substitute_template_variables(template, original_provider, new_provider, reason, model)
 }
 
+/// Check if notification has already been injected
+///
+/// Detects if the first message starts with "IMPORTANT:" to prevent
+/// duplicate notifications during cascading failovers.
+pub fn has_notification_already(request: &NormalizedRequest) -> bool {
+    request
+        .messages
+        .first()
+        .and_then(|m| match &m.content {
+            MessageContent::Text(t) => Some(t.starts_with("IMPORTANT:")),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
 /// Substitute template variables in a notification message
 ///
 /// Supported variables:
@@ -110,6 +127,8 @@ pub fn substitute_template_variables(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lunaroute_core::normalized::{ContentPart, Message, Role};
+    use std::collections::HashMap;
 
     #[test]
     fn test_switch_reason_to_generic_message() {
@@ -279,5 +298,115 @@ mod tests {
             message,
             "From openai-primary to anthropic-backup due to a temporary service issue (gpt-4)"
         );
+    }
+
+    #[test]
+    fn test_has_notification_when_present() {
+        use lunaroute_core::normalized::MessageContent;
+
+        let request = NormalizedRequest {
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("IMPORTANT: This is a notification".to_string()),
+                name: None,
+                tool_calls: vec![],
+                tool_call_id: None,
+            }],
+            system: None,
+            model: "gpt-4".to_string(),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: vec![],
+            stream: false,
+            tools: vec![],
+            tool_results: vec![],
+            tool_choice: None,
+            metadata: HashMap::new(),
+        };
+
+        assert!(has_notification_already(&request));
+    }
+
+    #[test]
+    fn test_has_notification_when_absent() {
+        use lunaroute_core::normalized::MessageContent;
+
+        let request = NormalizedRequest {
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("Regular user message".to_string()),
+                name: None,
+                tool_calls: vec![],
+                tool_call_id: None,
+            }],
+            system: None,
+            model: "gpt-4".to_string(),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: vec![],
+            stream: false,
+            tools: vec![],
+            tool_results: vec![],
+            tool_choice: None,
+            metadata: HashMap::new(),
+        };
+
+        assert!(!has_notification_already(&request));
+    }
+
+    #[test]
+    fn test_has_notification_empty_messages() {
+        let request = NormalizedRequest {
+            messages: vec![],
+            system: None,
+            model: "gpt-4".to_string(),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: vec![],
+            stream: false,
+            tools: vec![],
+            tool_results: vec![],
+            tool_choice: None,
+            metadata: HashMap::new(),
+        };
+
+        assert!(!has_notification_already(&request));
+    }
+
+    #[test]
+    fn test_has_notification_multimodal_message() {
+        use lunaroute_core::normalized::MessageContent;
+
+        let request = NormalizedRequest {
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Parts(vec![ContentPart::Text {
+                    text: "Some text".to_string(),
+                }]),
+                name: None,
+                tool_calls: vec![],
+                tool_call_id: None,
+            }],
+            system: None,
+            model: "gpt-4".to_string(),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: vec![],
+            stream: false,
+            tools: vec![],
+            tool_results: vec![],
+            tool_choice: None,
+            metadata: HashMap::new(),
+        };
+
+        assert!(!has_notification_already(&request));
     }
 }
