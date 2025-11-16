@@ -184,24 +184,6 @@ impl Router {
         true
     }
 
-    /// Check if an error is a 5xx server error
-    fn is_5xx_error(error: &Error) -> bool {
-        match error {
-            Error::Provider(msg) => {
-                // Check if error message contains 5xx status codes
-                msg.contains("500")
-                    || msg.contains("502")
-                    || msg.contains("503")
-                    || msg.contains("504")
-                    || msg.contains("Internal Server Error")
-                    || msg.contains("Bad Gateway")
-                    || msg.contains("Service Unavailable")
-                    || msg.contains("Gateway Timeout")
-            }
-            _ => false,
-        }
-    }
-
     /// Select provider using strategy
     fn select_provider_from_strategy(
         &self,
@@ -366,7 +348,6 @@ impl Provider for Router {
 
         // Track error type for determining switch reason in fallback logic
         let is_rate_limit_error;
-        let is_5xx_error;
 
         match self
             .try_provider(&primary_provider, &request, strategy_ref, Some(rule_name))
@@ -376,7 +357,6 @@ impl Provider for Router {
             Err(err) => {
                 // Store error details for determining switch reason in fallback logic
                 is_rate_limit_error = matches!(err, Error::RateLimitExceeded { .. });
-                is_5xx_error = Self::is_5xx_error(&err);
 
                 // If using LimitsAlternative strategy and got rate limit, retry strategy selection immediately
                 if let Some(RoutingStrategy::LimitsAlternative { .. }) = strategy_ref
@@ -464,16 +444,9 @@ impl Provider for Router {
             // Determine switch reason based on primary error
             let switch_reason = if is_rate_limit_error {
                 SwitchReason::RateLimit
-            } else if is_5xx_error {
-                SwitchReason::ServiceIssue
             } else {
-                // Check if circuit breaker is open for primary
-                let cb = self.get_circuit_breaker(&primary_provider);
-                if !cb.allow_request() {
-                    SwitchReason::CircuitBreaker
-                } else {
-                    SwitchReason::ServiceIssue // Default for other errors
-                }
+                // Use ServiceIssue for all non-rate-limit errors (5xx and others)
+                SwitchReason::ServiceIssue
             };
 
             // Clone request to inject notification
