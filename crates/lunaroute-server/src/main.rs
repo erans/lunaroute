@@ -986,9 +986,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Initialize observability (needed before router creation)
+    info!("📊 Initializing observability (metrics, health endpoints)");
+    let metrics = Arc::new(Metrics::new()?);
+    let health_state = HealthState::new(metrics.clone());
+
     // Create router with routing table (not needed in passthrough mode, but keep for consistency)
     let route_table = RouteTable::with_rules(rules);
-    let router = Arc::new(Router::with_defaults(route_table, providers));
+    let router = Arc::new(Router::new(
+        route_table,
+        providers,
+        lunaroute_routing::HealthMonitorConfig::default(),
+        lunaroute_routing::CircuitBreakerConfig::default(),
+        Some(metrics.clone()),
+        config.routing.provider_switch_notification.clone(),
+    ));
 
     if !is_passthrough {
         info!("✓ Router created with health monitoring and circuit breakers");
@@ -996,10 +1008,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("   Health monitor: tracks success rate and recent failures");
     }
 
-    // Initialize observability
-    info!("📊 Initializing observability (metrics, health endpoints)");
-    let metrics = Arc::new(Metrics::new()?);
-    let health_state = HealthState::new(metrics.clone());
+    if config.routing.provider_switch_notification.is_some() {
+        info!("✓ Provider switch notifications enabled");
+    }
 
     // Initialize session statistics tracker
     let stats_tracker = Arc::new(session_stats::SessionStatsTracker::new(
