@@ -59,6 +59,27 @@ fn default_notification_message() -> String {
         .to_string()
 }
 
+/// Substitute template variables in a notification message
+///
+/// Supported variables:
+/// - `${original_provider}`: Provider that failed
+/// - `${new_provider}`: Provider being switched to
+/// - `${reason}`: Generic reason for switch
+/// - `${model}`: Model name from request
+pub fn substitute_template_variables(
+    template: &str,
+    original_provider: &str,
+    new_provider: &str,
+    reason: &str,
+    model: &str,
+) -> String {
+    template
+        .replace("${original_provider}", original_provider)
+        .replace("${new_provider}", new_provider)
+        .replace("${reason}", reason)
+        .replace("${model}", model)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +135,64 @@ mod tests {
         let yaml = "{}";
         let config: ProviderSwitchNotificationConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.enabled); // Should default to true
+    }
+
+    #[test]
+    fn test_substitute_all_variables() {
+        let template =
+            "Switched from ${original_provider} to ${new_provider} due to ${reason} for ${model}";
+        let result = substitute_template_variables(
+            template,
+            "openai-primary",
+            "anthropic-backup",
+            "high demand",
+            "gpt-4",
+        );
+
+        assert_eq!(
+            result,
+            "Switched from openai-primary to anthropic-backup due to high demand for gpt-4"
+        );
+    }
+
+    #[test]
+    fn test_substitute_no_variables() {
+        let template = "No variables here";
+        let result =
+            substitute_template_variables(template, "openai", "anthropic", "issue", "gpt-4");
+
+        assert_eq!(result, "No variables here");
+    }
+
+    #[test]
+    fn test_substitute_partial_variables() {
+        let template = "Using ${new_provider} now";
+        let result =
+            substitute_template_variables(template, "openai", "anthropic", "issue", "gpt-4");
+
+        assert_eq!(result, "Using anthropic now");
+    }
+
+    #[test]
+    fn test_substitute_duplicate_variables() {
+        let template = "${model} and ${model} again";
+        let result =
+            substitute_template_variables(template, "openai", "anthropic", "issue", "gpt-4");
+
+        assert_eq!(result, "gpt-4 and gpt-4 again");
+    }
+
+    #[test]
+    fn test_substitute_special_characters() {
+        let template = "${new_provider}!";
+        let result = substitute_template_variables(
+            template,
+            "openai",
+            "anthropic-backup-2",
+            "issue",
+            "gpt-4-turbo",
+        );
+
+        assert_eq!(result, "anthropic-backup-2!");
     }
 }
