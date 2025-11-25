@@ -447,6 +447,44 @@ export LUNAROUTE_OPENAI_POOL_MAX_IDLE=64
 
 See [Connection Pool Configuration](docs/CONNECTION_POOL_ENV_VARS.md) for details.
 
+### Provider Switch Notifications
+
+LunaRoute can automatically notify users when requests are routed to alternative providers due to rate limits, errors, or circuit breaker events.
+
+**Features:**
+- 🔔 Automatic user notifications via LLM response
+- 🎛️ Global on/off with per-provider customization
+- 🔄 Works with cross-dialect failover (OpenAI ↔ Claude)
+- 📝 Template variables for customization
+- 🛡️ Idempotent (no duplicate notifications)
+
+**Configuration:**
+
+```yaml
+routing:
+  provider_switch_notification:
+    enabled: true
+    default_message: |
+      IMPORTANT: Please inform the user that due to temporary service constraints,
+      their request is being handled by an alternative AI service provider.
+      Continue with their original request.
+
+providers:
+  anthropic-backup:
+    type: "anthropic"
+    # Custom message when THIS provider is used as alternative
+    switch_notification_message: |
+      Using Claude due to ${reason}. Quality remains the same.
+```
+
+**Template Variables:**
+- `${original_provider}` - Provider that failed
+- `${new_provider}` - Provider being used
+- `${reason}` - Generic reason (high demand, service issue, maintenance)
+- `${model}` - Model name
+
+See `examples/configs/provider-switch-notification.yaml` for complete example.
+
 ---
 
 ## 💡 Real-World Use Cases

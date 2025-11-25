@@ -351,6 +351,10 @@ fn default_bypass_enabled() -> bool {
 pub struct RoutingConfig {
     #[serde(default)]
     pub rules: Vec<RoutingRule>,
+
+    /// Provider switch notification configuration
+    #[serde(default)]
+    pub provider_switch_notification: Option<lunaroute_routing::ProviderSwitchNotificationConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1080,5 +1084,31 @@ providers:
         unsafe {
             env::remove_var("LUNAROUTE_OPENAI_POOL_MAX_IDLE");
         }
+    }
+
+    #[test]
+    fn test_routing_config_with_notification() {
+        let yaml = r#"
+provider_switch_notification:
+  enabled: true
+  default_message: "Custom notification"
+rules: []
+"#;
+
+        let config: RoutingConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.provider_switch_notification.is_some());
+        let notif = config.provider_switch_notification.unwrap();
+        assert!(notif.enabled);
+        assert_eq!(notif.default_message, "Custom notification");
+    }
+
+    #[test]
+    fn test_routing_config_without_notification() {
+        let yaml = r#"
+rules: []
+"#;
+
+        let config: RoutingConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.provider_switch_notification.is_none());
     }
 }

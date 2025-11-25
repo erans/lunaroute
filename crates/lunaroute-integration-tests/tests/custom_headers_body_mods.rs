@@ -63,6 +63,7 @@ async fn test_custom_headers_with_template_substitution() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -145,6 +146,7 @@ async fn test_request_body_defaults() {
         }),
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -220,6 +222,7 @@ async fn test_request_body_overrides() {
         }),
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -294,6 +297,7 @@ async fn test_prepend_messages() {
         }),
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 

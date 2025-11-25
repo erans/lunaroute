@@ -54,6 +54,7 @@ async fn test_openai_send_success() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -132,6 +133,7 @@ async fn test_openai_send_with_organization() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -191,6 +193,7 @@ async fn test_openai_send_rate_limit_error() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -272,6 +275,7 @@ async fn test_openai_send_server_error_with_retry() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -330,6 +334,7 @@ async fn test_openai_send_invalid_api_key() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -405,6 +410,7 @@ async fn test_openai_send_with_tools() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -496,6 +502,7 @@ async fn test_openai_codex_auth_with_valid_token() {
             auth_file,
             token_field: "tokens.access_token".to_string(),
         }),
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -577,6 +584,7 @@ async fn test_openai_codex_auth_fallback_to_api_key() {
             auth_file,
             token_field: "tokens.access_token".to_string(),
         }),
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -665,6 +673,7 @@ async fn test_openai_codex_auth_disabled() {
             auth_file,
             token_field: "tokens.access_token".to_string(),
         }),
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -752,6 +761,7 @@ async fn test_openai_codex_auth_with_invalid_json() {
             auth_file,
             token_field: "tokens.access_token".to_string(),
         }),
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -841,6 +851,7 @@ async fn test_openai_codex_auth_flat_json_structure() {
             auth_file,
             token_field: "access_token".to_string(), // Flat path
         }),
+        switch_notification_message: None,
     };
     let connector = OpenAIConnector::new(config).await.unwrap();
 

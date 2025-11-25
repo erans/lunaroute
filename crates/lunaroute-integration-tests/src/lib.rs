@@ -60,6 +60,7 @@ mod e2e_tests {
             request_body_config: None,
             response_body_config: None,
             codex_auth: None,
+            switch_notification_message: None,
         };
         let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
 
@@ -147,6 +148,7 @@ mod e2e_tests {
             request_body_config: None,
             response_body_config: None,
             codex_auth: None,
+            switch_notification_message: None,
         };
         let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
         let app = openai::router(connector);
@@ -206,6 +208,7 @@ mod e2e_tests {
             request_body_config: None,
             response_body_config: None,
             codex_auth: None,
+            switch_notification_message: None,
         };
         let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
         let app = openai::router(connector);
@@ -257,6 +260,7 @@ mod e2e_tests {
             request_body_config: None,
             response_body_config: None,
             codex_auth: None,
+            switch_notification_message: None,
         };
         let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
         let app = openai::router(connector);
@@ -341,6 +345,7 @@ mod e2e_tests {
             request_body_config: None,
             response_body_config: None,
             codex_auth: None,
+            switch_notification_message: None,
         };
         let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
         let app = openai::router(connector);

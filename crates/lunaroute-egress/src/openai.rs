@@ -77,6 +77,9 @@ pub struct OpenAIConfig {
 
     /// Codex authentication configuration
     pub codex_auth: Option<CodexAuthConfig>,
+
+    /// Optional custom notification message when this provider is used as alternative
+    pub switch_notification_message: Option<String>,
 }
 
 /// Request body modification configuration
@@ -115,6 +118,7 @@ impl OpenAIConfig {
             request_body_config: None,
             response_body_config: None,
             codex_auth: None,
+            switch_notification_message: None,
         }
     }
 
@@ -1264,6 +1268,10 @@ impl Provider for OpenAIConnector {
             supports_vision: true,
         }
     }
+
+    fn get_notification_message(&self) -> Option<&str> {
+        self.config.switch_notification_message.as_deref()
+    }
 }
 
 // OpenAI API types (simplified, matching ingress types)
@@ -2355,5 +2363,25 @@ mod tests {
             MessageContent::Text(text) => assert_eq!(text, ""),
             _ => panic!("Expected Text content"),
         }
+    }
+
+    #[test]
+    fn test_config_with_switch_notification_message() {
+        let config = OpenAIConfig {
+            api_key: "test-key".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            organization: None,
+            client_config: Default::default(),
+            custom_headers: None,
+            request_body_config: None,
+            response_body_config: None,
+            codex_auth: None,
+            switch_notification_message: Some("Custom switch message".to_string()),
+        };
+
+        assert_eq!(
+            config.switch_notification_message.unwrap(),
+            "Custom switch message"
+        );
     }
 }

@@ -234,7 +234,7 @@ async fn test_streaming_fallback_with_circuit_breaker() {
     };
 
     let health_config = HealthMonitorConfig::default();
-    let router = Router::new(route_table, providers, health_config, cb_config, None);
+    let router = Router::new(route_table, providers, health_config, cb_config, None, None);
 
     let request = create_test_request("test-model", true);
 
@@ -328,7 +328,7 @@ async fn test_streaming_circuit_breaker_blocks() {
     };
 
     let health_config = HealthMonitorConfig::default();
-    let router = Router::new(route_table, providers, health_config, cb_config, None);
+    let router = Router::new(route_table, providers, health_config, cb_config, None, None);
 
     let request = create_test_request("test-model", false);
 

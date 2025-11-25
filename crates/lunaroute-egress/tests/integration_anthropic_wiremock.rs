@@ -47,6 +47,7 @@ async fn test_anthropic_send_success() {
         base_url: mock_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let connector = AnthropicConnector::new(config).unwrap();
 
@@ -118,6 +119,7 @@ async fn test_anthropic_send_with_system() {
         base_url: mock_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let connector = AnthropicConnector::new(config).unwrap();
 
@@ -178,6 +180,7 @@ async fn test_anthropic_send_rate_limit_error() {
         base_url: mock_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let connector = AnthropicConnector::new(config).unwrap();
 
@@ -252,6 +255,7 @@ async fn test_anthropic_send_server_error_with_retry() {
         base_url: mock_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let connector = AnthropicConnector::new(config).unwrap();
 
@@ -306,6 +310,7 @@ async fn test_anthropic_send_invalid_api_key() {
         base_url: mock_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let connector = AnthropicConnector::new(config).unwrap();
 
@@ -373,6 +378,7 @@ async fn test_anthropic_send_with_tool_calls() {
         base_url: mock_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let connector = AnthropicConnector::new(config).unwrap();
 

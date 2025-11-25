@@ -111,6 +111,7 @@ async fn test_basic_rate_limit_switch() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let primary = Arc::new(OpenAIConnector::new(primary_config).await.unwrap());
 
@@ -123,6 +124,7 @@ async fn test_basic_rate_limit_switch() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let alternative = Arc::new(OpenAIConnector::new(alt_config).await.unwrap());
 
@@ -155,6 +157,7 @@ async fn test_basic_rate_limit_switch() {
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
         Some(metrics.clone()),
+        None,
     );
 
     // Send request - should succeed via alternative
@@ -259,6 +262,7 @@ async fn test_cross_dialect_alternative() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let openai = Arc::new(OpenAIConnector::new(openai_config).await.unwrap());
 
@@ -267,6 +271,7 @@ async fn test_cross_dialect_alternative() {
         base_url: anthropic_server.uri(),
         api_version: "2023-06-01".to_string(),
         client_config: Default::default(),
+        switch_notification_message: None,
     };
     let anthropic = Arc::new(AnthropicConnector::new(anthropic_config).unwrap());
 
@@ -294,6 +299,7 @@ async fn test_cross_dialect_alternative() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
         None,
     );
 
@@ -380,6 +386,7 @@ async fn test_cascade_through_alternatives() {
             request_body_config: None,
             response_body_config: None,
             codex_auth: None,
+            switch_notification_message: None,
         };
         providers.insert(
             name.to_string(),
@@ -407,6 +414,7 @@ async fn test_cascade_through_alternatives() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
         None,
     );
 
@@ -497,6 +505,7 @@ async fn test_auto_recovery_to_primary() {
             request_body_config: None,
             response_body_config: None,
             codex_auth: None,
+            switch_notification_message: None,
         };
         providers.insert(
             name.to_string(),
@@ -523,6 +532,7 @@ async fn test_auto_recovery_to_primary() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
         None,
     );
 
@@ -585,6 +595,7 @@ async fn test_all_providers_rate_limited() {
             request_body_config: None,
             response_body_config: None,
             codex_auth: None,
+            switch_notification_message: None,
         };
         providers.insert(
             name.to_string(),
@@ -611,6 +622,7 @@ async fn test_all_providers_rate_limited() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
         None,
     );
 
@@ -679,6 +691,7 @@ async fn test_exponential_backoff_without_retry_after() {
             request_body_config: None,
             response_body_config: None,
             codex_auth: None,
+            switch_notification_message: None,
         };
         providers.insert(
             name.to_string(),
@@ -705,6 +718,7 @@ async fn test_exponential_backoff_without_retry_after() {
         providers,
         HealthMonitorConfig::default(),
         CircuitBreakerConfig::default(),
+        None,
         None,
     );
 

@@ -66,6 +66,7 @@ async fn test_anthropic_request_translates_to_openai_api() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let openai_connector = OpenAIConnector::new(config).await.unwrap();
 
@@ -148,6 +149,7 @@ async fn test_anthropic_request_with_temperature() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let openai_connector = OpenAIConnector::new(config).await.unwrap();
     let app = anthropic::router(Arc::new(openai_connector));
@@ -226,6 +228,7 @@ async fn test_anthropic_assistant_message_in_conversation() {
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let openai_connector = OpenAIConnector::new(config).await.unwrap();
     let app = anthropic::router(Arc::new(openai_connector));
@@ -293,6 +296,7 @@ data: [DONE]
         request_body_config: None,
         response_body_config: None,
         codex_auth: None,
+        switch_notification_message: None,
     };
     let openai_connector = OpenAIConnector::new(config).await.unwrap();
     let app = anthropic::router(Arc::new(openai_connector));
