@@ -6,6 +6,7 @@ let toolChart = null;
 let toolChartData = []; // Store current tool data for tooltips
 let hourOfDayChart = null;
 let callsPerModelChart = null;
+let callsPerModelChartData = []; // Store current model data for tooltips
 let spendingByModelChart = null;
 
 /**
@@ -345,9 +346,9 @@ async function initCallsPerModelChart() {
     const response = await fetch(`/api/stats/spending?hours=${hours}`);
     const data = await response.json();
 
-    // Take top 10 models by call count (request count)
+    // Take top 10 models by call count (request count) and store globally
     const sorted = [...data.by_model].sort((a, b) => b.request_count - a.request_count);
-    const top10 = sorted.slice(0, 10);
+    callsPerModelChartData = sorted.slice(0, 10);
 
     // Generate distinct colors for each model
     const colors = [
@@ -366,11 +367,11 @@ async function initCallsPerModelChart() {
     callsPerModelChart = new Chart(ctx, {
         type: 'pie',
         data: {
-            labels: top10.map(m => m.model_name),
+            labels: callsPerModelChartData.map(m => m.model_name),
             datasets: [{
                 label: 'API Calls',
-                data: top10.map(m => m.request_count),
-                backgroundColor: colors.slice(0, top10.length),
+                data: callsPerModelChartData.map(m => m.request_count),
+                backgroundColor: colors.slice(0, callsPerModelChartData.length),
                 borderColor: '#1e293b',
                 borderWidth: 2
             }]
@@ -411,7 +412,7 @@ async function initCallsPerModelChart() {
                 tooltip: {
                     callbacks: {
                         label: function(context) {
-                            const model = top10[context.dataIndex];
+                            const model = callsPerModelChartData[context.dataIndex];
                             const total = context.dataset.data.reduce((a, b) => a + b, 0);
                             const percentage = ((model.request_count / total) * 100).toFixed(1);
 
@@ -438,11 +439,11 @@ async function initCallsPerModelChart() {
         const response = await fetch(`/api/stats/spending?hours=${hours}`);
         const data = await response.json();
         const sorted = [...data.by_model].sort((a, b) => b.request_count - a.request_count);
-        const top10 = sorted.slice(0, 10);
+        callsPerModelChartData = sorted.slice(0, 10);
 
-        callsPerModelChart.data.labels = top10.map(m => m.model_name);
-        callsPerModelChart.data.datasets[0].data = top10.map(m => m.request_count);
-        callsPerModelChart.data.datasets[0].backgroundColor = colors.slice(0, top10.length);
+        callsPerModelChart.data.labels = callsPerModelChartData.map(m => m.model_name);
+        callsPerModelChart.data.datasets[0].data = callsPerModelChartData.map(m => m.request_count);
+        callsPerModelChart.data.datasets[0].backgroundColor = colors.slice(0, callsPerModelChartData.length);
         callsPerModelChart.update('none');
     }, 5000);
 }
@@ -464,11 +465,11 @@ async function updateCallsPerModelChart() {
     const response = await fetch(`/api/stats/spending?hours=${hours}`);
     const data = await response.json();
     const sorted = [...data.by_model].sort((a, b) => b.request_count - a.request_count);
-    const top10 = sorted.slice(0, 10);
+    callsPerModelChartData = sorted.slice(0, 10);
 
-    callsPerModelChart.data.labels = top10.map(m => m.model_name);
-    callsPerModelChart.data.datasets[0].data = top10.map(m => m.request_count);
-    callsPerModelChart.data.datasets[0].backgroundColor = colors.slice(0, top10.length);
+    callsPerModelChart.data.labels = callsPerModelChartData.map(m => m.model_name);
+    callsPerModelChart.data.datasets[0].data = callsPerModelChartData.map(m => m.request_count);
+    callsPerModelChart.data.datasets[0].backgroundColor = colors.slice(0, callsPerModelChartData.length);
     callsPerModelChart.update();
 }
 

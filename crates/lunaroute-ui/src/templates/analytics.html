@@ -134,6 +134,8 @@
         loadAnalytics();
     }
 
+    let modelChartData = []; // Store model data for tooltips
+
     function initCharts() {
         // Model Usage Chart
         const modelCtx = document.getElementById('modelChart').getContext('2d');
@@ -163,7 +165,40 @@
                         position: 'right',
                         labels: {
                             color: '#e5e7eb',
-                            font: { size: 12 }
+                            font: { size: 12 },
+                            generateLabels: function(chart) {
+                                const data = chart.data;
+                                if (data.labels.length && data.datasets.length) {
+                                    const dataset = data.datasets[0];
+                                    const total = dataset.data.reduce((a, b) => a + b, 0);
+
+                                    return data.labels.map((label, i) => {
+                                        const value = dataset.data[i];
+                                        const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+                                        return {
+                                            text: `${label}: ${value} (${percentage}%)`,
+                                            fillStyle: dataset.backgroundColor[i],
+                                            hidden: false,
+                                            index: i
+                                        };
+                                    });
+                                }
+                                return [];
+                            }
+                        }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const model = modelChartData[context.dataIndex];
+                                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                const percentage = total > 0 ? ((model.request_count / total) * 100).toFixed(1) : 0;
+
+                                return [
+                                    `Requests: ${model.request_count} (${percentage}%)`,
+                                    `Sessions: ${model.session_count}`
+                                ];
+                            }
                         }
                     }
                 }
@@ -264,6 +299,7 @@
     }
 
     function updateModelChart(models) {
+        modelChartData = models; // Store for tooltip access
         modelChart.data.labels = models.map(m => m.model_name);
         modelChart.data.datasets[0].data = models.map(m => m.request_count);
         modelChart.update();
