@@ -172,9 +172,17 @@ async fn read_session_events(path: &Path) -> Result<Vec<SessionEvent>> {
 /// Check if a session exists in the database
 #[cfg(feature = "sqlite-writer")]
 async fn session_exists(db_path: &Path, session_id: &str) -> Result<bool> {
-    use sqlx::SqlitePool;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    let pool = SqlitePool::connect(&format!("sqlite://{}", db_path.display()))
+    // Use SqliteConnectOptions to handle Windows paths correctly
+    // (URL-based connection like "sqlite://C:\..." breaks on Windows due to backslash parsing)
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(db_path)
+                .create_if_missing(false),
+        )
         .await
         .context("Failed to connect to database")?;
 
