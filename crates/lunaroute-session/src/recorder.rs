@@ -203,6 +203,12 @@ impl SessionRecorder for FileSessionRecorder {
                 session_id, e
             ))
         })?;
+        events_file.flush().await.map_err(|e| {
+            Error::Internal(format!(
+                "Failed to flush events file for session {}: {}",
+                session_id, e
+            ))
+        })?;
 
         tracing::debug!(session_id = %session_id, "Started recording session");
         Ok(())
@@ -237,6 +243,12 @@ impl SessionRecorder for FileSessionRecorder {
                 session_id, e
             ))
         })?;
+        events_file.flush().await.map_err(|e| {
+            Error::Internal(format!(
+                "Failed to flush events file for session {}: {}",
+                session_id, e
+            ))
+        })?;
 
         tracing::debug!(session_id = %session_id, "Recorded response");
         Ok(())
@@ -268,6 +280,12 @@ impl SessionRecorder for FileSessionRecorder {
         events_file.write_all(b"\n").await.map_err(|e| {
             Error::Internal(format!(
                 "Failed to write newline for session {}: {}",
+                session_id, e
+            ))
+        })?;
+        events_file.flush().await.map_err(|e| {
+            Error::Internal(format!(
+                "Failed to flush events file for session {}: {}",
                 session_id, e
             ))
         })?;
