@@ -1188,12 +1188,22 @@ pub async fn messages_passthrough(
             return Ok(axum_response);
         }
 
-        // Extract and forward ALL response headers from Anthropic
-        // With automatic decompression disabled in reqwest, we get the exact response
+        // Extract and forward response headers from Anthropic, excluding content-related
+        // headers that axum's SSE will set correctly.
+        // The SSE response body is reconstructed by axum (not raw bytes from Anthropic),
+        // so content-encoding, content-length, and transfer-encoding would be incorrect.
         let mut response_headers = axum::http::HeaderMap::new();
 
         for (name, value) in stream_response.headers() {
-            // Forward all headers exactly as received (including content-encoding)
+            let name_str = name.as_str();
+            // Skip headers that axum's SSE response will set correctly
+            if name_str == "content-encoding"
+                || name_str == "content-length"
+                || name_str == "transfer-encoding"
+                || name_str == "content-type"
+            {
+                continue;
+            }
             response_headers.insert(name.clone(), value.clone());
         }
 

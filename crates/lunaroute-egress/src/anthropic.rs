@@ -260,23 +260,42 @@ impl AnthropicConnector {
 
         // If we have a configured API key, filter out client auth headers and use our key
         // If not, pass through all headers including client's auth
+        //
+        // IMPORTANT: Always strip `accept-encoding` for streaming requests.
+        // The SSE event parser needs uncompressed text. If the client sends
+        // `accept-encoding: gzip`, Anthropic responds with a gzip-compressed
+        // SSE stream that the eventsource parser cannot read, causing the
+        // stream to hang indefinitely.
         if !self.config.api_key.is_empty() {
-            // Add all headers except authorization headers
+            // Add all headers except authorization and encoding headers
             for (name, value) in &headers {
                 let name_lower = name.to_lowercase();
-                if name_lower != "authorization" && name_lower != "x-api-key" {
-                    request_builder = request_builder.header(name, value);
-                } else {
+                if name_lower == "authorization" || name_lower == "x-api-key" {
                     debug!("│ [FILTERED] {}: <removed>", name);
+                } else if name_lower == "accept-encoding" {
+                    debug!(
+                        "│ [FILTERED] {}: {} (streaming requires uncompressed SSE)",
+                        name, value
+                    );
+                } else {
+                    request_builder = request_builder.header(name, value);
                 }
             }
             // Use configured API key
             request_builder = request_builder.header("x-api-key", &self.config.api_key);
             debug!("│ [OVERRIDE] x-api-key: <configured_api_key>");
         } else {
-            // No configured API key, pass through all headers
+            // No configured API key, pass through all headers (except accept-encoding)
             for (name, value) in &headers {
-                request_builder = request_builder.header(name, value);
+                let name_lower = name.to_lowercase();
+                if name_lower == "accept-encoding" {
+                    debug!(
+                        "│ [FILTERED] {}: {} (streaming requires uncompressed SSE)",
+                        name, value
+                    );
+                } else {
+                    request_builder = request_builder.header(name, value);
+                }
             }
         }
 
