@@ -949,12 +949,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match provider_name {
             Some("openai") if openai_connector.is_some() => {
+                // Use base domain without /v1 path for bypass, since request paths
+                // already include the full path (e.g., /v1/embeddings)
                 let base_url = config
                     .providers
                     .openai
                     .as_ref()
                     .and_then(|p| p.base_url.clone())
-                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+                    .unwrap_or_else(|| "https://api.openai.com".to_string());
+                // Strip trailing /v1 if present to avoid double-pathing (/v1/v1/...)
+                let base_url = base_url
+                    .trim_end_matches('/')
+                    .trim_end_matches("/v1")
+                    .to_string();
                 let api_key = config
                     .providers
                     .openai
@@ -965,12 +972,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(("openai".to_string(), base_url, api_key))
             }
             Some("anthropic") if anthropic_connector.is_some() => {
+                // Use base domain without /v1 path for bypass, since request paths
+                // already include the full path (e.g., /v1/messages/count_tokens)
                 let base_url = config
                     .providers
                     .anthropic
                     .as_ref()
                     .and_then(|p| p.base_url.clone())
-                    .unwrap_or_else(|| "https://api.anthropic.com/v1".to_string());
+                    .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+                // Strip trailing /v1 if present to avoid double-pathing (/v1/v1/...)
+                let base_url = base_url
+                    .trim_end_matches('/')
+                    .trim_end_matches("/v1")
+                    .to_string();
                 let api_key = config
                     .providers
                     .anthropic
@@ -1028,10 +1042,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_router = match config.api_dialect {
         ApiDialect::OpenAI => {
             info!("📡 API dialect: OpenAI (/v1/chat/completions)");
-            if is_openai_passthrough && openai_connector.is_some() {
+            if let (true, Some(connector)) = (is_openai_passthrough, openai_connector) {
                 info!("⚡ Passthrough mode: OpenAI→OpenAI (no normalization)");
                 openai::passthrough_router(
-                    openai_connector.unwrap(),
+                    connector,
                     Some(stats_tracker_clone),
                     Some(metrics.clone()),
                     session_store_for_passthrough.clone(),

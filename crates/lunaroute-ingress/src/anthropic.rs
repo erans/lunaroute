@@ -1164,6 +1164,30 @@ pub async fn messages_passthrough(
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
 
+        // If the response is an error (non-2xx), pass it through as a raw response
+        // instead of trying to set up SSE streaming. Error responses from Anthropic
+        // are regular JSON, not SSE streams, and clients expect them in native format.
+        if !stream_response.status().is_success() {
+            let status_code = stream_response.status().as_u16();
+            let mut response_headers = axum::http::HeaderMap::new();
+            for (name, value) in stream_response.headers() {
+                response_headers.insert(name.clone(), value.clone());
+            }
+            let body_bytes = stream_response
+                .bytes()
+                .await
+                .map_err(|e| IngressError::Internal(format!("Failed to read error body: {}", e)))?;
+
+            let mut axum_response = axum::http::Response::builder()
+                .status(status_code)
+                .body(axum::body::Body::from(body_bytes))
+                .map_err(|e| {
+                    IngressError::Internal(format!("Failed to build error response: {}", e))
+                })?;
+            *axum_response.headers_mut() = response_headers;
+            return Ok(axum_response);
+        }
+
         // Extract and forward ALL response headers from Anthropic
         // With automatic decompression disabled in reqwest, we get the exact response
         let mut response_headers = axum::http::HeaderMap::new();
@@ -1404,8 +1428,8 @@ pub async fn messages_passthrough(
         .send_passthrough(req, passthrough_headers)
         .await;
 
-    let (raw_response_bytes, response_headers) = match response_result {
-        Ok((bytes, headers)) => (bytes, headers),
+    let (response_status, raw_response_bytes, response_headers) = match response_result {
+        Ok((status, bytes, headers)) => (status, bytes, headers),
         Err(e) => {
             // Record error in session if recording is enabled
             if let (Some(session_store), Some(session_id), Some(request_id)) = (
@@ -1458,8 +1482,9 @@ pub async fn messages_passthrough(
 
     // Build response with raw bytes and ALL headers from Anthropic FIRST (zero latency)
     // This ensures true transparent proxying - client gets exact response from Anthropic
+    // Use the actual status code from Anthropic (not hardcoded 200)
     let mut axum_response = axum::http::Response::builder()
-        .status(200)
+        .status(response_status)
         .body(axum::body::Body::from(raw_response_bytes.clone()))
         .map_err(|e| IngressError::Internal(format!("Failed to build response: {}", e)))?;
 

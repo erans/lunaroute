@@ -288,8 +288,8 @@ async fn test_anthropic_401_unauthorized_with_recording() {
         .await
         .unwrap();
 
-    // Verify error response (upstream errors become 502 Bad Gateway)
-    assert_eq!(response.status(), 502);
+    // Verify error response is passed through with original status code (transparent proxy)
+    assert_eq!(response.status(), 401);
 
     // Wait for async events to flush
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -311,17 +311,6 @@ async fn test_anthropic_401_unauthorized_with_recording() {
         request_event.is_some(),
         "Expected SessionEvent::RequestRecorded"
     );
-
-    // Should have error recorded
-    let error_recorded = events.iter().any(|e| {
-        matches!(e, SessionEvent::Completed { success, .. } if !success)
-            || matches!(e, SessionEvent::Completed { error: Some(_), .. })
-    });
-
-    if !error_recorded {
-        eprintln!("Warning: Expected error event to be recorded for 401 status");
-        eprintln!("Events captured: {:?}", events);
-    }
 }
 
 #[tokio::test]
@@ -392,8 +381,8 @@ async fn test_anthropic_rate_limit_429_with_recording() {
         .await
         .unwrap();
 
-    // Verify error response (upstream errors become 502 Bad Gateway)
-    assert_eq!(response.status(), 502);
+    // Verify error response is passed through with original status code (transparent proxy)
+    assert_eq!(response.status(), 429);
 
     // Wait for async events to flush
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -415,17 +404,6 @@ async fn test_anthropic_rate_limit_429_with_recording() {
         request_event.is_some(),
         "Expected SessionEvent::RequestRecorded"
     );
-
-    // Should have error recorded
-    let error_recorded = events.iter().any(|e| {
-        matches!(e, SessionEvent::Completed { success, .. } if !success)
-            || matches!(e, SessionEvent::Completed { error: Some(_), .. })
-    });
-
-    if !error_recorded {
-        eprintln!("Warning: Expected error event to be recorded for 429 status");
-        eprintln!("Events captured: {:?}", events);
-    }
 }
 
 #[tokio::test]

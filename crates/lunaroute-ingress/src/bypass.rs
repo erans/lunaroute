@@ -206,17 +206,20 @@ pub async fn proxy_request(
         }
     }
 
-    // Add/override Authorization header with provider API key
-    // Detect provider type and set appropriate auth header
-    if provider.base_url.contains("anthropic.com") {
-        request_headers.insert("x-api-key".to_string(), provider.api_key.clone());
-        request_headers.insert("anthropic-version".to_string(), "2023-06-01".to_string());
-    } else {
-        // Default to OpenAI-style auth (Bearer token)
-        request_headers.insert(
-            "authorization".to_string(),
-            format!("Bearer {}", provider.api_key),
-        );
+    // Add/override Authorization header with provider API key only if configured.
+    // If no API key is configured, pass through the client's auth headers unchanged
+    // (needed for Claude Code passthrough where the client provides its own auth).
+    if !provider.api_key.is_empty() {
+        if provider.base_url.contains("anthropic.com") {
+            request_headers.insert("x-api-key".to_string(), provider.api_key.clone());
+            request_headers.insert("anthropic-version".to_string(), "2023-06-01".to_string());
+        } else {
+            // Default to OpenAI-style auth (Bearer token)
+            request_headers.insert(
+                "authorization".to_string(),
+                format!("Bearer {}", provider.api_key),
+            );
+        }
     }
 
     // Build reqwest request
@@ -304,8 +307,10 @@ mod tests {
     #[test]
     fn test_bypass_provider_build_url() {
         let client = Arc::new(Client::new());
+        // Bypass provider should use domain-only base URL (without /v1)
+        // since request paths already include the full path
         let provider = BypassProvider::new(
-            "https://api.openai.com/v1".to_string(),
+            "https://api.openai.com".to_string(),
             "test-key".to_string(),
             "openai".to_string(),
             client,
@@ -313,12 +318,28 @@ mod tests {
 
         assert_eq!(
             provider.build_url("/v1/embeddings"),
-            "https://api.openai.com/v1/v1/embeddings"
+            "https://api.openai.com/v1/embeddings"
         );
 
         assert_eq!(
             provider.build_url("v1/embeddings"),
-            "https://api.openai.com/v1/v1/embeddings"
+            "https://api.openai.com/v1/embeddings"
+        );
+    }
+
+    #[test]
+    fn test_bypass_provider_build_url_anthropic() {
+        let client = Arc::new(Client::new());
+        let provider = BypassProvider::new(
+            "https://api.anthropic.com".to_string(),
+            "test-key".to_string(),
+            "anthropic".to_string(),
+            client,
+        );
+
+        assert_eq!(
+            provider.build_url("/v1/messages/count_tokens"),
+            "https://api.anthropic.com/v1/messages/count_tokens"
         );
     }
 
@@ -328,20 +349,20 @@ mod tests {
 
         // With trailing slash
         let provider1 = BypassProvider::new(
-            "https://api.openai.com/v1/".to_string(),
+            "https://api.openai.com/".to_string(),
             "key".to_string(),
             "test".to_string(),
             client.clone(),
         );
-        assert_eq!(provider1.base_url, "https://api.openai.com/v1");
+        assert_eq!(provider1.base_url, "https://api.openai.com");
 
         // Without trailing slash
         let provider2 = BypassProvider::new(
-            "https://api.openai.com/v1".to_string(),
+            "https://api.openai.com".to_string(),
             "key".to_string(),
             "test".to_string(),
             client.clone(),
         );
-        assert_eq!(provider2.base_url, "https://api.openai.com/v1");
+        assert_eq!(provider2.base_url, "https://api.openai.com");
     }
 }

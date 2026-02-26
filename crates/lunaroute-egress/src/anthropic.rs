@@ -76,13 +76,14 @@ impl AnthropicConnector {
     }
 
     /// Send a raw JSON request directly to Anthropic (passthrough mode)
-    /// Returns the raw response bytes and headers for true transparent proxying
+    /// Returns the raw response status, bytes and headers for true transparent proxying.
+    /// Error responses (non-2xx) are passed through unchanged - the client handles them.
     #[instrument(skip(self, request_json, headers))]
     pub async fn send_passthrough(
         &self,
         request_json: serde_json::Value,
         headers: std::collections::HashMap<String, String>,
-    ) -> Result<(bytes::Bytes, std::collections::HashMap<String, String>)> {
+    ) -> Result<(u16, bytes::Bytes, std::collections::HashMap<String, String>)> {
         debug!("Sending passthrough request to Anthropic (no normalization)");
 
         // Log request headers and body at debug level
@@ -104,99 +105,69 @@ impl AnthropicConnector {
         );
         debug!("└─────────────────────────────────────────────────────────");
 
-        let max_retries = self.config.client_config.max_retries;
-        let result = with_retry(max_retries, || {
-            let request_json = request_json.clone();
-            let headers = headers.clone();
-            let config_api_key = self.config.api_key.clone();
-            async move {
-                let mut request_builder = self
-                    .client
-                    .post(format!("{}/v1/messages", self.config.base_url))
-                    .header("Content-Type", "application/json");
+        // No retry wrapping in passthrough mode - the client handles retries.
+        // Retrying here would hide errors from the client and break transparent proxying.
+        let config_api_key = self.config.api_key.clone();
 
-                // If we have a configured API key, filter out client auth headers and use our key
-                // If not, pass through all headers including client's auth
-                if !config_api_key.is_empty() {
-                    // Add all headers except authorization headers
-                    for (name, value) in &headers {
-                        let name_lower = name.to_lowercase();
-                        if name_lower != "authorization" && name_lower != "x-api-key" {
-                            request_builder = request_builder.header(name, value);
-                        } else {
-                            debug!("│ [FILTERED] {}: <removed>", name);
-                        }
-                    }
-                    // Use configured API key
-                    request_builder = request_builder.header("x-api-key", &config_api_key);
-                    debug!("│ [OVERRIDE] x-api-key: <configured_api_key>");
+        let mut request_builder = self
+            .client
+            .post(format!("{}/v1/messages", self.config.base_url))
+            .header("Content-Type", "application/json");
+
+        // If we have a configured API key, filter out client auth headers and use our key
+        // If not, pass through all headers including client's auth
+        if !config_api_key.is_empty() {
+            // Add all headers except authorization headers
+            for (name, value) in &headers {
+                let name_lower = name.to_lowercase();
+                if name_lower != "authorization" && name_lower != "x-api-key" {
+                    request_builder = request_builder.header(name, value);
                 } else {
-                    // No configured API key, pass through all headers
-                    for (name, value) in &headers {
-                        request_builder = request_builder.header(name, value);
-                    }
+                    debug!("│ [FILTERED] {}: <removed>", name);
                 }
-
-                debug!("├─────────────────────────────────────────────────────────");
-                debug!("│ Final headers being sent to Anthropic API");
-                debug!("└─────────────────────────────────────────────────────────");
-
-                let response = request_builder.json(&request_json).send().await?;
-
-                // Log response headers at debug level
-                debug!("┌─────────────────────────────────────────────────────────");
-                debug!("│ Anthropic Passthrough Response Headers");
-                debug!("├─────────────────────────────────────────────────────────");
-                debug!("│ Status: {}", response.status());
-                for (name, value) in response.headers() {
-                    if let Ok(val_str) = value.to_str() {
-                        debug!("│ {}: {}", name, val_str);
-                    }
-                }
-                debug!("└─────────────────────────────────────────────────────────");
-
-                self.handle_anthropic_passthrough_response(response).await
             }
-        })
-        .await?;
+            // Use configured API key
+            request_builder = request_builder.header("x-api-key", &config_api_key);
+            debug!("│ [OVERRIDE] x-api-key: <configured_api_key>");
+        } else {
+            // No configured API key, pass through all headers
+            for (name, value) in &headers {
+                request_builder = request_builder.header(name, value);
+            }
+        }
 
-        Ok(result)
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ Final headers being sent to Anthropic API");
+        debug!("└─────────────────────────────────────────────────────────");
+
+        let response = request_builder.json(&request_json).send().await?;
+
+        // Log response headers at debug level
+        debug!("┌─────────────────────────────────────────────────────────");
+        debug!("│ Anthropic Passthrough Response Headers");
+        debug!("├─────────────────────────────────────────────────────────");
+        debug!("│ Status: {}", response.status());
+        for (name, value) in response.headers() {
+            if let Ok(val_str) = value.to_str() {
+                debug!("│ {}: {}", name, val_str);
+            }
+        }
+        debug!("└─────────────────────────────────────────────────────────");
+
+        self.handle_anthropic_passthrough_response(response).await
     }
 
     /// Handle passthrough response (for send_passthrough)
-    /// Returns (raw_bytes, headers_map) for transparent proxying
+    /// Returns (status_code, raw_bytes, headers_map) for transparent proxying.
+    /// ALL responses (including errors) are passed through unchanged.
     async fn handle_anthropic_passthrough_response(
         &self,
         response: reqwest::Response,
-    ) -> Result<(bytes::Bytes, std::collections::HashMap<String, String>)> {
-        let status = response.status();
+    ) -> Result<(u16, bytes::Bytes, std::collections::HashMap<String, String>)> {
+        let status_code = response.status().as_u16();
 
-        // Capture retry-after header before consuming response
-        let retry_after_secs = response
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(crate::parse_retry_after);
-
-        if !status.is_success() {
-            let status_code = status.as_u16();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unable to read error body".to_string());
-
-            return Err(if status_code == 429 {
-                debug!(
-                    retry_after_secs = ?retry_after_secs,
-                    "Anthropic rate limit exceeded"
-                );
-                EgressError::RateLimitExceeded { retry_after_secs }
-            } else {
-                EgressError::ProviderError {
-                    status_code,
-                    message: body,
-                }
-            });
+        if !response.status().is_success() {
+            debug!("Anthropic returned non-success status: {}", status_code);
         }
 
         // Capture response headers before consuming the response
@@ -250,7 +221,7 @@ impl AnthropicConnector {
             }
         }
 
-        Ok((raw_bytes, headers_map))
+        Ok((status_code, raw_bytes, headers_map))
     }
 
     /// Stream raw Anthropic request (passthrough mode - no normalization)
@@ -331,16 +302,13 @@ impl AnthropicConnector {
         }
         debug!("└─────────────────────────────────────────────────────────");
 
+        // Pass through ALL responses (including errors) - the client handles error responses.
+        // In passthrough mode, we are a transparent proxy and must not alter error semantics.
         if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unable to read error body".to_string());
-            return Err(EgressError::ProviderError {
-                status_code: status,
-                message: body,
-            });
+            debug!(
+                "Anthropic returned non-success status: {} (passing through to client)",
+                response.status().as_u16()
+            );
         }
 
         Ok(response)
