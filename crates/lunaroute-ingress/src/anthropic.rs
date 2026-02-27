@@ -1792,6 +1792,7 @@ pub fn passthrough_router(
 
     Router::new()
         .route("/v1/messages", post(messages_passthrough))
+        .layer(tower_http::compression::CompressionLayer::new())
         .with_state(state)
 }
 

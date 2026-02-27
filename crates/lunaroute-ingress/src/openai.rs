@@ -1952,6 +1952,7 @@ pub fn passthrough_router(
         .route("/responses", post(responses_passthrough)) // For Codex compatibility (base_url without /v1)
         .route("/v1/models", axum::routing::get(models_passthrough))
         .route("/models", axum::routing::get(models_passthrough)) // For Codex compatibility (base_url without /v1)
+        .layer(tower_http::compression::CompressionLayer::new())
         .with_state(state)
 }
 
