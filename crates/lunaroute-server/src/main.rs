@@ -1264,10 +1264,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Start the UI server
 async fn start_ui_server(config: lunaroute_ui::UiConfig, db_path: String) -> anyhow::Result<()> {
-    // Connect to SQLite database
+    // Connect to SQLite database using SqliteConnectOptions to handle Windows paths correctly
+    // (URL-based connection like "sqlite://C:\..." breaks on Windows due to backslash parsing)
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(&format!("sqlite://{}", db_path))
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true),
+        )
         .await?;
 
     let pool = std::sync::Arc::new(pool);
