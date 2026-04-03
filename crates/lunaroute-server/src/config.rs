@@ -1277,9 +1277,6 @@ sonnet:
         assert!(config.extra.contains_key("sonnet"));
         let sonnet = &config.extra["sonnet"];
         assert_eq!(sonnet.provider_type.as_deref(), Some("anthropic"));
-        assert_eq!(
-            sonnet.model.as_deref(),
-            Some("claude-sonnet-4-20250514")
-        );
+        assert_eq!(sonnet.model.as_deref(), Some("claude-sonnet-4-20250514"));
     }
 }
