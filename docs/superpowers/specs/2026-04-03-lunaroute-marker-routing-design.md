@@ -59,13 +59,16 @@ pub enum MarkerResult {
 }
 
 /// Scan a request body (serde_json::Value) for [LUNAROUTE:xxx] marker.
-/// Searches all text content blocks in the messages array.
+/// Searches the LAST user message only (not all messages), since old markers
+/// from previous conversation turns may persist in history. The client plugin
+/// injects the marker into the current turn's last user message.
 /// Returns MarkerResult::Provider(name), MarkerResult::Clear, or MarkerResult::None.
-/// If multiple markers exist, returns the first and logs a warning.
+/// If multiple markers exist in the last user message, returns the first and logs a warning.
 pub fn extract_marker(req: &serde_json::Value) -> MarkerResult
 
 /// Remove [LUNAROUTE:xxx] marker text from the request body.
-/// - Standalone content block (text is only the system-reminder with marker): remove entire block.
+/// Operates on the LAST user message only (matching extract_marker's scope).
+/// - Standalone content block (text is only the system-reminder with marker): remove block.
 /// - Inline in a larger text block: regex-replace the marker (and surrounding system-reminder tags).
 /// - String content (not array): regex-replace within the string.
 /// After stripping, removes empty text blocks and empty messages.
@@ -85,6 +88,14 @@ The functions scan the `messages` array and handle both content formats:
 - Array content: `"content": [{"type": "text", "text": "..."}]`
 
 This covers both OpenAI and Anthropic request shapes in passthrough mode.
+
+**Note on marker locations:** The client plugin injects markers in two ways:
+1. Via `additionalContext` (main session) — appears inside `<system-reminder>` tags as a content block
+2. Via `updatedInput.prompt` (subagent routing) — appended as plain text `\n[LUNAROUTE:xxx]` at the end of the prompt
+
+Both cases are handled by the extraction and stripping logic above.
+
+**Note on `[LUNAROUTE:clear]`:** The client plugin handles `#!clear` entirely client-side by deleting its state file. The proxy will never receive a `[LUNAROUTE:clear]` marker. The `MarkerResult::Clear` variant exists as a defensive measure in case the marker appears from other sources.
 
 ### 2. Provider Registry & Model Override
 

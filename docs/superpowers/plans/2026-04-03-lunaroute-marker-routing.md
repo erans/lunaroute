@@ -73,8 +73,10 @@ pub enum MarkerResult {
 }
 
 /// Scan a request body (serde_json::Value) for [LUNAROUTE:xxx] marker.
-/// Searches all text content blocks in the messages array.
-/// Returns the first marker found. Logs a warning if multiple markers exist.
+/// Searches the LAST user message only — old markers from previous turns
+/// may persist in conversation history and must be ignored.
+/// Returns the first marker found in the last user message.
+/// Logs a warning if multiple markers exist.
 pub fn extract_marker(req: &serde_json::Value) -> MarkerResult {
     todo!()
 }
@@ -167,6 +169,47 @@ mod tests {
         });
         assert_eq!(extract_marker(&req), MarkerResult::Provider("sonnet".to_string()));
     }
+
+    #[test]
+    fn test_extract_marker_ignores_old_messages() {
+        // Old marker in first user message, no marker in last user message
+        let req = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "old request"},
+                        {"type": "text", "text": "<system-reminder>\n[LUNAROUTE:sonnet]\n</system-reminder>"}
+                    ]
+                },
+                {"role": "assistant", "content": "response"},
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "new request without marker"}]
+                }
+            ]
+        });
+        assert_eq!(extract_marker(&req), MarkerResult::None);
+    }
+
+    #[test]
+    fn test_extract_marker_uses_last_user_message() {
+        // Old marker in first message, different marker in last
+        let req = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "<system-reminder>\n[LUNAROUTE:sonnet]\n</system-reminder>"
+                },
+                {"role": "assistant", "content": "response"},
+                {
+                    "role": "user",
+                    "content": "<system-reminder>\n[LUNAROUTE:gpt4o]\n</system-reminder>"
+                }
+            ]
+        });
+        assert_eq!(extract_marker(&req), MarkerResult::Provider("gpt4o".to_string()));
+    }
 }
 ```
 
@@ -184,7 +227,12 @@ pub fn extract_marker(req: &serde_json::Value) -> MarkerResult {
     let mut found: Vec<String> = Vec::new();
 
     if let Some(messages) = req.get("messages").and_then(|m| m.as_array()) {
-        for msg in messages {
+        // Find the last user message (iterate from the end)
+        let last_user_msg = messages.iter().rev().find(|msg| {
+            msg.get("role").and_then(|r| r.as_str()) == Some("user")
+        });
+
+        if let Some(msg) = last_user_msg {
             // Handle array content: [{"type": "text", "text": "..."}]
             if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
                 for block in content_arr {
@@ -255,6 +303,7 @@ static INLINE_STRIP_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Remove [LUNAROUTE:xxx] marker text from the request body.
+/// Operates on the LAST user message only (matching extract_marker's scope).
 /// - Standalone content block (entire text is system-reminder with marker): remove block.
 /// - Inline in a larger text block: regex-replace the marker text.
 /// - String content: regex-replace within the string.
@@ -357,51 +406,55 @@ pub fn strip_marker(req: &mut serde_json::Value) {
         return;
     };
 
-    for msg in messages.iter_mut() {
-        // Handle array content
-        if let Some(content_arr) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
-            content_arr.retain(|block| {
-                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                    // If the entire block is a standalone system-reminder with marker, remove it
-                    if STANDALONE_STRIP_RE.is_match(text) {
-                        return false;
-                    }
-                }
-                true
-            });
+    // Find the index of the last user message
+    let last_user_idx = messages.iter().rposition(|msg| {
+        msg.get("role").and_then(|r| r.as_str()) == Some("user")
+    });
 
-            // For remaining blocks, strip inline markers
-            for block in content_arr.iter_mut() {
-                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                    let stripped = INLINE_STRIP_RE.replace_all(text, "").to_string();
-                    if stripped != text {
-                        block["text"] = serde_json::Value::String(stripped);
-                    }
+    let Some(idx) = last_user_idx else { return };
+    let msg = &mut messages[idx];
+
+    // Handle array content
+    if let Some(content_arr) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
+        content_arr.retain(|block| {
+            if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                // If the entire block is a standalone system-reminder with marker, remove it
+                if STANDALONE_STRIP_RE.is_match(text) {
+                    return false;
                 }
             }
+            true
+        });
 
-            // Remove blocks that became empty
-            content_arr.retain(|block| {
-                block.get("text").and_then(|t| t.as_str()).map_or(true, |t| !t.trim().is_empty())
-            });
+        // For remaining blocks, strip inline markers
+        for block in content_arr.iter_mut() {
+            if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                let stripped = INLINE_STRIP_RE.replace_all(text, "").to_string();
+                if stripped != text {
+                    block["text"] = serde_json::Value::String(stripped);
+                }
+            }
         }
-        // Handle string content
-        else if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
-            let stripped = INLINE_STRIP_RE.replace_all(text, "").to_string();
-            if stripped != text {
-                msg["content"] = serde_json::Value::String(stripped);
-            }
+
+        // Remove blocks that became empty
+        content_arr.retain(|block| {
+            block.get("text").and_then(|t| t.as_str()).map_or(true, |t| !t.trim().is_empty())
+        });
+    }
+    // Handle string content
+    else if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
+        let stripped = INLINE_STRIP_RE.replace_all(text, "").to_string();
+        if stripped != text {
+            msg["content"] = serde_json::Value::String(stripped);
         }
     }
 
-    // Remove messages with empty content arrays
-    messages.retain(|msg| {
-        if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
-            !arr.is_empty()
-        } else {
-            true
+    // Remove the message if content array is now empty
+    if let Some(arr) = messages[idx].get("content").and_then(|c| c.as_array()) {
+        if arr.is_empty() {
+            messages.remove(idx);
         }
-    });
+    }
 }
 ```
 
