@@ -78,6 +78,7 @@ data: [DONE]
         Some(store.clone()),
         15,   // SSE keepalive interval
         true, // SSE keepalive enabled
+        None, // no provider registry
     );
 
     // Send streaming request
@@ -256,6 +257,7 @@ data: {"type":"message_stop"}
         Some(store.clone()),
         15,   // SSE keepalive interval
         true, // SSE keepalive enabled
+        None, // no provider registry
     );
 
     // Send streaming request
@@ -405,6 +407,7 @@ async fn test_openai_passthrough_non_streaming_with_recording() {
         Some(store.clone()),
         15,   // SSE keepalive interval
         true, // SSE keepalive enabled
+        None, // no provider registry
     );
 
     // Send non-streaming request
@@ -552,6 +555,7 @@ async fn test_anthropic_passthrough_non_streaming_with_recording() {
         Some(store.clone()),
         15,   // SSE keepalive interval
         true, // SSE keepalive enabled
+        None, // no provider registry
     );
 
     // Send non-streaming request

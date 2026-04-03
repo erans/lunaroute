@@ -52,3 +52,22 @@ ui:
 #       primary: "anthropic"
 #       fallbacks: []
 #       priority: 10
+
+# Extra providers for marker-based routing (LUNAROUTE markers)
+# Users can type #!sonnet in Claude Code to route to this provider.
+# The marker [LUNAROUTE:sonnet] is injected via additionalContext hooks.
+#
+# providers:
+#   anthropic:
+#     enabled: true
+#     api_key: "${ANTHROPIC_API_KEY}"
+#   sonnet:
+#     enabled: true
+#     provider_type: "anthropic"
+#     api_key: "${ANTHROPIC_API_KEY}"
+#     model: "claude-sonnet-4-20250514"
+#   gpt4o:
+#     enabled: true
+#     provider_type: "openai"
+#     api_key: "${OPENAI_API_KEY}"
+#     model: "gpt-4o"

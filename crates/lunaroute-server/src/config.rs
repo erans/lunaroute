@@ -58,6 +58,10 @@ pub struct ServerConfig {
 pub struct ProvidersConfig {
     pub openai: Option<ProviderSettings>,
     pub anthropic: Option<ProviderSettings>,
+
+    /// Additional named providers for marker-based routing
+    #[serde(default, flatten)]
+    pub extra: std::collections::HashMap<String, ProviderSettings>,
 }
 
 impl Default for ProvidersConfig {
@@ -74,6 +78,8 @@ impl Default for ProvidersConfig {
                 request_body: None,
                 response_body: None,
                 codex_auth: None,
+                provider_type: None,
+                model: None,
             }),
             anthropic: Some(ProviderSettings {
                 api_key: None,
@@ -84,8 +90,41 @@ impl Default for ProvidersConfig {
                 request_body: None,
                 response_body: None,
                 codex_auth: None,
+                provider_type: None,
+                model: None,
             }),
+            extra: std::collections::HashMap::new(),
         }
+    }
+}
+
+impl ProvidersConfig {
+    pub fn validate_extra_providers(&self) -> Result<(), String> {
+        for (name, settings) in &self.extra {
+            if name == "openai" || name == "anthropic" {
+                return Err(format!(
+                    "Extra provider '{}' conflicts with built-in provider name",
+                    name
+                ));
+            }
+            if settings.provider_type.is_none() {
+                return Err(format!(
+                    "Extra provider '{}' requires a 'provider_type' field (\"openai\" or \"anthropic\")",
+                    name
+                ));
+            }
+            match settings.provider_type.as_deref() {
+                Some("openai") | Some("anthropic") => {}
+                Some(other) => {
+                    return Err(format!(
+                        "Extra provider '{}' has invalid provider_type '{}' (must be \"openai\" or \"anthropic\")",
+                        name, other
+                    ));
+                }
+                None => unreachable!(),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -119,6 +158,16 @@ pub struct ProviderSettings {
     /// Codex authentication (read auth tokens from Codex CLI auth.json file)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex_auth: Option<CodexAuthConfig>,
+
+    /// Provider dialect type (e.g., "openai" or "anthropic").
+    /// Required for extra providers. Inferred for built-in "openai" and "anthropic" keys.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_type: Option<String>,
+
+    /// Model ID override. When targeted via LUNAROUTE marker,
+    /// the request body's model field is rewritten to this value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// HTTP client configuration settings
@@ -507,6 +556,8 @@ impl ServerConfig {
                 request_body: None,
                 response_body: None,
                 codex_auth: None,
+                provider_type: None,
+                model: None,
             });
             provider.api_key = Some(api_key);
         }
@@ -521,6 +572,8 @@ impl ServerConfig {
                 request_body: None,
                 response_body: None,
                 codex_auth: None,
+                provider_type: None,
+                model: None,
             });
             provider.api_key = Some(api_key);
         }
@@ -797,6 +850,8 @@ mod tests {
             request_body: None,
             response_body: None,
             codex_auth: None,
+            provider_type: None,
+            model: None,
         };
 
         merge_http_client_env(&mut provider, "OPENAI");
@@ -841,6 +896,8 @@ mod tests {
             request_body: None,
             response_body: None,
             codex_auth: None,
+            provider_type: None,
+            model: None,
         };
 
         merge_http_client_env(&mut provider, "ANTHROPIC");
@@ -878,6 +935,8 @@ mod tests {
             request_body: None,
             response_body: None,
             codex_auth: None,
+            provider_type: None,
+            model: None,
         };
 
         merge_http_client_env(&mut provider, "OPENAI");
@@ -1023,6 +1082,8 @@ providers:
             request_body: None,
             response_body: None,
             codex_auth: None,
+            provider_type: None,
+            model: None,
         };
 
         unsafe {
@@ -1062,6 +1123,8 @@ providers:
             request_body: None,
             response_body: None,
             codex_auth: None,
+            provider_type: None,
+            model: None,
         };
 
         // Set only one env var
@@ -1110,5 +1173,109 @@ rules: []
 
         let config: RoutingConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.provider_switch_notification.is_none());
+    }
+}
+
+#[cfg(test)]
+mod provider_config_tests {
+    use super::*;
+
+    #[test]
+    fn test_extra_provider_valid() {
+        let config = ProvidersConfig {
+            extra: [(
+                "sonnet".to_string(),
+                ProviderSettings {
+                    api_key: Some("key".to_string()),
+                    base_url: None,
+                    enabled: true,
+                    http_client: None,
+                    request_headers: None,
+                    request_body: None,
+                    response_body: None,
+                    codex_auth: None,
+                    provider_type: Some("anthropic".to_string()),
+                    model: Some("claude-sonnet-4-20250514".to_string()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        assert!(config.validate_extra_providers().is_ok());
+    }
+
+    #[test]
+    fn test_extra_provider_missing_type() {
+        let config = ProvidersConfig {
+            extra: [(
+                "sonnet".to_string(),
+                ProviderSettings {
+                    api_key: Some("key".to_string()),
+                    base_url: None,
+                    enabled: true,
+                    http_client: None,
+                    request_headers: None,
+                    request_body: None,
+                    response_body: None,
+                    codex_auth: None,
+                    provider_type: None,
+                    model: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        assert!(config.validate_extra_providers().is_err());
+    }
+
+    #[test]
+    fn test_extra_provider_conflicts_with_builtin() {
+        let config = ProvidersConfig {
+            extra: [(
+                "openai".to_string(),
+                ProviderSettings {
+                    api_key: Some("key".to_string()),
+                    base_url: None,
+                    enabled: true,
+                    http_client: None,
+                    request_headers: None,
+                    request_body: None,
+                    response_body: None,
+                    codex_auth: None,
+                    provider_type: Some("openai".to_string()),
+                    model: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        assert!(config.validate_extra_providers().is_err());
+    }
+
+    #[test]
+    fn test_yaml_deserialization_with_extra_providers() {
+        let yaml = r#"
+openai:
+  enabled: true
+  api_key: "sk-test"
+anthropic:
+  enabled: true
+  api_key: "sk-ant-test"
+sonnet:
+  enabled: true
+  provider_type: "anthropic"
+  api_key: "sk-ant-test"
+  model: "claude-sonnet-4-20250514"
+"#;
+        let config: ProvidersConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        assert!(config.openai.is_some());
+        assert!(config.anthropic.is_some());
+        assert!(config.extra.contains_key("sonnet"));
+        let sonnet = &config.extra["sonnet"];
+        assert_eq!(sonnet.provider_type.as_deref(), Some("anthropic"));
+        assert_eq!(sonnet.model.as_deref(), Some("claude-sonnet-4-20250514"));
     }
 }

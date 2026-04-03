@@ -867,6 +867,7 @@ pub struct PassthroughState {
     pub tool_call_mapper: Arc<lunaroute_session::ToolCallMapper>,
     pub sse_keepalive_interval_secs: u64,
     pub sse_keepalive_enabled: bool,
+    pub provider_registry: Option<Arc<crate::ProviderRegistry>>,
 }
 
 /// Passthrough handler for Anthropic→Anthropic routing (no normalization)
@@ -879,6 +880,62 @@ pub async fn messages_passthrough(
 ) -> Result<Response, IngressError> {
     let start_time = std::time::Instant::now();
     tracing::debug!("Anthropic passthrough mode: skipping normalization");
+
+    let mut req = req;
+
+    // LUNAROUTE marker detection — check for provider override
+    let marker_result = crate::marker::extract_marker(&req);
+    let mut override_connector: Option<Arc<lunaroute_egress::anthropic::AnthropicConnector>> = None;
+    let mut marker_provider_name: Option<String> = None;
+
+    match &marker_result {
+        crate::marker::MarkerResult::Provider(name) => {
+            if let Some(registry) = &state.provider_registry {
+                if let Some(entry) = registry.get(name) {
+                    if entry.connector_type != crate::ProviderType::Anthropic {
+                        tracing::warn!(
+                            "LUNAROUTE marker '{}' targets {:?} provider but request uses Anthropic format",
+                            name,
+                            entry.connector_type
+                        );
+                        return Err(IngressError::InvalidRequest(format!(
+                            "LUNAROUTE marker targets provider '{}' ({:?}) but request uses Anthropic format. Cross-dialect routing requires normalized mode.",
+                            name, entry.connector_type
+                        )));
+                    }
+                    if let Some(ref connector) = entry.anthropic_connector {
+                        tracing::info!(
+                            "LUNAROUTE marker: routing to provider '{}', model_override={:?}",
+                            name,
+                            entry.model_override
+                        );
+                        override_connector = Some(connector.clone());
+                        marker_provider_name = Some(name.clone());
+
+                        // Apply model override
+                        if let Some(ref model) = entry.model_override {
+                            req["model"] = serde_json::Value::String(model.clone());
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        "LUNAROUTE marker references unknown provider '{}', using default",
+                        name
+                    );
+                }
+            } else {
+                tracing::debug!(
+                    "LUNAROUTE marker '{}' found but no provider registry available, using default",
+                    name
+                );
+            }
+            crate::marker::strip_marker(&mut req);
+        }
+        crate::marker::MarkerResult::Clear => {
+            crate::marker::strip_marker(&mut req);
+        }
+        crate::marker::MarkerResult::None => {}
+    }
 
     // Extract session ID from metadata.user_id
     // The user_id may contain the session ID embedded like: "user_xxx_session_<uuid>"
@@ -1017,6 +1074,19 @@ pub async fn messages_passthrough(
         let request_id_clone = request_id.clone();
         let model_clone = model.clone();
         let user_agent_clone = user_agent.clone();
+        let session_tags_clone = {
+            let mut tags = vec![];
+            if let Some(ref provider_name) = marker_provider_name {
+                tags.push(format!("lunaroute:{}", provider_name));
+                if let Some(registry) = &state.provider_registry
+                    && let Some(entry) = registry.get(provider_name)
+                    && let Some(ref model) = entry.model_override
+                {
+                    tags.push(format!("model_override:{}", model));
+                }
+            }
+            tags
+        };
         tokio::spawn(async move {
             let event = SessionEvent::Started {
                 session_id: session_id_clone,
@@ -1031,7 +1101,7 @@ pub async fn messages_passthrough(
                     user_agent: user_agent_clone,
                     api_version: None,
                     request_headers: Default::default(),
-                    session_tags: vec![],
+                    session_tags: session_tags_clone,
                 },
             };
             if let Ok(json) = serde_json::to_value(event) {
@@ -1158,8 +1228,8 @@ pub async fn messages_passthrough(
 
     if is_streaming {
         // Handle streaming passthrough
-        let stream_response = state
-            .connector
+        let connector = override_connector.as_ref().unwrap_or(&state.connector);
+        let stream_response = connector
             .stream_passthrough(req, passthrough_headers)
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
@@ -1433,10 +1503,8 @@ pub async fn messages_passthrough(
     }
 
     // Send directly to Anthropic API (non-streaming)
-    let response_result = state
-        .connector
-        .send_passthrough(req, passthrough_headers)
-        .await;
+    let connector = override_connector.as_ref().unwrap_or(&state.connector);
+    let response_result = connector.send_passthrough(req, passthrough_headers).await;
 
     let (response_status, raw_response_bytes, response_headers) = match response_result {
         Ok((status, bytes, headers)) => (status, bytes, headers),
@@ -1772,6 +1840,7 @@ pub fn router(provider: Arc<dyn Provider>) -> Router {
 }
 
 /// Create Anthropic passthrough router (for Anthropic→Anthropic direct routing)
+#[allow(clippy::too_many_arguments)]
 pub fn passthrough_router(
     connector: Arc<lunaroute_egress::anthropic::AnthropicConnector>,
     stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
@@ -1779,6 +1848,7 @@ pub fn passthrough_router(
     session_store: Option<Arc<dyn SessionStore>>,
     sse_keepalive_interval_secs: u64,
     sse_keepalive_enabled: bool,
+    provider_registry: Option<Arc<crate::ProviderRegistry>>,
 ) -> Router {
     let state = Arc::new(PassthroughState {
         connector,
@@ -1788,6 +1858,7 @@ pub fn passthrough_router(
         tool_call_mapper: Arc::new(lunaroute_session::ToolCallMapper::new()),
         sse_keepalive_interval_secs,
         sse_keepalive_enabled,
+        provider_registry,
     });
 
     Router::new()
