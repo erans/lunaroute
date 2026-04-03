@@ -31,3 +31,4 @@ chrono = { workspace = true }
 eventsource-stream = { workspace = true }
 flate2 = { workspace = true }
 reqwest = { workspace = true }
+regex = { workspace = true }

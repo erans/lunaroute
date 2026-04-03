@@ -9,6 +9,7 @@
 pub mod anthropic;
 pub mod async_stream_parser;
 pub mod bypass;
+pub mod marker;
 pub mod middleware;
 pub mod multi_dialect;
 pub mod openai;
