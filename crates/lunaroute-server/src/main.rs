@@ -1186,6 +1186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     session_store_for_passthrough.clone(),
                     config.http_server.sse_keepalive_interval_secs,
                     config.http_server.sse_keepalive_enabled,
+                    Some(provider_registry.clone()),
                 )
             } else {
                 openai::router(router)
@@ -1203,6 +1204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         session_store_for_passthrough.clone(),
                         config.http_server.sse_keepalive_interval_secs,
                         config.http_server.sse_keepalive_enabled,
+                        Some(provider_registry.clone()),
                     )
                 } else {
                     anthropic_ingress::router(router)
@@ -1232,6 +1234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     session_store_for_passthrough.clone(),
                     config.http_server.sse_keepalive_interval_secs,
                     config.http_server.sse_keepalive_enabled,
+                    Some(provider_registry.clone()),
                 )
             } else {
                 info!("🔄 Dual dialect with routing (normalization may occur)");

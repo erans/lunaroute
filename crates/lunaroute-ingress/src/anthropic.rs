@@ -867,6 +867,7 @@ pub struct PassthroughState {
     pub tool_call_mapper: Arc<lunaroute_session::ToolCallMapper>,
     pub sse_keepalive_interval_secs: u64,
     pub sse_keepalive_enabled: bool,
+    pub provider_registry: Option<Arc<crate::ProviderRegistry>>,
 }
 
 /// Passthrough handler for Anthropic→Anthropic routing (no normalization)
@@ -1772,6 +1773,7 @@ pub fn router(provider: Arc<dyn Provider>) -> Router {
 }
 
 /// Create Anthropic passthrough router (for Anthropic→Anthropic direct routing)
+#[allow(clippy::too_many_arguments)]
 pub fn passthrough_router(
     connector: Arc<lunaroute_egress::anthropic::AnthropicConnector>,
     stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
@@ -1779,6 +1781,7 @@ pub fn passthrough_router(
     session_store: Option<Arc<dyn SessionStore>>,
     sse_keepalive_interval_secs: u64,
     sse_keepalive_enabled: bool,
+    provider_registry: Option<Arc<crate::ProviderRegistry>>,
 ) -> Router {
     let state = Arc::new(PassthroughState {
         connector,
@@ -1788,6 +1791,7 @@ pub fn passthrough_router(
         tool_call_mapper: Arc::new(lunaroute_session::ToolCallMapper::new()),
         sse_keepalive_interval_secs,
         sse_keepalive_enabled,
+        provider_registry,
     });
 
     Router::new()

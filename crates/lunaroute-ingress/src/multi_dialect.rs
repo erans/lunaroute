@@ -51,6 +51,7 @@ pub fn router(provider: Arc<dyn Provider>) -> Router {
 /// - Anthropic format → Anthropic provider for claude-* models
 ///
 /// The routing layer handles this automatically based on model patterns.
+#[allow(clippy::too_many_arguments)]
 pub fn passthrough_router(
     openai_connector: Option<Arc<OpenAIConnector>>,
     anthropic_connector: Option<Arc<AnthropicConnector>>,
@@ -59,6 +60,7 @@ pub fn passthrough_router(
     session_store: Option<Arc<dyn SessionStore>>,
     sse_keepalive_interval_secs: u64,
     sse_keepalive_enabled: bool,
+    provider_registry: Option<Arc<crate::ProviderRegistry>>,
 ) -> Router {
     let mut router = Router::new();
 
@@ -71,6 +73,7 @@ pub fn passthrough_router(
             session_store.clone(),
             sse_keepalive_interval_secs,
             sse_keepalive_enabled,
+            provider_registry.clone(),
         );
         router = router.merge(openai_router);
     }
@@ -84,6 +87,7 @@ pub fn passthrough_router(
             session_store,
             sse_keepalive_interval_secs,
             sse_keepalive_enabled,
+            provider_registry,
         );
         router = router.merge(anthropic_router);
     }

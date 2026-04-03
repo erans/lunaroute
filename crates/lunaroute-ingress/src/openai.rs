@@ -1925,9 +1925,11 @@ pub struct OpenAIPassthroughState {
     pub tool_call_mapper: Arc<lunaroute_session::ToolCallMapper>,
     pub sse_keepalive_interval_secs: u64,
     pub sse_keepalive_enabled: bool,
+    pub provider_registry: Option<Arc<crate::ProviderRegistry>>,
 }
 
 /// Create OpenAI passthrough router (for OpenAI→OpenAI direct routing)
+#[allow(clippy::too_many_arguments)]
 pub fn passthrough_router(
     connector: Arc<lunaroute_egress::openai::OpenAIConnector>,
     stats_tracker: Option<Arc<dyn crate::types::SessionStatsTracker>>,
@@ -1935,6 +1937,7 @@ pub fn passthrough_router(
     session_store: Option<Arc<dyn SessionStore>>,
     sse_keepalive_interval_secs: u64,
     sse_keepalive_enabled: bool,
+    provider_registry: Option<Arc<crate::ProviderRegistry>>,
 ) -> Router {
     let state = Arc::new(OpenAIPassthroughState {
         connector,
@@ -1944,6 +1947,7 @@ pub fn passthrough_router(
         tool_call_mapper: Arc::new(lunaroute_session::ToolCallMapper::new()),
         sse_keepalive_interval_secs,
         sse_keepalive_enabled,
+        provider_registry,
     });
 
     Router::new()

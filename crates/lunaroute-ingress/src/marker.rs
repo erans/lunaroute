@@ -354,4 +354,80 @@ mod tests {
         strip_marker(&mut req);
         assert_eq!(req, original);
     }
+
+    #[test]
+    fn test_full_flow_extract_then_strip() {
+        let mut req = json!({
+            "model": "claude-opus-4-20250514",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "rewrite this function"},
+                        {"type": "text", "text": "<system-reminder>\n[LUNAROUTE:sonnet]\n</system-reminder>"}
+                    ]
+                }
+            ]
+        });
+
+        // Extract
+        let result = extract_marker(&req);
+        assert_eq!(result, MarkerResult::Provider("sonnet".to_string()));
+
+        // Strip
+        strip_marker(&mut req);
+
+        // Verify marker is gone
+        assert_eq!(extract_marker(&req), MarkerResult::None);
+
+        // Verify user message is preserved
+        let content = req["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["text"], "rewrite this function");
+    }
+
+    #[test]
+    fn test_full_flow_clear_marker() {
+        let mut req = json!({
+            "model": "claude-opus-4-20250514",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hello"},
+                    {"type": "text", "text": "<system-reminder>\n[LUNAROUTE:clear]\n</system-reminder>"}
+                ]
+            }]
+        });
+
+        assert_eq!(extract_marker(&req), MarkerResult::Clear);
+        strip_marker(&mut req);
+        assert_eq!(extract_marker(&req), MarkerResult::None);
+
+        let content = req["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["text"], "hello");
+    }
+
+    #[test]
+    fn test_model_override_applied() {
+        let mut req = json!({
+            "model": "claude-opus-4-20250514",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hello"},
+                    {"type": "text", "text": "<system-reminder>\n[LUNAROUTE:sonnet]\n</system-reminder>"}
+                ]
+            }]
+        });
+
+        // Simulate what the handler does: extract, override model, strip
+        if let MarkerResult::Provider(_) = extract_marker(&req) {
+            req["model"] = serde_json::Value::String("claude-sonnet-4-20250514".to_string());
+        }
+        strip_marker(&mut req);
+
+        assert_eq!(req["model"], "claude-sonnet-4-20250514");
+        assert_eq!(extract_marker(&req), MarkerResult::None);
+    }
 }

@@ -65,6 +65,7 @@ async fn test_openai_400_error_with_recording() {
         Some(store.clone()),
         15,
         true,
+        None, // no provider registry
     );
 
     // Send request that will trigger 400 error
@@ -167,6 +168,7 @@ async fn test_openai_500_error_with_recording() {
         Some(store.clone()),
         15,
         true,
+        None, // no provider registry
     );
 
     // Send request that will trigger 500 error
@@ -263,6 +265,7 @@ async fn test_anthropic_401_unauthorized_with_recording() {
         Some(store.clone()),
         15,
         true,
+        None, // no provider registry
     );
 
     // Send request with invalid API key
@@ -356,6 +359,7 @@ async fn test_anthropic_rate_limit_429_with_recording() {
         Some(store.clone()),
         15,
         true,
+        None, // no provider registry
     );
 
     // Send request that will hit rate limit
@@ -450,6 +454,7 @@ async fn test_openai_streaming_error_with_recording() {
         Some(store.clone()),
         15,
         true,
+        None, // no provider registry
     );
 
     // Send streaming request that will fail
