@@ -45,14 +45,24 @@ The marker arrives as a `<system-reminder>` block injected by Claude Code's `add
 
 ### 1. Marker Detection & Extraction
 
-A new module `crates/lunaroute-ingress/src/marker.rs` with two public functions:
+A new module `crates/lunaroute-ingress/src/marker.rs` with these public types and functions:
 
 ```rust
+/// Result of marker extraction
+pub enum MarkerResult {
+    /// A provider override marker was found
+    Provider(String),
+    /// A "clear" marker was found — strip and route normally
+    Clear,
+    /// No marker found
+    None,
+}
+
 /// Scan a request body (serde_json::Value) for [LUNAROUTE:xxx] marker.
 /// Searches all text content blocks in the messages array.
-/// Returns the provider name if found, None otherwise.
+/// Returns MarkerResult::Provider(name), MarkerResult::Clear, or MarkerResult::None.
 /// If multiple markers exist, returns the first and logs a warning.
-pub fn extract_marker(req: &serde_json::Value) -> Option<String>
+pub fn extract_marker(req: &serde_json::Value) -> MarkerResult
 
 /// Remove [LUNAROUTE:xxx] marker text from the request body.
 /// - Standalone content block (text is only the system-reminder with marker): remove entire block.
@@ -62,7 +72,13 @@ pub fn extract_marker(req: &serde_json::Value) -> Option<String>
 pub fn strip_marker(req: &mut serde_json::Value)
 ```
 
-Regex pattern: `\[LUNAROUTE:([a-zA-Z0-9._-]+)\]`
+**Extraction regex:** `\[LUNAROUTE:([a-zA-Z0-9._-]+)\]`
+
+**Stripping regexes:**
+- Standalone system-reminder block: `<system-reminder>\s*\[LUNAROUTE:[a-zA-Z0-9._-]+\]\s*</system-reminder>`
+- Inline marker only: `\[LUNAROUTE:[a-zA-Z0-9._-]+\]`
+
+The stripping logic tries the standalone regex first. If the entire text content matches, the whole content block is removed. Otherwise, the inline regex removes just the marker text.
 
 The functions scan the `messages` array and handle both content formats:
 - String content: `"content": "text with [LUNAROUTE:sonnet]"`
@@ -75,8 +91,13 @@ This covers both OpenAI and Anthropic request shapes in passthrough mode.
 A new type representing all available providers, built at startup:
 
 ```rust
+pub enum ProviderType {
+    OpenAI,
+    Anthropic,
+}
+
 pub struct ProviderEntry {
-    pub connector_type: ProviderType,  // OpenAI or Anthropic
+    pub connector_type: ProviderType,
     pub openai_connector: Option<Arc<OpenAIConnector>>,
     pub anthropic_connector: Option<Arc<AnthropicConnector>>,
     pub model_override: Option<String>,
@@ -85,11 +106,48 @@ pub struct ProviderEntry {
 pub type ProviderRegistry = HashMap<String, ProviderEntry>;
 ```
 
+Each entry holds both connector options but only one will be populated (matching `connector_type`). Both are kept as `Option` to accommodate future cross-dialect support.
+
 Added as `Option<Arc<ProviderRegistry>>` to both `OpenAIPassthroughState` and `PassthroughState`.
 
-#### Config addition
+#### Config changes
 
-Each provider gains an optional `model` field:
+The current `ProvidersConfig` is a struct with hardcoded `openai` and `anthropic` fields. To support arbitrary named providers, add an `extra` field:
+
+```rust
+pub struct ProvidersConfig {
+    pub openai: Option<ProviderSettings>,
+    pub anthropic: Option<ProviderSettings>,
+    /// Additional named providers for marker-based routing
+    #[serde(default, flatten)]
+    pub extra: HashMap<String, ProviderSettings>,
+}
+```
+
+**Serde flatten caveats:** `#[serde(flatten)]` will consume all unknown keys into the HashMap. To prevent issues:
+- Add a post-deserialization validation step that rejects extra entries with keys `"openai"` or `"anthropic"` (prevents double-parsing with the typed fields).
+- Add validation that rejects entries missing a `provider_type` field.
+- The `Default` impl must be updated to include `extra: HashMap::new()`.
+- All existing `ProviderSettings` literals (e.g. in `merge_env()`) must be updated to include the new `model: None` and `provider_type: None` fields.
+
+Each provider gains two new optional fields:
+
+```rust
+pub struct ProviderSettings {
+    // ... existing fields ...
+    /// Provider dialect type. Required for extra providers.
+    /// Inferred for the built-in "openai" and "anthropic" keys.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_type: Option<String>,  // "openai" or "anthropic"
+
+    /// Model ID override. When this provider is targeted via marker,
+    /// the request body's model field is rewritten to this value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+```
+
+Example config:
 
 ```yaml
 providers:
@@ -98,39 +156,58 @@ providers:
     api_key: "${ANTHROPIC_API_KEY}"
   sonnet:
     enabled: true
+    provider_type: "anthropic"
     api_key: "${ANTHROPIC_API_KEY}"
     model: "claude-sonnet-4-20250514"
+  gpt4o:
+    enabled: true
+    provider_type: "openai"
+    api_key: "${OPENAI_API_KEY}"
+    model: "gpt-4o"
 ```
+
+At startup, the server builds the `ProviderRegistry` from all providers (built-in + extra). The built-in `openai` and `anthropic` providers have their type inferred from the key name. Extra providers require an explicit `provider_type` field. For each extra provider, the startup code constructs a new connector instance (`OpenAIConnector` or `AnthropicConnector`) using the provider's `api_key`, `base_url`, and `http_client` settings — the same construction path used for the built-in providers.
 
 When a marker routes to `sonnet`, the `model` field in the request body is rewritten to `claude-sonnet-4-20250514`.
 
 ### 3. Integration into Passthrough Handlers
 
-Both `chat_completions_passthrough` (OpenAI) and `messages_passthrough` (Anthropic) gain this flow early in the function, before model extraction:
+Both `chat_completions_passthrough` (OpenAI) and `messages_passthrough` (Anthropic) gain this flow early in the function, before model extraction.
+
+**Note:** The handler's `req` binding must be made mutable (`let mut req = req;` after the `Json(req)` extraction) since both `strip_marker` and model override mutate the body.
 
 ```
 1. Parse JSON body (existing)
-2. extract_marker(&req)
-3. If marker found:
-   a. Look up provider name in registry
-   b. If found: select that provider's connector + apply model_override to req body
-   c. strip_marker(&mut req)
-   d. If not found: log warning, proceed with default connector
-4. If "clear" marker: strip_marker(&mut req), use default connector
-5. Extract model name (existing — now reads potentially-overridden model)
-6. Session recording (existing — captures actual routed model/provider)
-7. Send to provider via selected connector
+2. let mut req = req;
+3. match extract_marker(&req):
+   MarkerResult::Provider(name) =>
+     a. Look up name in registry
+     b. If found + same dialect: select that provider's connector + apply model_override
+     c. If found + different dialect: return HTTP 400
+     d. strip_marker(&mut req)
+     e. If not found: log warning, strip_marker(&mut req), proceed with default
+   MarkerResult::Clear =>
+     a. strip_marker(&mut req), use default connector
+   MarkerResult::None =>
+     a. proceed normally
+4. Extract model name (existing — now reads potentially-overridden model)
+5. Session recording (existing — captures actual routed model/provider)
+6. Send to provider via selected connector
 ```
 
-The connector swap affects the `send_passthrough` call sites (streaming and non-streaming):
+The connector swap applies to **both streaming and non-streaming** `send_passthrough` / `stream_passthrough` call sites. Since cross-dialect routing returns HTTP 400, the overridden connector is always the same type as the handler's default connector, so the call signatures and return types naturally match (OpenAI handler swaps in an OpenAI connector, Anthropic handler swaps in an Anthropic connector):
 
 ```rust
 let connector = if let Some(override_entry) = &provider_override {
+    // Same dialect guaranteed — cross-dialect returned 400 above
     override_entry.anthropic_connector.as_ref().unwrap()
 } else {
     &state.connector
 };
+// Non-streaming:
 let response_result = connector.send_passthrough(req, passthrough_headers).await;
+// Streaming:
+let stream = connector.stream_passthrough(req, passthrough_headers).await;
 ```
 
 ### 4. Marker Stripping Strategy
@@ -164,15 +241,14 @@ After stripping: remove empty text blocks, remove messages with empty content ar
 
 | File | Change |
 |------|--------|
-| `crates/lunaroute-ingress/src/marker.rs` | **New** — `extract_marker()`, `strip_marker()`, regex logic |
+| `crates/lunaroute-ingress/src/marker.rs` | **New** — `extract_marker()`, `strip_marker()`, `MarkerResult` enum, regex logic, unit tests |
 | `crates/lunaroute-ingress/src/lib.rs` | Add `pub mod marker;` |
 | `crates/lunaroute-ingress/src/openai.rs` | Add `provider_registry` to `OpenAIPassthroughState`, marker detection + connector swap in `chat_completions_passthrough` |
 | `crates/lunaroute-ingress/src/anthropic.rs` | Add `provider_registry` to `PassthroughState`, marker detection + connector swap in `messages_passthrough` |
 | `crates/lunaroute-ingress/src/multi_dialect.rs` | Pass `ProviderRegistry` through to both passthrough routers |
-| `crates/lunaroute-server/src/config.rs` | Add `model: Option<String>` to `ProviderSettings` |
+| `crates/lunaroute-server/src/config.rs` | Add `model: Option<String>` and `provider_type: Option<String>` to `ProviderSettings`; add `extra: HashMap` to `ProvidersConfig` |
 | `crates/lunaroute-server/src/main.rs` (or connector build site) | Build `ProviderRegistry` from config at startup, pass to ingress |
 | `config.example.yaml` | Add example showing marker-targeted provider with model override |
-| `crates/lunaroute-ingress/src/marker.rs` | Unit tests for extraction, stripping, edge cases |
 
 ## Out of Scope
 
@@ -180,3 +256,5 @@ After stripping: remove empty text blocks, remove messages with empty content ar
 - **Sticky sessions** — the marker is per-request. Client-side hooks handle persistence (injecting the marker on every request until `#!clear`).
 - **Client-side hook implementation** — the `#!sonnet` → `[LUNAROUTE:sonnet]` injection is handled by Claude Code hooks, not by the proxy.
 - **Metrics labels** — dedicated Prometheus labels for marker-routed requests are deferred.
+- **`/v1/responses` endpoint** — the OpenAI Responses API (`responses_passthrough`) uses a different body format (`input` array instead of `messages`). Marker support for this endpoint is deferred to a follow-up.
+- **`/v1/models` endpoint** — unaffected by marker routing. Markers only appear in message request bodies.
