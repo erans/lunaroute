@@ -849,6 +849,141 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         providers.insert("anthropic".to_string(), provider);
     }
 
+    // Build ProviderRegistry for marker-based routing
+    let mut provider_registry = lunaroute_ingress::ProviderRegistry::new();
+
+    // Add built-in providers
+    if let Some(ref connector) = openai_connector {
+        provider_registry.insert(
+            "openai".to_string(),
+            lunaroute_ingress::ProviderEntry {
+                connector_type: lunaroute_ingress::ProviderType::OpenAI,
+                openai_connector: Some(connector.clone()),
+                anthropic_connector: None,
+                model_override: config
+                    .providers
+                    .openai
+                    .as_ref()
+                    .and_then(|p| p.model.clone()),
+            },
+        );
+    }
+    if let Some(ref connector) = anthropic_connector {
+        provider_registry.insert(
+            "anthropic".to_string(),
+            lunaroute_ingress::ProviderEntry {
+                connector_type: lunaroute_ingress::ProviderType::Anthropic,
+                openai_connector: None,
+                anthropic_connector: Some(connector.clone()),
+                model_override: config
+                    .providers
+                    .anthropic
+                    .as_ref()
+                    .and_then(|p| p.model.clone()),
+            },
+        );
+    }
+
+    // Validate and build extra providers
+    config
+        .providers
+        .validate_extra_providers()
+        .map_err(|e| anyhow::anyhow!("Invalid provider config: {}", e))?;
+
+    for (name, settings) in &config.providers.extra {
+        if !settings.enabled {
+            info!("  Extra provider '{}': disabled, skipping", name);
+            continue;
+        }
+
+        let provider_type_str = settings.provider_type.as_deref().unwrap(); // validated above
+        let api_key = settings.api_key.clone().unwrap_or_default();
+
+        match provider_type_str {
+            "anthropic" => {
+                let base_url = settings
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+                let client_config = settings
+                    .http_client
+                    .as_ref()
+                    .map(|c| c.to_http_client_config())
+                    .unwrap_or_default();
+                let connector_config = lunaroute_egress::anthropic::AnthropicConfig {
+                    api_key,
+                    base_url,
+                    api_version: "2023-06-01".to_string(),
+                    client_config,
+                    switch_notification_message: None,
+                };
+                let conn = lunaroute_egress::anthropic::AnthropicConnector::new(connector_config)?;
+                info!(
+                    "  Extra provider '{}': anthropic, model_override={:?}",
+                    name, settings.model
+                );
+                provider_registry.insert(
+                    name.clone(),
+                    lunaroute_ingress::ProviderEntry {
+                        connector_type: lunaroute_ingress::ProviderType::Anthropic,
+                        openai_connector: None,
+                        anthropic_connector: Some(Arc::new(conn)),
+                        model_override: settings.model.clone(),
+                    },
+                );
+            }
+            "openai" => {
+                let base_url = settings
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+                let client_config = settings
+                    .http_client
+                    .as_ref()
+                    .map(|c| c.to_http_client_config())
+                    .unwrap_or_default();
+                let mut connector_config = lunaroute_egress::openai::OpenAIConfig {
+                    api_key,
+                    base_url,
+                    organization: None,
+                    client_config,
+                    custom_headers: None,
+                    request_body_config: None,
+                    response_body_config: None,
+                    codex_auth: None,
+                    switch_notification_message: None,
+                };
+                if let Some(headers_config) = &settings.request_headers {
+                    connector_config.custom_headers = Some(headers_config.headers.clone());
+                }
+                let conn = lunaroute_egress::openai::OpenAIConnector::new(connector_config).await?;
+                info!(
+                    "  Extra provider '{}': openai, model_override={:?}",
+                    name, settings.model
+                );
+                provider_registry.insert(
+                    name.clone(),
+                    lunaroute_ingress::ProviderEntry {
+                        connector_type: lunaroute_ingress::ProviderType::OpenAI,
+                        openai_connector: Some(Arc::new(conn)),
+                        anthropic_connector: None,
+                        model_override: settings.model.clone(),
+                    },
+                );
+            }
+            _ => unreachable!(), // validated above
+        }
+    }
+
+    let provider_registry = Arc::new(provider_registry);
+    if !provider_registry.is_empty() {
+        info!(
+            "📋 Provider registry: {} providers ({} for marker routing)",
+            provider_registry.len(),
+            config.providers.extra.len()
+        );
+    }
+
     // Allow starting without providers in certain scenarios (e.g., passthrough with client-provided keys)
     if providers.is_empty() {
         warn!("⚠️  No providers configured - requests will fail unless using passthrough mode");
