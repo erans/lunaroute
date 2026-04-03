@@ -1971,6 +1971,55 @@ pub async fn chat_completions_passthrough(
     let start_time = std::time::Instant::now();
     tracing::debug!("OpenAI passthrough mode: skipping normalization");
 
+    let mut req = req;
+
+    // LUNAROUTE marker detection — check for provider override
+    let marker_result = crate::marker::extract_marker(&req);
+    let mut override_connector: Option<Arc<lunaroute_egress::openai::OpenAIConnector>> = None;
+    let mut marker_provider_name: Option<String> = None;
+
+    match &marker_result {
+        crate::marker::MarkerResult::Provider(name) => {
+            if let Some(registry) = &state.provider_registry {
+                if let Some(entry) = registry.get(name) {
+                    if entry.connector_type != crate::ProviderType::OpenAI {
+                        tracing::warn!(
+                            "LUNAROUTE marker '{}' targets {:?} provider but request uses OpenAI format",
+                            name,
+                            entry.connector_type
+                        );
+                        return Err(IngressError::InvalidRequest(format!(
+                            "LUNAROUTE marker targets provider '{}' ({:?}) but request uses OpenAI format. Cross-dialect routing requires normalized mode.",
+                            name, entry.connector_type
+                        )));
+                    }
+                    if let Some(ref connector) = entry.openai_connector {
+                        tracing::info!(
+                            "LUNAROUTE marker: routing to provider '{}', model_override={:?}",
+                            name,
+                            entry.model_override
+                        );
+                        override_connector = Some(connector.clone());
+                        marker_provider_name = Some(name.clone());
+                        if let Some(ref model) = entry.model_override {
+                            req["model"] = serde_json::Value::String(model.clone());
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        "LUNAROUTE marker references unknown provider '{}', using default",
+                        name
+                    );
+                }
+            }
+            crate::marker::strip_marker(&mut req);
+        }
+        crate::marker::MarkerResult::Clear => {
+            crate::marker::strip_marker(&mut req);
+        }
+        crate::marker::MarkerResult::None => {}
+    }
+
     // Extract user-agent from headers for session tracking
     // Truncate to 255 chars to prevent database issues with extremely long user agents
     let user_agent = headers
@@ -2094,6 +2143,8 @@ pub async fn chat_completions_passthrough(
         let rid = request_id.clone();
         let m = model.clone();
         let ua = user_agent.clone();
+        let marker_provider_name_for_spawn = marker_provider_name.clone();
+        let state_for_spawn = state.clone();
         tokio::spawn(async move {
             let event = serde_json::to_value(SessionEvent::Started {
                 session_id: sid,
@@ -2108,7 +2159,19 @@ pub async fn chat_completions_passthrough(
                     user_agent: ua,
                     api_version: None,
                     request_headers: Default::default(),
-                    session_tags: vec![],
+                    session_tags: {
+                        let mut tags = vec![];
+                        if let Some(ref provider_name) = marker_provider_name_for_spawn {
+                            tags.push(format!("lunaroute:{}", provider_name));
+                            if let Some(registry) = &state_for_spawn.provider_registry
+                                && let Some(entry) = registry.get(provider_name)
+                                && let Some(ref model) = entry.model_override
+                            {
+                                tags.push(format!("model_override:{}", model));
+                            }
+                        }
+                        tags
+                    },
                 },
             })
             .ok();
@@ -2345,8 +2408,8 @@ pub async fn chat_completions_passthrough(
 
     if is_streaming {
         // Handle streaming passthrough
-        let stream_response = state
-            .connector
+        let connector = override_connector.as_ref().unwrap_or(&state.connector);
+        let stream_response = connector
             .stream_passthrough(req, passthrough_headers)
             .await
             .map_err(|e| IngressError::ProviderError(e.to_string()))?;
@@ -2579,10 +2642,8 @@ pub async fn chat_completions_passthrough(
     }
 
     // Send directly to OpenAI API (non-streaming)
-    let response_result = state
-        .connector
-        .send_passthrough(req, passthrough_headers)
-        .await;
+    let connector = override_connector.as_ref().unwrap_or(&state.connector);
+    let response_result = connector.send_passthrough(req, passthrough_headers).await;
 
     let (response, response_headers) = match response_result {
         Ok((resp, headers)) => (resp, headers),
