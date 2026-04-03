@@ -99,7 +99,6 @@ impl Default for ProvidersConfig {
 }
 
 impl ProvidersConfig {
-    #[allow(dead_code)]
     pub fn validate_extra_providers(&self) -> Result<(), String> {
         for (name, settings) in &self.extra {
             if name == "openai" || name == "anthropic" {

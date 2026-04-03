@@ -923,6 +923,11 @@ pub async fn messages_passthrough(
                         name
                     );
                 }
+            } else {
+                tracing::debug!(
+                    "LUNAROUTE marker '{}' found but no provider registry available, using default",
+                    name
+                );
             }
             crate::marker::strip_marker(&mut req);
         }
