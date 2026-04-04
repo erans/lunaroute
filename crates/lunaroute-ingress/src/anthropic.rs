@@ -60,10 +60,36 @@ pub enum AnthropicSystem {
 }
 
 /// Anthropic system content block
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AnthropicSystemBlock {
-    Text { text: String },
+    Text {
+        text: String,
+    },
+    #[serde(skip)]
+    Unknown(serde_json::Value),
+}
+
+impl<'de> serde::Deserialize<'de> for AnthropicSystemBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let block_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+        match block_type {
+            "text" => {
+                let text = value
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Ok(Self::Text { text })
+            }
+            _ => Ok(Self::Unknown(value)),
+        }
+    }
 }
 
 /// Anthropic messages request
@@ -106,7 +132,10 @@ pub enum AnthropicMessageContent {
 }
 
 /// Anthropic content block (for requests)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Uses custom Deserialize to gracefully handle unknown block types (e.g. `thinking`,
+/// `redacted_thinking`, `image`) that Claude Code may send but we don't need to normalize.
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AnthropicContentBlock {
     Text {
@@ -123,6 +152,77 @@ pub enum AnthropicContentBlock {
         #[serde(default)]
         is_error: Option<bool>,
     },
+    /// Catch-all for unknown block types (thinking, image, etc.) — skipped during normalization
+    #[serde(skip)]
+    Unknown(serde_json::Value),
+}
+
+impl<'de> serde::Deserialize<'de> for AnthropicContentBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let block_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+        match block_type {
+            "text" => {
+                let text = value
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Ok(Self::Text { text })
+            }
+            "tool_use" => {
+                let id = value
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = value
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let input = value
+                    .get("input")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                Ok(Self::ToolUse { id, name, input })
+            }
+            "tool_result" => {
+                let tool_use_id = value
+                    .get("tool_use_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                // Content can be either a string or an array of content blocks
+                let content = match value.get("content") {
+                    Some(serde_json::Value::String(s)) => s.clone(),
+                    Some(serde_json::Value::Array(arr)) => arr
+                        .iter()
+                        .filter_map(|b| {
+                            if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                b.get("text").and_then(|t| t.as_str()).map(String::from)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    _ => String::new(),
+                };
+                let is_error = value.get("is_error").and_then(|v| v.as_bool());
+                Ok(Self::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                })
+            }
+            _ => Ok(Self::Unknown(value)),
+        }
+    }
 }
 
 /// Anthropic response
@@ -413,6 +513,9 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
                                     tool_name: None, // Will be filled in by SessionRecorder
                                 });
                             }
+                            AnthropicContentBlock::Unknown(_) => {
+                                // Skip unknown block types (thinking, image, etc.)
+                            }
                         }
                     }
 
@@ -462,11 +565,12 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
     let system = req.system.map(|sys| match sys {
         AnthropicSystem::Text(text) => text,
         AnthropicSystem::Blocks(blocks) => {
-            // Concatenate all text blocks
+            // Concatenate all text blocks, skip unknown types
             blocks
                 .into_iter()
-                .map(|block| match block {
-                    AnthropicSystemBlock::Text { text } => text,
+                .filter_map(|block| match block {
+                    AnthropicSystemBlock::Text { text } => Some(text),
+                    AnthropicSystemBlock::Unknown(_) => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -2391,6 +2495,7 @@ mod tests {
                 assert_eq!(blocks.len(), 1);
                 match &blocks[0] {
                     AnthropicSystemBlock::Text { text } => assert_eq!(text, "You are helpful"),
+                    AnthropicSystemBlock::Unknown(_) => panic!("Expected Text variant"),
                 }
             }
             _ => panic!("Expected Blocks variant"),
@@ -2936,5 +3041,79 @@ mod tests {
         let typed_req: AnthropicMessagesRequest = serde_json::from_value(req).unwrap();
         let normalized = to_normalized(typed_req).unwrap();
         assert_eq!(normalized.model, "@cf/moonshotai/kimi-k2.5");
+    }
+
+    #[test]
+    fn test_unknown_content_blocks_are_skipped_during_normalization() {
+        // Claude Code sends thinking/redacted_thinking blocks that we don't normalize
+        let raw_json = serde_json::json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Hello"}]
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "Let me think about this..."},
+                        {"type": "redacted_thinking", "data": "abc123"},
+                        {"type": "text", "text": "Hi there!"}
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": "Follow up question"
+                }
+            ],
+            "max_tokens": 1024,
+            "stream": false
+        });
+
+        let typed_req: AnthropicMessagesRequest = serde_json::from_value(raw_json).unwrap();
+        assert_eq!(typed_req.messages.len(), 3);
+
+        let normalized = to_normalized(typed_req).unwrap();
+        assert_eq!(normalized.messages.len(), 3);
+        // Assistant message should only contain the text block, not thinking blocks
+        assert_eq!(
+            normalized.messages[1].content,
+            MessageContent::Text("Hi there!".to_string())
+        );
+    }
+
+    #[test]
+    fn test_tool_result_with_array_content() {
+        // Anthropic API allows tool_result content to be an array of blocks
+        let raw_json = serde_json::json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_123",
+                            "content": [
+                                {"type": "text", "text": "Result line 1"},
+                                {"type": "text", "text": "Result line 2"}
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 1024
+        });
+
+        let typed_req: AnthropicMessagesRequest = serde_json::from_value(raw_json).unwrap();
+        let normalized = to_normalized(typed_req).unwrap();
+        // Array content should be joined with newlines
+        match &normalized.messages[0].content {
+            MessageContent::Text(text) => {
+                assert!(text.contains("Result line 1"));
+                assert!(text.contains("Result line 2"));
+            }
+            _ => panic!("Expected Text content"),
+        }
     }
 }
