@@ -16,34 +16,63 @@ pub enum MarkerResult {
     None,
 }
 
-/// Scan a request body (serde_json::Value) for [LUNAROUTE:xxx] marker.
-/// Searches the LAST user message only — old markers from previous turns
-/// may persist in conversation history and must be ignored.
-/// Returns the first marker found in the last user message.
-/// Logs a warning if multiple markers exist.
-pub fn extract_marker(req: &serde_json::Value) -> MarkerResult {
-    let mut found: Vec<String> = Vec::new();
+/// Check if a user message contains only tool_result blocks (no text content).
+fn is_tool_result_only(msg: &serde_json::Value) -> bool {
+    if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
+        !content_arr.is_empty()
+            && content_arr
+                .iter()
+                .all(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+    } else {
+        false
+    }
+}
 
-    if let Some(messages) = req.get("messages").and_then(|m| m.as_array()) {
-        let last_user_msg = messages
-            .iter()
-            .rev()
-            .find(|msg| msg.get("role").and_then(|r| r.as_str()) == Some("user"));
-
-        if let Some(msg) = last_user_msg {
-            if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
-                for block in content_arr {
-                    if let Some(text) = block.get("text").and_then(|t| t.as_str())
-                        && let Some(caps) = MARKER_EXTRACT_RE.captures(text)
-                    {
-                        found.push(caps[1].to_string());
-                    }
-                }
-            } else if let Some(text) = msg.get("content").and_then(|c| c.as_str())
+/// Try to extract a LUNAROUTE marker from a single message.
+fn extract_marker_from_msg(msg: &serde_json::Value) -> Vec<String> {
+    let mut found = Vec::new();
+    if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
+        for block in content_arr {
+            if let Some(text) = block.get("text").and_then(|t| t.as_str())
                 && let Some(caps) = MARKER_EXTRACT_RE.captures(text)
             {
                 found.push(caps[1].to_string());
             }
+        }
+    } else if let Some(text) = msg.get("content").and_then(|c| c.as_str())
+        && let Some(caps) = MARKER_EXTRACT_RE.captures(text)
+    {
+        found.push(caps[1].to_string());
+    }
+    found
+}
+
+/// Scan a request body (serde_json::Value) for [LUNAROUTE:xxx] marker.
+///
+/// Searches the last user message first. If that message contains only
+/// tool_result blocks (an automatic follow-up to a tool call), walks back
+/// through earlier user messages to inherit routing from the message that
+/// triggered the tool call chain. This ensures multi-step tool calling
+/// stays on the same provider.
+///
+/// Returns the first marker found. Logs a warning if multiple markers exist.
+pub fn extract_marker(req: &serde_json::Value) -> MarkerResult {
+    let mut found: Vec<String> = Vec::new();
+
+    if let Some(messages) = req.get("messages").and_then(|m| m.as_array()) {
+        // Walk user messages from the end
+        for msg in messages.iter().rev() {
+            if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+                continue;
+            }
+
+            // If this is a tool-result-only message, skip it and keep looking back
+            if is_tool_result_only(msg) {
+                continue;
+            }
+
+            found = extract_marker_from_msg(msg);
+            break;
         }
     }
 
@@ -428,6 +457,111 @@ mod tests {
         strip_marker(&mut req);
 
         assert_eq!(req["model"], "claude-sonnet-4-20250514");
+        assert_eq!(extract_marker(&req), MarkerResult::None);
+    }
+
+    #[test]
+    fn test_extract_marker_skips_tool_result_messages() {
+        // Simulates: user sends #!kimik25, model responds with tool_use,
+        // Claude Code sends tool_result. The marker should be inherited
+        // from the earlier user message.
+        let req = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "<system-reminder>\n[LUNAROUTE:kimik25]\n</system-reminder>"},
+                        {"type": "text", "text": "list files #!kimik25"}
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "toolu_functionsBash0", "name": "Bash", "input": {"command": "ls"}}
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_functionsBash0", "content": "file1.txt\nfile2.txt"}
+                    ]
+                }
+            ]
+        });
+        assert_eq!(
+            extract_marker(&req),
+            MarkerResult::Provider("kimik25".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_marker_skips_multiple_tool_result_rounds() {
+        // Multiple tool-call rounds: marker should still be found
+        let req = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "[LUNAROUTE:kimik25]"},
+                        {"type": "text", "text": "create and cat a file"}
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {}}]
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "ok"}]
+                }
+            ]
+        });
+        assert_eq!(
+            extract_marker(&req),
+            MarkerResult::Provider("kimik25".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_marker_no_inherit_when_new_text_message() {
+        // If the user sends a new text message after tool results,
+        // only the new message matters (no stale marker inheritance).
+        let req = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "[LUNAROUTE:kimik25]"},
+                        {"type": "text", "text": "do something"}
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Done!"}]
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "now do something else"}]
+                }
+            ]
+        });
+        // New text message without marker — should NOT inherit kimik25
         assert_eq!(extract_marker(&req), MarkerResult::None);
     }
 }
