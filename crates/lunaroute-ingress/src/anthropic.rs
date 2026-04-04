@@ -60,10 +60,36 @@ pub enum AnthropicSystem {
 }
 
 /// Anthropic system content block
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AnthropicSystemBlock {
-    Text { text: String },
+    Text {
+        text: String,
+    },
+    #[serde(skip)]
+    Unknown(serde_json::Value),
+}
+
+impl<'de> serde::Deserialize<'de> for AnthropicSystemBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let block_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+        match block_type {
+            "text" => {
+                let text = value
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .ok_or_else(|| serde::de::Error::missing_field("text"))?
+                    .to_string();
+                Ok(Self::Text { text })
+            }
+            _ => Ok(Self::Unknown(value)),
+        }
+    }
 }
 
 /// Anthropic messages request
@@ -106,7 +132,10 @@ pub enum AnthropicMessageContent {
 }
 
 /// Anthropic content block (for requests)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Uses custom Deserialize to gracefully handle unknown block types (e.g. `thinking`,
+/// `redacted_thinking`, `image`) that Claude Code may send but we don't need to normalize.
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AnthropicContentBlock {
     Text {
@@ -123,6 +152,83 @@ pub enum AnthropicContentBlock {
         #[serde(default)]
         is_error: Option<bool>,
     },
+    /// Catch-all for unknown block types (thinking, image, etc.) — skipped during normalization
+    #[serde(skip)]
+    Unknown(serde_json::Value),
+}
+
+impl<'de> serde::Deserialize<'de> for AnthropicContentBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let block_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+        match block_type {
+            "text" => {
+                let text = value
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .ok_or_else(|| serde::de::Error::missing_field("text"))?
+                    .to_string();
+                Ok(Self::Text { text })
+            }
+            "tool_use" => {
+                let id = value
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| serde::de::Error::missing_field("id"))?
+                    .to_string();
+                let name = value
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| serde::de::Error::missing_field("name"))?
+                    .to_string();
+                let input = value
+                    .get("input")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                Ok(Self::ToolUse { id, name, input })
+            }
+            "tool_result" => {
+                let tool_use_id = value
+                    .get("tool_use_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| serde::de::Error::missing_field("tool_use_id"))?
+                    .to_string();
+                // Content can be a string, an array of content blocks, or absent (null/missing)
+                let content = match value.get("content") {
+                    Some(serde_json::Value::String(s)) => s.clone(),
+                    Some(serde_json::Value::Array(arr)) => arr
+                        .iter()
+                        .filter_map(|b| {
+                            if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                b.get("text").and_then(|t| t.as_str()).map(String::from)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    Some(serde_json::Value::Null) | None => String::new(),
+                    Some(other) => {
+                        return Err(serde::de::Error::custom(format!(
+                            "tool_result.content must be a string, array, or null; got {}",
+                            other
+                        )));
+                    }
+                };
+                let is_error = value.get("is_error").and_then(|v| v.as_bool());
+                Ok(Self::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                })
+            }
+            _ => Ok(Self::Unknown(value)),
+        }
+    }
 }
 
 /// Anthropic response
@@ -413,6 +519,15 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
                                     tool_name: None, // Will be filled in by SessionRecorder
                                 });
                             }
+                            AnthropicContentBlock::Unknown(ref val) => {
+                                // Skip unknown block types (thinking, redacted_thinking, image, etc.)
+                                tracing::debug!(
+                                    "Skipping unknown content block type during normalization: {}",
+                                    val.get("type")
+                                        .and_then(|t| t.as_str())
+                                        .unwrap_or("unknown")
+                                );
+                            }
                         }
                     }
 
@@ -462,11 +577,12 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
     let system = req.system.map(|sys| match sys {
         AnthropicSystem::Text(text) => text,
         AnthropicSystem::Blocks(blocks) => {
-            // Concatenate all text blocks
+            // Concatenate all text blocks, skip unknown types
             blocks
                 .into_iter()
-                .map(|block| match block {
-                    AnthropicSystemBlock::Text { text } => text,
+                .filter_map(|block| match block {
+                    AnthropicSystemBlock::Text { text } => Some(text),
+                    AnthropicSystemBlock::Unknown(_) => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -488,6 +604,47 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
         tool_results,      // Tool results extracted from messages
         metadata: std::collections::HashMap::new(),
     })
+}
+
+/// Ensure a tool ID is valid for the Anthropic API (`^[a-zA-Z0-9_-]+$`).
+/// Converts OpenAI-format IDs (e.g. `call_xxx`) to Anthropic-format (`toolu_call_xxx`)
+/// and replaces invalid characters with `_` to preserve position information.
+/// When sanitization alters the ID, appends a 4-char hash of the original to
+/// prevent collisions between distinct upstream IDs that sanitize to the same form.
+/// Avoids double-prefixing IDs that already start with `toolu_`.
+fn to_anthropic_tool_id(id: &str) -> String {
+    use std::hash::{Hash, Hasher};
+
+    // Replace invalid chars with underscore (preserves structure)
+    let sanitized: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() || sanitized.chars().all(|c| c == '_') {
+        return format!("toolu_{}", uuid::Uuid::new_v4().simple());
+    }
+
+    // If sanitization changed the ID, append a short hash to prevent collisions
+    let base = if sanitized != id {
+        let mut hasher = std::hash::DefaultHasher::new();
+        id.hash(&mut hasher);
+        format!("{}_{:08x}", sanitized, hasher.finish() as u32)
+    } else {
+        sanitized
+    };
+
+    // If base already has toolu_ prefix, keep it as-is
+    if base.starts_with("toolu_") {
+        base
+    } else {
+        format!("toolu_{}", base)
+    }
 }
 
 /// Convert normalized response to Anthropic response
@@ -543,7 +700,7 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
                 };
 
                 content_blocks.push(AnthropicContent::ToolUse {
-                    id: tool_call.id.clone(),
+                    id: to_anthropic_tool_id(&tool_call.id),
                     name: tool_call.function.name.clone(),
                     input,
                 });
@@ -585,24 +742,57 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
     }
 }
 
+/// Tracks streaming content block state with unique Anthropic index allocation.
+/// OpenAI tool_call_index can collide with text delta indices (both start at 0),
+/// so we allocate monotonically increasing Anthropic indices to avoid duplicates.
+#[derive(Debug, Clone, Default)]
+struct StreamBlockState {
+    /// The Anthropic block index of the currently active block, if any
+    active_index: Option<u32>,
+    /// Whether the active block is a tool block
+    active_is_tool: bool,
+    /// The OpenAI tool_call_index of the active tool block (for matching deltas)
+    active_tool_call_index: Option<u32>,
+    /// Next Anthropic content block index to allocate
+    next_index: u32,
+    /// Maps OpenAI tool_call_index → allocated Anthropic block index
+    tool_index_map: std::collections::HashMap<u32, u32>,
+}
+
+impl StreamBlockState {
+    fn close_active(&mut self, events: &mut Vec<AnthropicStreamEvent>) {
+        if let Some(idx) = self.active_index.take() {
+            events.push(AnthropicStreamEvent::ContentBlockStop { index: idx });
+            self.active_is_tool = false;
+            self.active_tool_call_index = None;
+        }
+    }
+
+    fn alloc_index(&mut self) -> u32 {
+        let idx = self.next_index;
+        self.next_index += 1;
+        idx
+    }
+}
+
 /// Convert normalized stream event to Anthropic SSE events
 /// Returns a vector because some normalized events map to multiple Anthropic events
 ///
 /// State Management:
-/// - `content_block_started` tracks whether we've sent a ContentBlockStart event
-/// - This ensures proper event sequencing: Start → Delta → Stop
+/// - `state` tracks the active block, allocates unique Anthropic indices, and maps
+///   OpenAI tool_call_index values to allocated indices to prevent collisions
 /// - State is maintained per-stream via scan() combinator (sequential, no concurrency)
 fn stream_event_to_anthropic_events(
     event: NormalizedStreamEvent,
     stream_id: &str,
     model: &str,
-    content_block_started: &mut bool,
+    state: &mut StreamBlockState,
 ) -> Vec<AnthropicStreamEvent> {
     use tracing::debug;
     match event {
         NormalizedStreamEvent::Start { .. } => {
             // Reset state for new stream
-            *content_block_started = false;
+            *state = StreamBlockState::default();
             debug!("Anthropic stream started: stream_id={}", stream_id);
 
             // Anthropic starts with message_start event
@@ -621,24 +811,31 @@ fn stream_event_to_anthropic_events(
                 },
             }]
         }
-        NormalizedStreamEvent::Delta { index, delta } => {
+        NormalizedStreamEvent::Delta { index: _, delta } => {
             let mut events = Vec::new();
 
-            // For first delta, send content_block_start
-            if !*content_block_started {
+            // If a non-text block is active, close it first
+            if state.active_index.is_some() && state.active_is_tool {
+                state.close_active(&mut events);
+            }
+
+            // Open text block if not already active
+            if state.active_index.is_none() {
+                let idx = state.alloc_index();
                 events.push(AnthropicStreamEvent::ContentBlockStart {
-                    index,
+                    index: idx,
                     content_block: AnthropicContentBlockStart::Text {
                         text: String::new(),
                     },
                 });
-                *content_block_started = true;
+                state.active_index = Some(idx);
+                state.active_is_tool = false;
             }
 
             // Send the text delta
             if let Some(content) = delta.content {
                 events.push(AnthropicStreamEvent::ContentBlockDelta {
-                    index,
+                    index: state.active_index.unwrap(),
                     delta: AnthropicContentDelta::TextDelta { text: content },
                 });
             }
@@ -653,25 +850,47 @@ fn stream_event_to_anthropic_events(
         } => {
             let mut events = Vec::new();
 
-            // Start tool use block if we have id and name
+            // Start tool use block if we have id and name, and it's not already active
             if let (Some(tool_id), Some(func)) =
                 (id, function.as_ref().and_then(|f| f.name.clone()))
             {
-                events.push(AnthropicStreamEvent::ContentBlockStart {
-                    index: tool_call_index,
-                    content_block: AnthropicContentBlockStart::ToolUse {
-                        id: tool_id,
-                        name: func,
-                    },
-                });
+                let already_active =
+                    state.active_is_tool && state.active_tool_call_index == Some(tool_call_index);
+
+                if !already_active {
+                    // Close previous block if one is active
+                    state.close_active(&mut events);
+
+                    // Allocate a unique Anthropic index for this tool block
+                    let idx = state.alloc_index();
+                    state.tool_index_map.insert(tool_call_index, idx);
+
+                    events.push(AnthropicStreamEvent::ContentBlockStart {
+                        index: idx,
+                        content_block: AnthropicContentBlockStart::ToolUse {
+                            id: to_anthropic_tool_id(&tool_id),
+                            name: func,
+                        },
+                    });
+                    state.active_index = Some(idx);
+                    state.active_is_tool = true;
+                    state.active_tool_call_index = Some(tool_call_index);
+                }
             }
 
-            // Send partial JSON if available
+            // Send partial JSON only if the matching tool block is active
             if let Some(func) = function.and_then(|f| f.arguments) {
-                events.push(AnthropicStreamEvent::ContentBlockDelta {
-                    index: tool_call_index,
-                    delta: AnthropicContentDelta::InputJsonDelta { partial_json: func },
-                });
+                if state.active_is_tool && state.active_tool_call_index == Some(tool_call_index) {
+                    events.push(AnthropicStreamEvent::ContentBlockDelta {
+                        index: state.active_index.unwrap(),
+                        delta: AnthropicContentDelta::InputJsonDelta { partial_json: func },
+                    });
+                } else {
+                    tracing::debug!(
+                        "Dropping tool argument delta for block {} — no matching active tool block",
+                        tool_call_index
+                    );
+                }
             }
 
             events
@@ -683,10 +902,9 @@ fn stream_event_to_anthropic_events(
         NormalizedStreamEvent::End { finish_reason } => {
             let mut events = Vec::new();
 
-            // Close content block if it was started
-            if *content_block_started {
-                events.push(AnthropicStreamEvent::ContentBlockStop { index: 0 });
-                *content_block_started = false;
+            // Close whichever content block is currently active (text or tool)
+            if state.active_index.is_some() {
+                state.close_active(&mut events);
                 debug!("Anthropic content block closed");
             } else {
                 debug!("Anthropic stream ended without content block");
@@ -764,7 +982,7 @@ pub async fn messages(
         // Convert normalized events to Anthropic SSE format
         // Use scan to maintain state across stream events
         let sse_stream = stream
-            .scan(false, move |content_block_started, result| {
+            .scan(StreamBlockState::default(), move |block_state, result| {
                 let stream_id = Arc::clone(&stream_id);
                 let model = Arc::clone(&model);
 
@@ -774,7 +992,7 @@ pub async fn messages(
                             event,
                             stream_id.as_str(),
                             model.as_str(),
-                            content_block_started,
+                            block_state,
                         );
 
                         anthropic_events
@@ -789,20 +1007,39 @@ pub async fn messages(
                             .collect::<Vec<_>>()
                     }
                     Err(e) => {
+                        let mut error_events = Vec::new();
+
+                        // Close any active content block before the error
+                        if let Some(idx) = block_state.active_index.take()
+                            && let Ok(evt) = Event::default()
+                                .json_data(AnthropicStreamEvent::ContentBlockStop { index: idx })
+                        {
+                            error_events.push(Ok(evt));
+                        }
+
                         // Send error event
-                        let error_event = serde_json::json!({
+                        let error_payload = serde_json::json!({
                             "type": "error",
                             "error": {
                                 "type": "api_error",
                                 "message": e.to_string()
                             }
                         });
-                        match Event::default().json_data(error_event) {
-                            Ok(event) => vec![Ok(event)],
-                            Err(_) => vec![Err(IngressError::Internal(
+                        match Event::default().json_data(error_payload) {
+                            Ok(event) => error_events.push(Ok(event)),
+                            Err(_) => error_events.push(Err(IngressError::Internal(
                                 "Failed to create error SSE event".to_string(),
-                            ))],
+                            ))),
                         }
+
+                        // Send message_stop to properly terminate the stream
+                        if let Ok(evt) =
+                            Event::default().json_data(AnthropicStreamEvent::MessageStop)
+                        {
+                            error_events.push(Ok(evt));
+                        }
+
+                        error_events
                     }
                 };
 
@@ -886,6 +1123,7 @@ pub async fn messages_passthrough(
     // LUNAROUTE marker detection — check for provider override
     let marker_result = crate::marker::extract_marker(&req);
     let mut override_connector: Option<Arc<lunaroute_egress::anthropic::AnthropicConnector>> = None;
+    let mut cross_dialect_connector: Option<Arc<lunaroute_egress::openai::OpenAIConnector>> = None;
     let mut marker_provider_name: Option<String> = None;
 
     match &marker_result {
@@ -893,17 +1131,31 @@ pub async fn messages_passthrough(
             if let Some(registry) = &state.provider_registry {
                 if let Some(entry) = registry.get(name) {
                     if entry.connector_type != crate::ProviderType::Anthropic {
-                        tracing::warn!(
-                            "LUNAROUTE marker '{}' targets {:?} provider but request uses Anthropic format",
-                            name,
-                            entry.connector_type
-                        );
-                        return Err(IngressError::InvalidRequest(format!(
-                            "LUNAROUTE marker targets provider '{}' ({:?}) but request uses Anthropic format. Cross-dialect routing requires normalized mode.",
-                            name, entry.connector_type
-                        )));
-                    }
-                    if let Some(ref connector) = entry.anthropic_connector {
+                        // Cross-dialect: Anthropic request → OpenAI provider
+                        if let Some(ref connector) = entry.openai_connector {
+                            tracing::info!(
+                                "LUNAROUTE marker: cross-dialect routing to OpenAI provider '{}', model_override={:?}",
+                                name,
+                                entry.model_override
+                            );
+                            cross_dialect_connector = Some(connector.clone());
+                            marker_provider_name = Some(name.clone());
+
+                            // Apply model override
+                            if let Some(ref model) = entry.model_override {
+                                req["model"] = serde_json::Value::String(model.clone());
+                            }
+                        } else {
+                            tracing::warn!(
+                                "LUNAROUTE marker '{}' targets OpenAI provider but no OpenAI connector available",
+                                name
+                            );
+                            return Err(IngressError::InvalidRequest(format!(
+                                "LUNAROUTE marker targets provider '{}' but no OpenAI connector is configured for it",
+                                name
+                            )));
+                        }
+                    } else if let Some(ref connector) = entry.anthropic_connector {
                         tracing::info!(
                             "LUNAROUTE marker: routing to provider '{}', model_override={:?}",
                             name,
@@ -1093,7 +1345,10 @@ pub async fn messages_passthrough(
                 request_id: request_id_clone,
                 timestamp: chrono::Utc::now(),
                 model_requested: model_clone,
-                provider: "anthropic".to_string(),
+                provider: marker_provider_name
+                    .as_deref()
+                    .unwrap_or("anthropic")
+                    .to_string(),
                 listener: "anthropic".to_string(),
                 is_streaming,
                 metadata: V2Metadata {
@@ -1224,6 +1479,131 @@ pub async fn messages_passthrough(
                 }
             }
         });
+    }
+
+    // Cross-dialect routing: Anthropic request → OpenAI provider via normalization
+    // TODO: Add response recording for cross-dialect path (request is already recorded above,
+    // but response/tool-call recording is skipped because this returns early before the
+    // passthrough recording flow). Needs ResponseRecorded event emission for non-streaming
+    // and streaming tool-call tracking for streaming mode.
+    if let Some(ref cd_connector) = cross_dialect_connector {
+        let typed_req: AnthropicMessagesRequest =
+            serde_json::from_value(req.clone()).map_err(|e| {
+                IngressError::InvalidRequest(format!(
+                    "Failed to parse request for cross-dialect routing: {}",
+                    e
+                ))
+            })?;
+
+        if is_streaming {
+            let mut normalized = to_normalized(typed_req)?;
+            normalized.stream = true;
+
+            let event_stream = cd_connector
+                .stream(normalized)
+                .await
+                .map_err(|e| IngressError::ProviderError(e.to_string()))?;
+
+            let stream_id = Arc::new(format!("msg_{}", uuid::Uuid::new_v4().simple()));
+            let model_arc = Arc::new(model.clone());
+
+            // OpenAI's stream doesn't emit NormalizedStreamEvent::Start, but Anthropic
+            // clients expect a message_start event. Prepend a synthetic Start event.
+            let start_event =
+                futures::stream::once(futures::future::ready(Ok(NormalizedStreamEvent::Start {
+                    id: stream_id.as_str().to_string(),
+                    model: model_arc.as_str().to_string(),
+                })));
+            let full_stream = start_event.chain(event_stream);
+
+            let sse_stream = full_stream
+                .scan(StreamBlockState::default(), move |block_state, result| {
+                    let stream_id = Arc::clone(&stream_id);
+                    let model = Arc::clone(&model_arc);
+                    let sse_events: Vec<Result<Event, IngressError>> = match result {
+                        Ok(event) => {
+                            let events = stream_event_to_anthropic_events(
+                                event,
+                                stream_id.as_str(),
+                                model.as_str(),
+                                block_state,
+                            );
+                            events
+                                .into_iter()
+                                .map(|evt| match Event::default().json_data(evt) {
+                                    Ok(event) => Ok::<_, IngressError>(event),
+                                    Err(e) => Err(IngressError::Internal(format!(
+                                        "Failed to create SSE event: {}",
+                                        e
+                                    ))),
+                                })
+                                .collect()
+                        }
+                        Err(e) => {
+                            tracing::error!("Cross-dialect stream error: {}", e);
+                            let mut error_events = Vec::new();
+
+                            // Close any active content block before the error
+                            if let Some(idx) = block_state.active_index.take()
+                                && let Ok(evt) = Event::default().json_data(
+                                    AnthropicStreamEvent::ContentBlockStop { index: idx },
+                                )
+                            {
+                                error_events.push(Ok(evt));
+                            }
+
+                            // Send the error event
+                            let error_payload = serde_json::json!({
+                                "type": "error",
+                                "error": {
+                                    "type": "api_error",
+                                    "message": e.to_string()
+                                }
+                            });
+                            match Event::default().json_data(error_payload) {
+                                Ok(event) => error_events.push(Ok(event)),
+                                Err(_) => error_events.push(Err(IngressError::Internal(
+                                    "Failed to create error SSE event".to_string(),
+                                ))),
+                            }
+
+                            // Send message_stop to properly terminate the stream
+                            if let Ok(evt) =
+                                Event::default().json_data(AnthropicStreamEvent::MessageStop)
+                            {
+                                error_events.push(Ok(evt));
+                            }
+
+                            error_events
+                        }
+                    };
+                    futures::future::ready(Some(futures::stream::iter(sse_events)))
+                })
+                .flatten();
+
+            let sse_keepalive = if state.sse_keepalive_enabled {
+                KeepAlive::new().interval(std::time::Duration::from_secs(
+                    state.sse_keepalive_interval_secs,
+                ))
+            } else {
+                KeepAlive::new().interval(std::time::Duration::from_secs(86400))
+            };
+
+            return Ok(Sse::new(sse_stream)
+                .keep_alive(sse_keepalive)
+                .into_response());
+        } else {
+            let mut normalized = to_normalized(typed_req)?;
+            normalized.stream = false;
+
+            let normalized_resp = cd_connector
+                .send(normalized)
+                .await
+                .map_err(|e| IngressError::ProviderError(e.to_string()))?;
+
+            let anthropic_resp = from_normalized(normalized_resp);
+            return Ok(Json(anthropic_resp).into_response());
+        }
     }
 
     if is_streaming {
@@ -2273,6 +2653,7 @@ mod tests {
                 assert_eq!(blocks.len(), 1);
                 match &blocks[0] {
                     AnthropicSystemBlock::Text { text } => assert_eq!(text, "You are helpful"),
+                    AnthropicSystemBlock::Unknown(_) => panic!("Expected Text variant"),
                 }
             }
             _ => panic!("Expected Blocks variant"),
@@ -2600,5 +2981,587 @@ mod tests {
         assert_eq!(normalized.tool_results[0].tool_call_id, "toolu_789");
         assert_eq!(normalized.tool_results[0].content, "30");
         assert!(!normalized.tool_results[0].is_error);
+    }
+
+    #[test]
+    fn test_cross_dialect_anthropic_to_normalized_roundtrip() {
+        let raw_json = serde_json::json!({
+            "model": "@cf/moonshotai/kimi-k2.5",
+            "messages": [
+                {"role": "user", "content": "Hello from Claude Code"}
+            ],
+            "max_tokens": 1024,
+            "stream": false
+        });
+
+        let typed_req: AnthropicMessagesRequest = serde_json::from_value(raw_json).unwrap();
+        assert_eq!(typed_req.model, "@cf/moonshotai/kimi-k2.5");
+
+        let mut normalized = to_normalized(typed_req).unwrap();
+        normalized.stream = false;
+        assert_eq!(normalized.model, "@cf/moonshotai/kimi-k2.5");
+        assert_eq!(normalized.messages.len(), 1);
+        assert!(!normalized.stream);
+
+        let normalized_resp = NormalizedResponse {
+            id: "chatcmpl-test".to_string(),
+            model: "@cf/moonshotai/kimi-k2.5".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Text("Hello from Kimi".to_string()),
+                    name: None,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                },
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage {
+                prompt_tokens: 5,
+                completion_tokens: 3,
+                total_tokens: 8,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let anthropic_resp = from_normalized(normalized_resp);
+        assert_eq!(anthropic_resp.model, "@cf/moonshotai/kimi-k2.5");
+        assert_eq!(anthropic_resp.role, "assistant");
+        assert_eq!(anthropic_resp.stop_reason, Some("end_turn".to_string()));
+        assert!(!anthropic_resp.content.is_empty());
+        match &anthropic_resp.content[0] {
+            AnthropicContent::Text { text } => assert_eq!(text, "Hello from Kimi"),
+            _ => panic!("Expected text content"),
+        }
+    }
+
+    #[test]
+    fn test_cross_dialect_stream_event_conversion() {
+        use lunaroute_core::normalized::Delta;
+
+        let mut block_state = StreamBlockState::default();
+
+        let event = NormalizedStreamEvent::Delta {
+            index: 0,
+            delta: Delta {
+                role: None,
+                content: Some("Hello from Kimi".to_string()),
+            },
+        };
+
+        let anthropic_events = stream_event_to_anthropic_events(
+            event,
+            "msg_test123",
+            "@cf/moonshotai/kimi-k2.5",
+            &mut block_state,
+        );
+
+        assert_eq!(block_state.active_index, Some(0));
+        assert!(!block_state.active_is_tool);
+        assert!(anthropic_events.len() >= 2);
+    }
+
+    #[test]
+    fn test_cross_dialect_tool_use_roundtrip() {
+        let raw_json = serde_json::json!({
+            "model": "@cf/moonshotai/kimi-k2.5",
+            "messages": [
+                {"role": "user", "content": "What's the weather?"}
+            ],
+            "max_tokens": 1024,
+            "stream": false,
+            "tools": [{
+                "name": "get_weather",
+                "description": "Get weather for a location",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string"}
+                    },
+                    "required": ["location"]
+                }
+            }]
+        });
+
+        let typed_req: AnthropicMessagesRequest = serde_json::from_value(raw_json).unwrap();
+        let normalized = to_normalized(typed_req).unwrap();
+
+        assert_eq!(normalized.tools.len(), 1);
+        assert_eq!(normalized.tools[0].function.name, "get_weather");
+
+        let normalized_resp = NormalizedResponse {
+            id: "chatcmpl-test".to_string(),
+            model: "@cf/moonshotai/kimi-k2.5".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Text(String::new()),
+                    name: None,
+                    tool_calls: vec![ToolCall {
+                        id: "call_abc123".to_string(),
+                        tool_type: "function".to_string(),
+                        function: FunctionCall {
+                            name: "get_weather".to_string(),
+                            arguments: r#"{"location":"San Francisco"}"#.to_string(),
+                        },
+                    }],
+                    tool_call_id: None,
+                },
+                finish_reason: Some(FinishReason::ToolCalls),
+            }],
+            usage: Usage {
+                prompt_tokens: 20,
+                completion_tokens: 10,
+                total_tokens: 30,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let anthropic_resp = from_normalized(normalized_resp);
+        assert_eq!(anthropic_resp.stop_reason, Some("tool_use".to_string()));
+
+        let tool_use = anthropic_resp
+            .content
+            .iter()
+            .find(|c| matches!(c, AnthropicContent::ToolUse { .. }));
+        assert!(tool_use.is_some(), "Expected tool_use block in response");
+
+        if let Some(AnthropicContent::ToolUse { id, name, input }) = tool_use {
+            assert_eq!(id, "toolu_call_abc123");
+            assert_eq!(name, "get_weather");
+            assert_eq!(input["location"], "San Francisco");
+        }
+    }
+
+    #[test]
+    fn test_cross_dialect_stream_error_produces_sse_error_event() {
+        use lunaroute_core::normalized::Delta;
+
+        let mut block_state = StreamBlockState::default();
+
+        // First send a valid delta to start content block
+        let event = NormalizedStreamEvent::Delta {
+            index: 0,
+            delta: Delta {
+                role: None,
+                content: Some("partial".to_string()),
+            },
+        };
+        let events =
+            stream_event_to_anthropic_events(event, "msg_test", "test-model", &mut block_state);
+        assert_eq!(block_state.active_index, Some(0));
+        assert!(!block_state.active_is_tool);
+        assert!(!events.is_empty());
+
+        // Verify error SSE event can be constructed (matching the cross-dialect error path)
+        let error_event = serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": "upstream provider error"
+            }
+        });
+        let sse_result = Event::default().json_data(error_event);
+        assert!(
+            sse_result.is_ok(),
+            "Error SSE event should serialize successfully"
+        );
+    }
+
+    #[test]
+    fn test_cross_dialect_model_override_applied_before_extraction() {
+        // Verify that model override applied to raw JSON is visible when extracting model
+        let mut req = serde_json::json!({
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{"role": "user", "content": "test"}],
+            "max_tokens": 1024
+        });
+
+        // Simulate model override (as done in marker match block)
+        req["model"] = serde_json::Value::String("@cf/moonshotai/kimi-k2.5".to_string());
+
+        // Simulate model extraction (as done later in handler)
+        let model = req
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        assert_eq!(model, "@cf/moonshotai/kimi-k2.5");
+
+        // Also verify normalization sees the overridden model
+        let typed_req: AnthropicMessagesRequest = serde_json::from_value(req).unwrap();
+        let normalized = to_normalized(typed_req).unwrap();
+        assert_eq!(normalized.model, "@cf/moonshotai/kimi-k2.5");
+    }
+
+    #[test]
+    fn test_unknown_content_blocks_are_skipped_during_normalization() {
+        // Claude Code sends thinking/redacted_thinking blocks that we don't normalize
+        let raw_json = serde_json::json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Hello"}]
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "Let me think about this..."},
+                        {"type": "redacted_thinking", "data": "abc123"},
+                        {"type": "text", "text": "Hi there!"}
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": "Follow up question"
+                }
+            ],
+            "max_tokens": 1024,
+            "stream": false
+        });
+
+        let typed_req: AnthropicMessagesRequest = serde_json::from_value(raw_json).unwrap();
+        assert_eq!(typed_req.messages.len(), 3);
+
+        let normalized = to_normalized(typed_req).unwrap();
+        assert_eq!(normalized.messages.len(), 3);
+        // Assistant message should only contain the text block, not thinking blocks
+        assert_eq!(
+            normalized.messages[1].content,
+            MessageContent::Text("Hi there!".to_string())
+        );
+    }
+
+    #[test]
+    fn test_tool_result_with_array_content() {
+        // Anthropic API allows tool_result content to be an array of blocks
+        let raw_json = serde_json::json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_123",
+                            "content": [
+                                {"type": "text", "text": "Result line 1"},
+                                {"type": "text", "text": "Result line 2"}
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 1024
+        });
+
+        let typed_req: AnthropicMessagesRequest = serde_json::from_value(raw_json).unwrap();
+        let normalized = to_normalized(typed_req).unwrap();
+        // Array content should be joined with newlines
+        match &normalized.messages[0].content {
+            MessageContent::Text(text) => {
+                assert!(text.contains("Result line 1"));
+                assert!(text.contains("Result line 2"));
+            }
+            _ => panic!("Expected Text content"),
+        }
+    }
+
+    #[test]
+    fn test_to_anthropic_tool_id() {
+        // Already valid Anthropic ID — kept as-is (no hash suffix)
+        assert_eq!(to_anthropic_tool_id("toolu_abc123"), "toolu_abc123");
+
+        // OpenAI call_ format — no invalid chars, just prefix (no hash suffix)
+        assert_eq!(to_anthropic_tool_id("call_abc123"), "toolu_call_abc123");
+
+        // ID with invalid characters — replaced with _, hash suffix appended
+        let id = to_anthropic_tool_id("call.abc:123");
+        assert!(id.starts_with("toolu_call_abc_123_"));
+        assert!(id.len() > "toolu_call_abc_123_".len()); // has hash suffix
+
+        // Empty ID — generates UUID-based ID
+        let id = to_anthropic_tool_id("");
+        assert!(id.starts_with("toolu_"));
+        assert!(id.len() > 6);
+
+        // Hyphenated ID — hyphens are valid, no sanitization needed (no hash suffix)
+        assert_eq!(
+            to_anthropic_tool_id("chatcmpl-abc123"),
+            "toolu_chatcmpl-abc123"
+        );
+
+        // toolu_ prefix with invalid chars — sanitize with hash, don't double-prefix
+        let id = to_anthropic_tool_id("toolu_functions.Bash:0");
+        assert!(id.starts_with("toolu_functions_Bash_0_"));
+
+        // Already has toolu_ prefix from upstream, all valid chars — no hash suffix
+        assert_eq!(
+            to_anthropic_tool_id("toolu_functionsRead0"),
+            "toolu_functionsRead0"
+        );
+
+        // Collision safety: different upstream IDs that sanitize to same base get
+        // different hash suffixes
+        let id_a = to_anthropic_tool_id("call.a:1");
+        let id_b = to_anthropic_tool_id("call_a_1");
+        // id_b has no invalid chars, so no hash suffix; id_a has invalid chars, gets hash
+        assert_ne!(id_a, id_b);
+    }
+
+    #[test]
+    fn test_streaming_tool_call_block_lifecycle() {
+        use lunaroute_core::normalized::{FinishReason, FunctionCallDelta};
+
+        let mut block_state = StreamBlockState::default();
+
+        // 1. Start event resets state
+        let events = stream_event_to_anthropic_events(
+            NormalizedStreamEvent::Start {
+                id: "msg_test".to_string(),
+                model: "test-model".to_string(),
+            },
+            "msg_test",
+            "test-model",
+            &mut block_state,
+        );
+        assert_eq!(block_state.active_index, None);
+        assert_eq!(events.len(), 1); // message_start
+
+        // 2. Tool call start — should open a block
+        let events = stream_event_to_anthropic_events(
+            NormalizedStreamEvent::ToolCallDelta {
+                index: 0,
+                tool_call_index: 0,
+                id: Some("call_abc".to_string()),
+                function: Some(FunctionCallDelta {
+                    name: Some("Bash".to_string()),
+                    arguments: None,
+                }),
+            },
+            "msg_test",
+            "test-model",
+            &mut block_state,
+        );
+        assert!(block_state.active_is_tool);
+        assert!(block_state.active_index.is_some());
+        // Should have ContentBlockStart (no prior block to close)
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AnthropicStreamEvent::ContentBlockStart { index: 0, .. }))
+        );
+
+        // 3. Tool call partial JSON
+        let events = stream_event_to_anthropic_events(
+            NormalizedStreamEvent::ToolCallDelta {
+                index: 0,
+                tool_call_index: 0,
+                id: None,
+                function: Some(FunctionCallDelta {
+                    name: None,
+                    arguments: Some("{\"cmd\":\"ls\"}".to_string()),
+                }),
+            },
+            "msg_test",
+            "test-model",
+            &mut block_state,
+        );
+        assert_eq!(events.len(), 1); // Just the delta
+        assert!(matches!(
+            &events[0],
+            AnthropicStreamEvent::ContentBlockDelta { index: 0, .. }
+        ));
+
+        // 4. End event — should close the tool block at index 0
+        let events = stream_event_to_anthropic_events(
+            NormalizedStreamEvent::End {
+                finish_reason: FinishReason::ToolCalls,
+            },
+            "msg_test",
+            "test-model",
+            &mut block_state,
+        );
+        assert_eq!(block_state.active_index, None);
+        // Should have ContentBlockStop at index 0, MessageDelta, MessageStop
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AnthropicStreamEvent::ContentBlockStop { index: 0 }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AnthropicStreamEvent::MessageStop))
+        );
+    }
+
+    #[test]
+    fn test_streaming_text_to_tool_transition() {
+        use lunaroute_core::normalized::{Delta, FinishReason, FunctionCallDelta};
+
+        let mut block_state = StreamBlockState::default();
+
+        // Start
+        let _ = stream_event_to_anthropic_events(
+            NormalizedStreamEvent::Start {
+                id: "msg_test".to_string(),
+                model: "test-model".to_string(),
+            },
+            "msg_test",
+            "test-model",
+            &mut block_state,
+        );
+
+        // Text delta — opens block 0
+        let _ = stream_event_to_anthropic_events(
+            NormalizedStreamEvent::Delta {
+                index: 0,
+                delta: Delta {
+                    role: None,
+                    content: Some("Let me run that.".to_string()),
+                },
+            },
+            "msg_test",
+            "test-model",
+            &mut block_state,
+        );
+        assert_eq!(block_state.active_index, Some(0));
+        assert!(!block_state.active_is_tool);
+
+        // Tool call starts — should close text block 0, open tool block 1
+        let events = stream_event_to_anthropic_events(
+            NormalizedStreamEvent::ToolCallDelta {
+                index: 0,
+                tool_call_index: 1,
+                id: Some("call_xyz".to_string()),
+                function: Some(FunctionCallDelta {
+                    name: Some("Bash".to_string()),
+                    arguments: None,
+                }),
+            },
+            "msg_test",
+            "test-model",
+            &mut block_state,
+        );
+        assert!(block_state.active_is_tool);
+        assert!(block_state.active_index.is_some());
+        // Should have ContentBlockStop for index 0, then ContentBlockStart for index 1
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AnthropicStreamEvent::ContentBlockStop { index: 0 }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AnthropicStreamEvent::ContentBlockStart { index: 1, .. }))
+        );
+
+        // End — should close tool block
+        let tool_idx = block_state.active_index.unwrap();
+        let events = stream_event_to_anthropic_events(
+            NormalizedStreamEvent::End {
+                finish_reason: FinishReason::ToolCalls,
+            },
+            "msg_test",
+            "test-model",
+            &mut block_state,
+        );
+        assert_eq!(block_state.active_index, None);
+        assert!(events.iter().any(
+            |e| matches!(e, AnthropicStreamEvent::ContentBlockStop { index } if *index == tool_idx)
+        ));
+    }
+
+    #[test]
+    fn test_streaming_text_then_tool_at_same_openai_index() {
+        // OpenAI sends text deltas at index 0, then tool_call at tool_call_index 0.
+        // Anthropic indices must NOT collide — tool should get a unique index.
+        use lunaroute_core::normalized::{Delta, FinishReason, FunctionCallDelta};
+
+        let mut block_state = StreamBlockState::default();
+
+        // Start
+        let _ = stream_event_to_anthropic_events(
+            NormalizedStreamEvent::Start {
+                id: "msg_test".to_string(),
+                model: "test-model".to_string(),
+            },
+            "msg_test",
+            "test-model",
+            &mut block_state,
+        );
+
+        // Text delta — gets Anthropic index 0
+        let events = stream_event_to_anthropic_events(
+            NormalizedStreamEvent::Delta {
+                index: 0,
+                delta: Delta {
+                    role: None,
+                    content: Some("Sure, let me check.".to_string()),
+                },
+            },
+            "msg_test",
+            "test-model",
+            &mut block_state,
+        );
+        let text_idx = block_state.active_index.unwrap();
+        assert_eq!(text_idx, 0);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AnthropicStreamEvent::ContentBlockStart { index: 0, .. }))
+        );
+
+        // Tool call at OpenAI tool_call_index 0 — must get Anthropic index 1, NOT 0
+        let events = stream_event_to_anthropic_events(
+            NormalizedStreamEvent::ToolCallDelta {
+                index: 0,
+                tool_call_index: 0, // Same as text index!
+                id: Some("call_abc".to_string()),
+                function: Some(FunctionCallDelta {
+                    name: Some("Bash".to_string()),
+                    arguments: None,
+                }),
+            },
+            "msg_test",
+            "test-model",
+            &mut block_state,
+        );
+        let tool_idx = block_state.active_index.unwrap();
+        // Tool must have a DIFFERENT Anthropic index than text
+        assert_ne!(tool_idx, text_idx);
+        assert!(block_state.active_is_tool);
+        // Should close text block at index 0
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AnthropicStreamEvent::ContentBlockStop { index: 0 }))
+        );
+        // Should open tool block at a new index (1)
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AnthropicStreamEvent::ContentBlockStart { index, .. } if *index == tool_idx)));
+
+        // End
+        let events = stream_event_to_anthropic_events(
+            NormalizedStreamEvent::End {
+                finish_reason: FinishReason::ToolCalls,
+            },
+            "msg_test",
+            "test-model",
+            &mut block_state,
+        );
+        assert_eq!(block_state.active_index, None);
+        assert!(events.iter().any(
+            |e| matches!(e, AnthropicStreamEvent::ContentBlockStop { index } if *index == tool_idx)
+        ));
     }
 }

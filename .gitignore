@@ -36,3 +36,6 @@ data/
 # Temporary files
 tmp/
 temp/
+
+# private configs
+examples/configs/private/
