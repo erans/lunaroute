@@ -886,6 +886,7 @@ pub async fn messages_passthrough(
     // LUNAROUTE marker detection — check for provider override
     let marker_result = crate::marker::extract_marker(&req);
     let mut override_connector: Option<Arc<lunaroute_egress::anthropic::AnthropicConnector>> = None;
+    let mut cross_dialect_connector: Option<Arc<lunaroute_egress::openai::OpenAIConnector>> = None;
     let mut marker_provider_name: Option<String> = None;
 
     match &marker_result {
@@ -893,17 +894,27 @@ pub async fn messages_passthrough(
             if let Some(registry) = &state.provider_registry {
                 if let Some(entry) = registry.get(name) {
                     if entry.connector_type != crate::ProviderType::Anthropic {
-                        tracing::warn!(
-                            "LUNAROUTE marker '{}' targets {:?} provider but request uses Anthropic format",
-                            name,
-                            entry.connector_type
-                        );
-                        return Err(IngressError::InvalidRequest(format!(
-                            "LUNAROUTE marker targets provider '{}' ({:?}) but request uses Anthropic format. Cross-dialect routing requires normalized mode.",
-                            name, entry.connector_type
-                        )));
-                    }
-                    if let Some(ref connector) = entry.anthropic_connector {
+                        // Cross-dialect: Anthropic request → OpenAI provider
+                        if let Some(ref connector) = entry.openai_connector {
+                            tracing::info!(
+                                "LUNAROUTE marker: cross-dialect routing to OpenAI provider '{}', model_override={:?}",
+                                name,
+                                entry.model_override
+                            );
+                            cross_dialect_connector = Some(connector.clone());
+                            marker_provider_name = Some(name.clone());
+
+                            // Apply model override
+                            if let Some(ref model) = entry.model_override {
+                                req["model"] = serde_json::Value::String(model.clone());
+                            }
+                        } else {
+                            tracing::warn!(
+                                "LUNAROUTE marker '{}' targets OpenAI provider but no OpenAI connector available",
+                                name
+                            );
+                        }
+                    } else if let Some(ref connector) = entry.anthropic_connector {
                         tracing::info!(
                             "LUNAROUTE marker: routing to provider '{}', model_override={:?}",
                             name,
@@ -1093,7 +1104,10 @@ pub async fn messages_passthrough(
                 request_id: request_id_clone,
                 timestamp: chrono::Utc::now(),
                 model_requested: model_clone,
-                provider: "anthropic".to_string(),
+                provider: marker_provider_name
+                    .as_deref()
+                    .unwrap_or("anthropic")
+                    .to_string(),
                 listener: "anthropic".to_string(),
                 is_streaming,
                 metadata: V2Metadata {
@@ -1224,6 +1238,33 @@ pub async fn messages_passthrough(
                 }
             }
         });
+    }
+
+    // Cross-dialect routing: Anthropic request → OpenAI provider via normalization
+    if let Some(ref cd_connector) = cross_dialect_connector {
+        let typed_req: AnthropicMessagesRequest =
+            serde_json::from_value(req.clone()).map_err(|e| {
+                IngressError::InvalidRequest(format!(
+                    "Failed to parse request for cross-dialect routing: {}",
+                    e
+                ))
+            })?;
+
+        if is_streaming {
+            // Streaming cross-dialect handled in Task 2
+            todo!("Streaming cross-dialect not yet implemented");
+        } else {
+            let mut normalized = to_normalized(typed_req)?;
+            normalized.stream = false;
+
+            let normalized_resp = cd_connector
+                .send(normalized)
+                .await
+                .map_err(|e| IngressError::ProviderError(e.to_string()))?;
+
+            let anthropic_resp = from_normalized(normalized_resp);
+            return Ok(Json(anthropic_resp).into_response());
+        }
     }
 
     if is_streaming {
@@ -2600,5 +2641,59 @@ mod tests {
         assert_eq!(normalized.tool_results[0].tool_call_id, "toolu_789");
         assert_eq!(normalized.tool_results[0].content, "30");
         assert!(!normalized.tool_results[0].is_error);
+    }
+
+    #[test]
+    fn test_cross_dialect_anthropic_to_normalized_roundtrip() {
+        let raw_json = serde_json::json!({
+            "model": "@cf/moonshotai/kimi-k2.5",
+            "messages": [
+                {"role": "user", "content": "Hello from Claude Code"}
+            ],
+            "max_tokens": 1024,
+            "stream": false
+        });
+
+        let typed_req: AnthropicMessagesRequest = serde_json::from_value(raw_json).unwrap();
+        assert_eq!(typed_req.model, "@cf/moonshotai/kimi-k2.5");
+
+        let mut normalized = to_normalized(typed_req).unwrap();
+        normalized.stream = false;
+        assert_eq!(normalized.model, "@cf/moonshotai/kimi-k2.5");
+        assert_eq!(normalized.messages.len(), 1);
+        assert!(!normalized.stream);
+
+        let normalized_resp = NormalizedResponse {
+            id: "chatcmpl-test".to_string(),
+            model: "@cf/moonshotai/kimi-k2.5".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Text("Hello from Kimi".to_string()),
+                    name: None,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                },
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage {
+                prompt_tokens: 5,
+                completion_tokens: 3,
+                total_tokens: 8,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let anthropic_resp = from_normalized(normalized_resp);
+        assert_eq!(anthropic_resp.model, "@cf/moonshotai/kimi-k2.5");
+        assert_eq!(anthropic_resp.role, "assistant");
+        assert_eq!(anthropic_resp.stop_reason, Some("end_turn".to_string()));
+        assert!(!anthropic_resp.content.is_empty());
+        match &anthropic_resp.content[0] {
+            AnthropicContent::Text { text } => assert_eq!(text, "Hello from Kimi"),
+            _ => panic!("Expected text content"),
+        }
     }
 }
