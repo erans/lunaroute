@@ -634,7 +634,7 @@ fn to_anthropic_tool_id(id: &str) -> String {
     let base = if sanitized != id {
         let mut hasher = std::hash::DefaultHasher::new();
         id.hash(&mut hasher);
-        format!("{}_{:04x}", sanitized, hasher.finish() & 0xFFFF)
+        format!("{}_{:08x}", sanitized, hasher.finish() as u32)
     } else {
         sanitized
     };
@@ -1468,6 +1468,10 @@ pub async fn messages_passthrough(
     }
 
     // Cross-dialect routing: Anthropic request → OpenAI provider via normalization
+    // TODO: Add response recording for cross-dialect path (request is already recorded above,
+    // but response/tool-call recording is skipped because this returns early before the
+    // passthrough recording flow). Needs ResponseRecorded event emission for non-streaming
+    // and streaming tool-call tracking for streaming mode.
     if let Some(ref cd_connector) = cross_dialect_connector {
         let typed_req: AnthropicMessagesRequest =
             serde_json::from_value(req.clone()).map_err(|e| {
