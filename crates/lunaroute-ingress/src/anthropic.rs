@@ -594,6 +594,31 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
     })
 }
 
+/// Ensure a tool ID is valid for the Anthropic API (`^[a-zA-Z0-9_-]+$`).
+/// Converts OpenAI-format IDs (e.g. `call_xxx`) to Anthropic-format (`toolu_call_xxx`)
+/// and strips any characters outside the allowed set.
+fn to_anthropic_tool_id(id: &str) -> String {
+    // Already valid Anthropic ID
+    if id.starts_with("toolu_")
+        && !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return id.to_string();
+    }
+    // Sanitize: keep only valid chars
+    let sanitized: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .collect();
+    if sanitized.is_empty() {
+        format!("toolu_{}", uuid::Uuid::new_v4().simple())
+    } else {
+        format!("toolu_{}", sanitized)
+    }
+}
+
 /// Convert normalized response to Anthropic response
 pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
     let content: Vec<AnthropicContent> = resp
@@ -647,7 +672,7 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
                 };
 
                 content_blocks.push(AnthropicContent::ToolUse {
-                    id: tool_call.id.clone(),
+                    id: to_anthropic_tool_id(&tool_call.id),
                     name: tool_call.function.name.clone(),
                     input,
                 });
@@ -764,7 +789,7 @@ fn stream_event_to_anthropic_events(
                 events.push(AnthropicStreamEvent::ContentBlockStart {
                     index: tool_call_index,
                     content_block: AnthropicContentBlockStart::ToolUse {
-                        id: tool_id,
+                        id: to_anthropic_tool_id(&tool_id),
                         name: func,
                     },
                 });
@@ -2972,7 +2997,7 @@ mod tests {
         assert!(tool_use.is_some(), "Expected tool_use block in response");
 
         if let Some(AnthropicContent::ToolUse { id, name, input }) = tool_use {
-            assert_eq!(id, "call_abc123");
+            assert_eq!(id, "toolu_call_abc123");
             assert_eq!(name, "get_weather");
             assert_eq!(input["location"], "San Francisco");
         }
@@ -3115,5 +3140,28 @@ mod tests {
             }
             _ => panic!("Expected Text content"),
         }
+    }
+
+    #[test]
+    fn test_to_anthropic_tool_id() {
+        // Already valid Anthropic ID — kept as-is
+        assert_eq!(to_anthropic_tool_id("toolu_abc123"), "toolu_abc123");
+
+        // OpenAI call_ format — gets toolu_ prefix
+        assert_eq!(to_anthropic_tool_id("call_abc123"), "toolu_call_abc123");
+
+        // ID with invalid characters — stripped and prefixed
+        assert_eq!(to_anthropic_tool_id("call.abc:123"), "toolu_callabc123");
+
+        // Empty ID — generates UUID-based ID
+        let id = to_anthropic_tool_id("");
+        assert!(id.starts_with("toolu_"));
+        assert!(id.len() > 6);
+
+        // Hyphenated ID — hyphens are valid
+        assert_eq!(
+            to_anthropic_tool_id("chatcmpl-abc123"),
+            "toolu_chatcmpl-abc123"
+        );
     }
 }
