@@ -1266,7 +1266,16 @@ pub async fn messages_passthrough(
             let stream_id = Arc::new(format!("msg_{}", uuid::Uuid::new_v4().simple()));
             let model_arc = Arc::new(model.clone());
 
-            let sse_stream = event_stream
+            // OpenAI's stream doesn't emit NormalizedStreamEvent::Start, but Anthropic
+            // clients expect a message_start event. Prepend a synthetic Start event.
+            let start_event =
+                futures::stream::once(futures::future::ready(Ok(NormalizedStreamEvent::Start {
+                    id: stream_id.as_str().to_string(),
+                    model: model_arc.as_str().to_string(),
+                })));
+            let full_stream = start_event.chain(event_stream);
+
+            let sse_stream = full_stream
                 .scan(false, move |content_block_started, result| {
                     let stream_id = Arc::clone(&stream_id);
                     let model = Arc::clone(&model_arc);
@@ -1310,14 +1319,16 @@ pub async fn messages_passthrough(
                 })
                 .flatten();
 
+            let sse_keepalive = if state.sse_keepalive_enabled {
+                KeepAlive::new().interval(std::time::Duration::from_secs(
+                    state.sse_keepalive_interval_secs,
+                ))
+            } else {
+                KeepAlive::new().interval(std::time::Duration::from_secs(86400))
+            };
+
             return Ok(Sse::new(sse_stream)
-                .keep_alive(
-                    KeepAlive::new()
-                        .interval(std::time::Duration::from_secs(
-                            state.sse_keepalive_interval_secs,
-                        ))
-                        .text(""),
-                )
+                .keep_alive(sse_keepalive)
                 .into_response());
         } else {
             let mut normalized = to_normalized(typed_req)?;
