@@ -516,6 +516,11 @@ impl ServerConfig {
         let path = path.as_ref();
         let contents = std::fs::read_to_string(path)?;
 
+        // Expand environment variables (${VAR}) and tilde (~) in the raw config
+        let contents = shellexpand::full(&contents)
+            .map_err(|e| format!("Failed to expand environment variables in config: {}", e))?
+            .to_string();
+
         let mut config: ServerConfig = if path.extension().and_then(|s| s.to_str()) == Some("toml")
         {
             toml::from_str(&contents)?
