@@ -83,7 +83,7 @@ impl<'de> serde::Deserialize<'de> for AnthropicSystemBlock {
                 let text = value
                     .get("text")
                     .and_then(|t| t.as_str())
-                    .unwrap_or("")
+                    .ok_or_else(|| serde::de::Error::missing_field("text"))?
                     .to_string();
                 Ok(Self::Text { text })
             }
@@ -170,7 +170,7 @@ impl<'de> serde::Deserialize<'de> for AnthropicContentBlock {
                 let text = value
                     .get("text")
                     .and_then(|t| t.as_str())
-                    .unwrap_or("")
+                    .ok_or_else(|| serde::de::Error::missing_field("text"))?
                     .to_string();
                 Ok(Self::Text { text })
             }
@@ -178,12 +178,12 @@ impl<'de> serde::Deserialize<'de> for AnthropicContentBlock {
                 let id = value
                     .get("id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
+                    .ok_or_else(|| serde::de::Error::missing_field("id"))?
                     .to_string();
                 let name = value
                     .get("name")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
+                    .ok_or_else(|| serde::de::Error::missing_field("name"))?
                     .to_string();
                 let input = value
                     .get("input")
@@ -195,7 +195,7 @@ impl<'de> serde::Deserialize<'de> for AnthropicContentBlock {
                 let tool_use_id = value
                     .get("tool_use_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
+                    .ok_or_else(|| serde::de::Error::missing_field("tool_use_id"))?
                     .to_string();
                 // Content can be either a string or an array of content blocks
                 let content = match value.get("content") {
