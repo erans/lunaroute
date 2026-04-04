@@ -104,7 +104,8 @@ static INLINE_STRIP_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[LUNAROUTE:[a-zA-Z0-9._-]+\]").unwrap());
 
 /// Remove [LUNAROUTE:xxx] marker text from the request body.
-/// Operates on the LAST user message only (matching extract_marker's scope).
+/// Uses the same message selection logic as extract_marker: walks backward
+/// from the end, skipping tool-result-only user messages.
 /// - Standalone content block (entire text is system-reminder with marker): remove block.
 /// - Inline in a larger text block: regex-replace the marker text.
 /// - String content: regex-replace within the string.
@@ -115,12 +116,21 @@ pub fn strip_marker(req: &mut serde_json::Value) {
         return;
     };
 
-    // Find the index of the last user message
-    let last_user_idx = messages
-        .iter()
-        .rposition(|msg| msg.get("role").and_then(|r| r.as_str()) == Some("user"));
+    // Find the target user message using the same logic as extract_marker:
+    // walk backwards, skipping tool-result-only user messages.
+    let mut target_idx = None;
+    for (i, msg) in messages.iter().enumerate().rev() {
+        if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        if is_tool_result_only(msg) {
+            continue;
+        }
+        target_idx = Some(i);
+        break;
+    }
 
-    let Some(idx) = last_user_idx else { return };
+    let Some(idx) = target_idx else { return };
     let msg = &mut messages[idx];
 
     // Handle array content
@@ -563,5 +573,51 @@ mod tests {
         });
         // New text message without marker — should NOT inherit kimik25
         assert_eq!(extract_marker(&req), MarkerResult::None);
+    }
+
+    #[test]
+    fn test_strip_marker_skips_tool_result_messages() {
+        // strip_marker should target the same message as extract_marker:
+        // skip trailing tool-result-only user messages.
+        let mut req = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "<system-reminder>\n[LUNAROUTE:kimik25]\n</system-reminder>"},
+                        {"type": "text", "text": "list files"}
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]
+                }
+            ]
+        });
+
+        // Extract should find the marker in the first user message
+        assert_eq!(
+            extract_marker(&req),
+            MarkerResult::Provider("kimik25".to_string())
+        );
+
+        // Strip should also target the first user message (not the tool_result message)
+        strip_marker(&mut req);
+
+        // Marker should be gone from the first user message
+        assert_eq!(extract_marker(&req), MarkerResult::None);
+
+        // First user message should still have text content
+        let content = req["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["text"], "list files");
+
+        // Tool result message should be untouched
+        let tool_msg = &req["messages"][2]["content"];
+        assert!(tool_msg.as_array().unwrap()[0].get("tool_use_id").is_some());
     }
 }
