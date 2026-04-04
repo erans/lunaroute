@@ -609,23 +609,19 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
 /// Ensure a tool ID is valid for the Anthropic API (`^[a-zA-Z0-9_-]+$`).
 /// Converts OpenAI-format IDs (e.g. `call_xxx`) to Anthropic-format (`toolu_call_xxx`)
 /// and strips any characters outside the allowed set.
+/// Avoids double-prefixing IDs that already start with `toolu_`.
 fn to_anthropic_tool_id(id: &str) -> String {
-    // Already valid Anthropic ID
-    if id.starts_with("toolu_")
-        && !id.is_empty()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return id.to_string();
-    }
-    // Sanitize: keep only valid chars
+    // Sanitize first: keep only valid chars
     let sanitized: String = id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
         .collect();
     if sanitized.is_empty() {
-        format!("toolu_{}", uuid::Uuid::new_v4().simple())
+        return format!("toolu_{}", uuid::Uuid::new_v4().simple());
+    }
+    // If sanitized ID already has toolu_ prefix, keep it as-is
+    if sanitized.starts_with("toolu_") {
+        sanitized
     } else {
         format!("toolu_{}", sanitized)
     }
@@ -837,12 +833,19 @@ fn stream_event_to_anthropic_events(
                 *active_block = Some(ActiveBlock::Tool(tool_call_index));
             }
 
-            // Send partial JSON if available
+            // Send partial JSON only if the matching tool block is active
             if let Some(func) = function.and_then(|f| f.arguments) {
-                events.push(AnthropicStreamEvent::ContentBlockDelta {
-                    index: tool_call_index,
-                    delta: AnthropicContentDelta::InputJsonDelta { partial_json: func },
-                });
+                if *active_block == Some(ActiveBlock::Tool(tool_call_index)) {
+                    events.push(AnthropicStreamEvent::ContentBlockDelta {
+                        index: tool_call_index,
+                        delta: AnthropicContentDelta::InputJsonDelta { partial_json: func },
+                    });
+                } else {
+                    tracing::debug!(
+                        "Dropping tool argument delta for block {} — no matching active tool block",
+                        tool_call_index
+                    );
+                }
             }
 
             events
@@ -3202,6 +3205,18 @@ mod tests {
         assert_eq!(
             to_anthropic_tool_id("chatcmpl-abc123"),
             "toolu_chatcmpl-abc123"
+        );
+
+        // toolu_ prefix with invalid chars — sanitize but don't double-prefix
+        assert_eq!(
+            to_anthropic_tool_id("toolu_functions.Bash:0"),
+            "toolu_functionsBash0"
+        );
+
+        // Already has toolu_ prefix from upstream — don't double-prefix
+        assert_eq!(
+            to_anthropic_tool_id("toolu_functionsRead0"),
+            "toolu_functionsRead0"
         );
     }
 
