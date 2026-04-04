@@ -608,11 +608,14 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
 
 /// Ensure a tool ID is valid for the Anthropic API (`^[a-zA-Z0-9_-]+$`).
 /// Converts OpenAI-format IDs (e.g. `call_xxx`) to Anthropic-format (`toolu_call_xxx`)
-/// and replaces invalid characters with `_` to preserve position information and
-/// avoid collisions between distinct upstream IDs.
+/// and replaces invalid characters with `_` to preserve position information.
+/// When sanitization alters the ID, appends a 4-char hash of the original to
+/// prevent collisions between distinct upstream IDs that sanitize to the same form.
 /// Avoids double-prefixing IDs that already start with `toolu_`.
 fn to_anthropic_tool_id(id: &str) -> String {
-    // Replace invalid chars with underscore (preserves structure, reduces collision risk)
+    use std::hash::{Hash, Hasher};
+
+    // Replace invalid chars with underscore (preserves structure)
     let sanitized: String = id
         .chars()
         .map(|c| {
@@ -626,11 +629,21 @@ fn to_anthropic_tool_id(id: &str) -> String {
     if sanitized.is_empty() || sanitized.chars().all(|c| c == '_') {
         return format!("toolu_{}", uuid::Uuid::new_v4().simple());
     }
-    // If sanitized ID already has toolu_ prefix, keep it as-is
-    if sanitized.starts_with("toolu_") {
-        sanitized
+
+    // If sanitization changed the ID, append a short hash to prevent collisions
+    let base = if sanitized != id {
+        let mut hasher = std::hash::DefaultHasher::new();
+        id.hash(&mut hasher);
+        format!("{}_{:04x}", sanitized, hasher.finish() & 0xFFFF)
     } else {
-        format!("toolu_{}", sanitized)
+        sanitized
+    };
+
+    // If base already has toolu_ prefix, keep it as-is
+    if base.starts_with("toolu_") {
+        base
+    } else {
+        format!("toolu_{}", base)
     }
 }
 
@@ -818,26 +831,30 @@ fn stream_event_to_anthropic_events(
         } => {
             let mut events = Vec::new();
 
-            // Start tool use block if we have id and name
+            // Start tool use block if we have id and name, and it's not already active
             if let (Some(tool_id), Some(func)) =
                 (id, function.as_ref().and_then(|f| f.name.clone()))
             {
-                // Close previous block if one is active (any type/index transition)
-                if let Some(prev) = *active_block {
-                    let prev_idx = match prev {
-                        ActiveBlock::Text(i) | ActiveBlock::Tool(i) => i,
-                    };
-                    events.push(AnthropicStreamEvent::ContentBlockStop { index: prev_idx });
-                }
+                let want = ActiveBlock::Tool(tool_call_index);
 
-                events.push(AnthropicStreamEvent::ContentBlockStart {
-                    index: tool_call_index,
-                    content_block: AnthropicContentBlockStart::ToolUse {
-                        id: to_anthropic_tool_id(&tool_id),
-                        name: func,
-                    },
-                });
-                *active_block = Some(ActiveBlock::Tool(tool_call_index));
+                if *active_block != Some(want) {
+                    // Close previous block if one is active (any type/index transition)
+                    if let Some(prev) = *active_block {
+                        let prev_idx = match prev {
+                            ActiveBlock::Text(i) | ActiveBlock::Tool(i) => i,
+                        };
+                        events.push(AnthropicStreamEvent::ContentBlockStop { index: prev_idx });
+                    }
+
+                    events.push(AnthropicStreamEvent::ContentBlockStart {
+                        index: tool_call_index,
+                        content_block: AnthropicContentBlockStart::ToolUse {
+                            id: to_anthropic_tool_id(&tool_id),
+                            name: func,
+                        },
+                    });
+                    *active_block = Some(want);
+                }
             }
 
             // Send partial JSON only if the matching tool block is active
@@ -3241,37 +3258,44 @@ mod tests {
 
     #[test]
     fn test_to_anthropic_tool_id() {
-        // Already valid Anthropic ID — kept as-is
+        // Already valid Anthropic ID — kept as-is (no hash suffix)
         assert_eq!(to_anthropic_tool_id("toolu_abc123"), "toolu_abc123");
 
-        // OpenAI call_ format — gets toolu_ prefix
+        // OpenAI call_ format — no invalid chars, just prefix (no hash suffix)
         assert_eq!(to_anthropic_tool_id("call_abc123"), "toolu_call_abc123");
 
-        // ID with invalid characters — replaced with _ and prefixed
-        assert_eq!(to_anthropic_tool_id("call.abc:123"), "toolu_call_abc_123");
+        // ID with invalid characters — replaced with _, hash suffix appended
+        let id = to_anthropic_tool_id("call.abc:123");
+        assert!(id.starts_with("toolu_call_abc_123_"));
+        assert!(id.len() > "toolu_call_abc_123_".len()); // has hash suffix
 
         // Empty ID — generates UUID-based ID
         let id = to_anthropic_tool_id("");
         assert!(id.starts_with("toolu_"));
         assert!(id.len() > 6);
 
-        // Hyphenated ID — hyphens are valid
+        // Hyphenated ID — hyphens are valid, no sanitization needed (no hash suffix)
         assert_eq!(
             to_anthropic_tool_id("chatcmpl-abc123"),
             "toolu_chatcmpl-abc123"
         );
 
-        // toolu_ prefix with invalid chars — sanitize but don't double-prefix
-        assert_eq!(
-            to_anthropic_tool_id("toolu_functions.Bash:0"),
-            "toolu_functions_Bash_0"
-        );
+        // toolu_ prefix with invalid chars — sanitize with hash, don't double-prefix
+        let id = to_anthropic_tool_id("toolu_functions.Bash:0");
+        assert!(id.starts_with("toolu_functions_Bash_0_"));
 
-        // Already has toolu_ prefix from upstream — don't double-prefix
+        // Already has toolu_ prefix from upstream, all valid chars — no hash suffix
         assert_eq!(
             to_anthropic_tool_id("toolu_functionsRead0"),
             "toolu_functionsRead0"
         );
+
+        // Collision safety: different upstream IDs that sanitize to same base get
+        // different hash suffixes
+        let id_a = to_anthropic_tool_id("call.a:1");
+        let id_b = to_anthropic_tool_id("call_a_1");
+        // id_b has no invalid chars, so no hash suffix; id_a has invalid chars, gets hash
+        assert_ne!(id_a, id_b);
     }
 
     #[test]
