@@ -2769,4 +2769,78 @@ mod tests {
         assert!(content_block_started);
         assert!(anthropic_events.len() >= 2);
     }
+
+    #[test]
+    fn test_cross_dialect_tool_use_roundtrip() {
+        let raw_json = serde_json::json!({
+            "model": "@cf/moonshotai/kimi-k2.5",
+            "messages": [
+                {"role": "user", "content": "What's the weather?"}
+            ],
+            "max_tokens": 1024,
+            "stream": false,
+            "tools": [{
+                "name": "get_weather",
+                "description": "Get weather for a location",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string"}
+                    },
+                    "required": ["location"]
+                }
+            }]
+        });
+
+        let typed_req: AnthropicMessagesRequest = serde_json::from_value(raw_json).unwrap();
+        let normalized = to_normalized(typed_req).unwrap();
+
+        assert_eq!(normalized.tools.len(), 1);
+        assert_eq!(normalized.tools[0].function.name, "get_weather");
+
+        let normalized_resp = NormalizedResponse {
+            id: "chatcmpl-test".to_string(),
+            model: "@cf/moonshotai/kimi-k2.5".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Text(String::new()),
+                    name: None,
+                    tool_calls: vec![ToolCall {
+                        id: "call_abc123".to_string(),
+                        tool_type: "function".to_string(),
+                        function: FunctionCall {
+                            name: "get_weather".to_string(),
+                            arguments: r#"{"location":"San Francisco"}"#.to_string(),
+                        },
+                    }],
+                    tool_call_id: None,
+                },
+                finish_reason: Some(FinishReason::ToolCalls),
+            }],
+            usage: Usage {
+                prompt_tokens: 20,
+                completion_tokens: 10,
+                total_tokens: 30,
+            },
+            created: 1234567890,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        let anthropic_resp = from_normalized(normalized_resp);
+        assert_eq!(anthropic_resp.stop_reason, Some("tool_use".to_string()));
+
+        let tool_use = anthropic_resp
+            .content
+            .iter()
+            .find(|c| matches!(c, AnthropicContent::ToolUse { .. }));
+        assert!(tool_use.is_some(), "Expected tool_use block in response");
+
+        if let Some(AnthropicContent::ToolUse { id, name, input }) = tool_use {
+            assert_eq!(id, "call_abc123");
+            assert_eq!(name, "get_weather");
+            assert_eq!(input["location"], "San Francisco");
+        }
+    }
 }
