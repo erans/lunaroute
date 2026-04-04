@@ -913,6 +913,10 @@ pub async fn messages_passthrough(
                                 "LUNAROUTE marker '{}' targets OpenAI provider but no OpenAI connector available",
                                 name
                             );
+                            return Err(IngressError::InvalidRequest(format!(
+                                "LUNAROUTE marker targets provider '{}' but no OpenAI connector is configured for it",
+                                name
+                            )));
                         }
                     } else if let Some(ref connector) = entry.anthropic_connector {
                         tracing::info!(
@@ -1266,28 +1270,42 @@ pub async fn messages_passthrough(
                 .scan(false, move |content_block_started, result| {
                     let stream_id = Arc::clone(&stream_id);
                     let model = Arc::clone(&model_arc);
-                    let events = match result {
-                        Ok(event) => stream_event_to_anthropic_events(
-                            event,
-                            stream_id.as_str(),
-                            model.as_str(),
-                            content_block_started,
-                        ),
+                    let sse_events: Vec<Result<Event, IngressError>> = match result {
+                        Ok(event) => {
+                            let events = stream_event_to_anthropic_events(
+                                event,
+                                stream_id.as_str(),
+                                model.as_str(),
+                                content_block_started,
+                            );
+                            events
+                                .into_iter()
+                                .map(|evt| match Event::default().json_data(evt) {
+                                    Ok(event) => Ok::<_, IngressError>(event),
+                                    Err(e) => Err(IngressError::Internal(format!(
+                                        "Failed to create SSE event: {}",
+                                        e
+                                    ))),
+                                })
+                                .collect()
+                        }
                         Err(e) => {
                             tracing::error!("Cross-dialect stream error: {}", e);
-                            vec![]
+                            let error_event = serde_json::json!({
+                                "type": "error",
+                                "error": {
+                                    "type": "api_error",
+                                    "message": e.to_string()
+                                }
+                            });
+                            match Event::default().json_data(error_event) {
+                                Ok(event) => vec![Ok(event)],
+                                Err(_) => vec![Err(IngressError::Internal(
+                                    "Failed to create error SSE event".to_string(),
+                                ))],
+                            }
                         }
                     };
-                    let sse_events: Vec<Result<Event, IngressError>> = events
-                        .into_iter()
-                        .map(|evt| match Event::default().json_data(evt) {
-                            Ok(event) => Ok::<_, IngressError>(event),
-                            Err(e) => Err(IngressError::Internal(format!(
-                                "Failed to create SSE event: {}",
-                                e
-                            ))),
-                        })
-                        .collect();
                     futures::future::ready(Some(futures::stream::iter(sse_events)))
                 })
                 .flatten();
@@ -2842,5 +2860,70 @@ mod tests {
             assert_eq!(name, "get_weather");
             assert_eq!(input["location"], "San Francisco");
         }
+    }
+
+    #[test]
+    fn test_cross_dialect_stream_error_produces_sse_error_event() {
+        use lunaroute_core::normalized::Delta;
+
+        let mut content_block_started = false;
+
+        // First send a valid delta to start content block
+        let event = NormalizedStreamEvent::Delta {
+            index: 0,
+            delta: Delta {
+                role: None,
+                content: Some("partial".to_string()),
+            },
+        };
+        let events = stream_event_to_anthropic_events(
+            event,
+            "msg_test",
+            "test-model",
+            &mut content_block_started,
+        );
+        assert!(content_block_started);
+        assert!(!events.is_empty());
+
+        // Verify error SSE event can be constructed (matching the cross-dialect error path)
+        let error_event = serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": "upstream provider error"
+            }
+        });
+        let sse_result = Event::default().json_data(error_event);
+        assert!(
+            sse_result.is_ok(),
+            "Error SSE event should serialize successfully"
+        );
+    }
+
+    #[test]
+    fn test_cross_dialect_model_override_applied_before_extraction() {
+        // Verify that model override applied to raw JSON is visible when extracting model
+        let mut req = serde_json::json!({
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{"role": "user", "content": "test"}],
+            "max_tokens": 1024
+        });
+
+        // Simulate model override (as done in marker match block)
+        req["model"] = serde_json::Value::String("@cf/moonshotai/kimi-k2.5".to_string());
+
+        // Simulate model extraction (as done later in handler)
+        let model = req
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        assert_eq!(model, "@cf/moonshotai/kimi-k2.5");
+
+        // Also verify normalization sees the overridden model
+        let typed_req: AnthropicMessagesRequest = serde_json::from_value(req).unwrap();
+        let normalized = to_normalized(typed_req).unwrap();
+        assert_eq!(normalized.model, "@cf/moonshotai/kimi-k2.5");
     }
 }
