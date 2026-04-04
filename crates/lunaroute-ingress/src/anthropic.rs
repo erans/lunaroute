@@ -608,15 +608,22 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
 
 /// Ensure a tool ID is valid for the Anthropic API (`^[a-zA-Z0-9_-]+$`).
 /// Converts OpenAI-format IDs (e.g. `call_xxx`) to Anthropic-format (`toolu_call_xxx`)
-/// and strips any characters outside the allowed set.
+/// and replaces invalid characters with `_` to preserve position information and
+/// avoid collisions between distinct upstream IDs.
 /// Avoids double-prefixing IDs that already start with `toolu_`.
 fn to_anthropic_tool_id(id: &str) -> String {
-    // Sanitize first: keep only valid chars
+    // Replace invalid chars with underscore (preserves structure, reduces collision risk)
     let sanitized: String = id
         .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    if sanitized.is_empty() {
+    if sanitized.is_empty() || sanitized.chars().all(|c| c == '_') {
         return format!("toolu_{}", uuid::Uuid::new_v4().simple());
     }
     // If sanitized ID already has toolu_ prefix, keep it as-is
@@ -965,20 +972,43 @@ pub async fn messages(
                             .collect::<Vec<_>>()
                     }
                     Err(e) => {
+                        let mut error_events = Vec::new();
+
+                        // Close any active content block before the error
+                        if let Some(prev) = active_block.take() {
+                            let idx = match prev {
+                                ActiveBlock::Text(i) | ActiveBlock::Tool(i) => i,
+                            };
+                            if let Ok(evt) = Event::default()
+                                .json_data(AnthropicStreamEvent::ContentBlockStop { index: idx })
+                            {
+                                error_events.push(Ok(evt));
+                            }
+                        }
+
                         // Send error event
-                        let error_event = serde_json::json!({
+                        let error_payload = serde_json::json!({
                             "type": "error",
                             "error": {
                                 "type": "api_error",
                                 "message": e.to_string()
                             }
                         });
-                        match Event::default().json_data(error_event) {
-                            Ok(event) => vec![Ok(event)],
-                            Err(_) => vec![Err(IngressError::Internal(
+                        match Event::default().json_data(error_payload) {
+                            Ok(event) => error_events.push(Ok(event)),
+                            Err(_) => error_events.push(Err(IngressError::Internal(
                                 "Failed to create error SSE event".to_string(),
-                            ))],
+                            ))),
                         }
+
+                        // Send message_stop to properly terminate the stream
+                        if let Ok(evt) =
+                            Event::default().json_data(AnthropicStreamEvent::MessageStop)
+                        {
+                            error_events.push(Ok(evt));
+                        }
+
+                        error_events
                     }
                 };
 
@@ -1476,19 +1506,43 @@ pub async fn messages_passthrough(
                         }
                         Err(e) => {
                             tracing::error!("Cross-dialect stream error: {}", e);
-                            let error_event = serde_json::json!({
+                            let mut error_events = Vec::new();
+
+                            // Close any active content block before the error
+                            if let Some(prev) = active_block.take() {
+                                let idx = match prev {
+                                    ActiveBlock::Text(i) | ActiveBlock::Tool(i) => i,
+                                };
+                                if let Ok(evt) = Event::default().json_data(
+                                    AnthropicStreamEvent::ContentBlockStop { index: idx },
+                                ) {
+                                    error_events.push(Ok(evt));
+                                }
+                            }
+
+                            // Send the error event
+                            let error_payload = serde_json::json!({
                                 "type": "error",
                                 "error": {
                                     "type": "api_error",
                                     "message": e.to_string()
                                 }
                             });
-                            match Event::default().json_data(error_event) {
-                                Ok(event) => vec![Ok(event)],
-                                Err(_) => vec![Err(IngressError::Internal(
+                            match Event::default().json_data(error_payload) {
+                                Ok(event) => error_events.push(Ok(event)),
+                                Err(_) => error_events.push(Err(IngressError::Internal(
                                     "Failed to create error SSE event".to_string(),
-                                ))],
+                                ))),
                             }
+
+                            // Send message_stop to properly terminate the stream
+                            if let Ok(evt) =
+                                Event::default().json_data(AnthropicStreamEvent::MessageStop)
+                            {
+                                error_events.push(Ok(evt));
+                            }
+
+                            error_events
                         }
                     };
                     futures::future::ready(Some(futures::stream::iter(sse_events)))
@@ -3193,8 +3247,8 @@ mod tests {
         // OpenAI call_ format — gets toolu_ prefix
         assert_eq!(to_anthropic_tool_id("call_abc123"), "toolu_call_abc123");
 
-        // ID with invalid characters — stripped and prefixed
-        assert_eq!(to_anthropic_tool_id("call.abc:123"), "toolu_callabc123");
+        // ID with invalid characters — replaced with _ and prefixed
+        assert_eq!(to_anthropic_tool_id("call.abc:123"), "toolu_call_abc_123");
 
         // Empty ID — generates UUID-based ID
         let id = to_anthropic_tool_id("");
@@ -3210,7 +3264,7 @@ mod tests {
         // toolu_ prefix with invalid chars — sanitize but don't double-prefix
         assert_eq!(
             to_anthropic_tool_id("toolu_functions.Bash:0"),
-            "toolu_functionsBash0"
+            "toolu_functions_Bash_0"
         );
 
         // Already has toolu_ prefix from upstream — don't double-prefix
