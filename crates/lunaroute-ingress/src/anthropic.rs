@@ -1251,8 +1251,56 @@ pub async fn messages_passthrough(
             })?;
 
         if is_streaming {
-            // Streaming cross-dialect handled in Task 2
-            todo!("Streaming cross-dialect not yet implemented");
+            let mut normalized = to_normalized(typed_req)?;
+            normalized.stream = true;
+
+            let event_stream = cd_connector
+                .stream(normalized)
+                .await
+                .map_err(|e| IngressError::ProviderError(e.to_string()))?;
+
+            let stream_id = Arc::new(format!("msg_{}", uuid::Uuid::new_v4().simple()));
+            let model_arc = Arc::new(model.clone());
+
+            let sse_stream = event_stream
+                .scan(false, move |content_block_started, result| {
+                    let stream_id = Arc::clone(&stream_id);
+                    let model = Arc::clone(&model_arc);
+                    let events = match result {
+                        Ok(event) => stream_event_to_anthropic_events(
+                            event,
+                            stream_id.as_str(),
+                            model.as_str(),
+                            content_block_started,
+                        ),
+                        Err(e) => {
+                            tracing::error!("Cross-dialect stream error: {}", e);
+                            vec![]
+                        }
+                    };
+                    let sse_events: Vec<Result<Event, IngressError>> = events
+                        .into_iter()
+                        .map(|evt| match Event::default().json_data(evt) {
+                            Ok(event) => Ok::<_, IngressError>(event),
+                            Err(e) => Err(IngressError::Internal(format!(
+                                "Failed to create SSE event: {}",
+                                e
+                            ))),
+                        })
+                        .collect();
+                    futures::future::ready(Some(futures::stream::iter(sse_events)))
+                })
+                .flatten();
+
+            return Ok(Sse::new(sse_stream)
+                .keep_alive(
+                    KeepAlive::new()
+                        .interval(std::time::Duration::from_secs(
+                            state.sse_keepalive_interval_secs,
+                        ))
+                        .text(""),
+                )
+                .into_response());
         } else {
             let mut normalized = to_normalized(typed_req)?;
             normalized.stream = false;
@@ -2695,5 +2743,30 @@ mod tests {
             AnthropicContent::Text { text } => assert_eq!(text, "Hello from Kimi"),
             _ => panic!("Expected text content"),
         }
+    }
+
+    #[test]
+    fn test_cross_dialect_stream_event_conversion() {
+        use lunaroute_core::normalized::Delta;
+
+        let mut content_block_started = false;
+
+        let event = NormalizedStreamEvent::Delta {
+            index: 0,
+            delta: Delta {
+                role: None,
+                content: Some("Hello from Kimi".to_string()),
+            },
+        };
+
+        let anthropic_events = stream_event_to_anthropic_events(
+            event,
+            "msg_test123",
+            "@cf/moonshotai/kimi-k2.5",
+            &mut content_block_started,
+        );
+
+        assert!(content_block_started);
+        assert!(anthropic_events.len() >= 2);
     }
 }
