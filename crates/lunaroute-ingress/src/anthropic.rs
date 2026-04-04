@@ -197,7 +197,7 @@ impl<'de> serde::Deserialize<'de> for AnthropicContentBlock {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| serde::de::Error::missing_field("tool_use_id"))?
                     .to_string();
-                // Content can be either a string or an array of content blocks
+                // Content can be a string, an array of content blocks, or absent (null/missing)
                 let content = match value.get("content") {
                     Some(serde_json::Value::String(s)) => s.clone(),
                     Some(serde_json::Value::Array(arr)) => arr
@@ -211,7 +211,13 @@ impl<'de> serde::Deserialize<'de> for AnthropicContentBlock {
                         })
                         .collect::<Vec<_>>()
                         .join("\n"),
-                    _ => String::new(),
+                    Some(serde_json::Value::Null) | None => String::new(),
+                    Some(other) => {
+                        return Err(serde::de::Error::custom(format!(
+                            "tool_result.content must be a string, array, or null; got {}",
+                            other
+                        )));
+                    }
                 };
                 let is_error = value.get("is_error").and_then(|v| v.as_bool());
                 Ok(Self::ToolResult {
@@ -513,8 +519,14 @@ pub fn to_normalized(req: AnthropicMessagesRequest) -> IngressResult<NormalizedR
                                     tool_name: None, // Will be filled in by SessionRecorder
                                 });
                             }
-                            AnthropicContentBlock::Unknown(_) => {
-                                // Skip unknown block types (thinking, image, etc.)
+                            AnthropicContentBlock::Unknown(ref val) => {
+                                // Skip unknown block types (thinking, redacted_thinking, image, etc.)
+                                tracing::debug!(
+                                    "Skipping unknown content block type during normalization: {}",
+                                    val.get("type")
+                                        .and_then(|t| t.as_str())
+                                        .unwrap_or("unknown")
+                                );
                             }
                         }
                     }
@@ -714,25 +726,33 @@ pub fn from_normalized(resp: NormalizedResponse) -> AnthropicResponse {
     }
 }
 
+/// Tracks the currently active content block in a streaming Anthropic response.
+/// Ensures proper Start→Delta→Stop sequencing and correct transitions between block types.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ActiveBlock {
+    Text(u32),
+    Tool(u32),
+}
+
 /// Convert normalized stream event to Anthropic SSE events
 /// Returns a vector because some normalized events map to multiple Anthropic events
 ///
 /// State Management:
-/// - `active_block_index` tracks the index of the currently open ContentBlock
-/// - `None` means no block is open; `Some(i)` means block `i` needs a Stop event
-/// - This ensures proper event sequencing: Start → Delta → Stop for both text and tool blocks
+/// - `active_block` tracks both the type and index of the currently open ContentBlock
+/// - `None` means no block is open; `Some(ActiveBlock::*)` means that block needs a Stop event
+/// - On type/index changes, the previous block is closed before the new one opens
 /// - State is maintained per-stream via scan() combinator (sequential, no concurrency)
 fn stream_event_to_anthropic_events(
     event: NormalizedStreamEvent,
     stream_id: &str,
     model: &str,
-    active_block_index: &mut Option<u32>,
+    active_block: &mut Option<ActiveBlock>,
 ) -> Vec<AnthropicStreamEvent> {
     use tracing::debug;
     match event {
         NormalizedStreamEvent::Start { .. } => {
             // Reset state for new stream
-            *active_block_index = None;
+            *active_block = None;
             debug!("Anthropic stream started: stream_id={}", stream_id);
 
             // Anthropic starts with message_start event
@@ -753,16 +773,28 @@ fn stream_event_to_anthropic_events(
         }
         NormalizedStreamEvent::Delta { index, delta } => {
             let mut events = Vec::new();
+            let want = ActiveBlock::Text(index);
 
-            // For first delta, send content_block_start
-            if active_block_index.is_none() {
+            // If a different block is active, close it first
+            if let Some(prev) = *active_block
+                && prev != want
+            {
+                let prev_idx = match prev {
+                    ActiveBlock::Text(i) | ActiveBlock::Tool(i) => i,
+                };
+                events.push(AnthropicStreamEvent::ContentBlockStop { index: prev_idx });
+                *active_block = None;
+            }
+
+            // Open text block if not already active
+            if active_block.is_none() {
                 events.push(AnthropicStreamEvent::ContentBlockStart {
                     index,
                     content_block: AnthropicContentBlockStart::Text {
                         text: String::new(),
                     },
                 });
-                *active_block_index = Some(index);
+                *active_block = Some(want);
             }
 
             // Send the text delta
@@ -787,8 +819,11 @@ fn stream_event_to_anthropic_events(
             if let (Some(tool_id), Some(func)) =
                 (id, function.as_ref().and_then(|f| f.name.clone()))
             {
-                // Close previous block if one is active (e.g. text → tool transition)
-                if let Some(prev_idx) = *active_block_index {
+                // Close previous block if one is active (any type/index transition)
+                if let Some(prev) = *active_block {
+                    let prev_idx = match prev {
+                        ActiveBlock::Text(i) | ActiveBlock::Tool(i) => i,
+                    };
                     events.push(AnthropicStreamEvent::ContentBlockStop { index: prev_idx });
                 }
 
@@ -799,7 +834,7 @@ fn stream_event_to_anthropic_events(
                         name: func,
                     },
                 });
-                *active_block_index = Some(tool_call_index);
+                *active_block = Some(ActiveBlock::Tool(tool_call_index));
             }
 
             // Send partial JSON if available
@@ -820,7 +855,10 @@ fn stream_event_to_anthropic_events(
             let mut events = Vec::new();
 
             // Close whichever content block is currently active (text or tool)
-            if let Some(idx) = active_block_index.take() {
+            if let Some(prev) = active_block.take() {
+                let idx = match prev {
+                    ActiveBlock::Text(i) | ActiveBlock::Tool(i) => i,
+                };
                 events.push(AnthropicStreamEvent::ContentBlockStop { index: idx });
                 debug!("Anthropic content block {} closed", idx);
             } else {
@@ -899,7 +937,7 @@ pub async fn messages(
         // Convert normalized events to Anthropic SSE format
         // Use scan to maintain state across stream events
         let sse_stream = stream
-            .scan(None::<u32>, move |active_block_index, result| {
+            .scan(None::<ActiveBlock>, move |active_block, result| {
                 let stream_id = Arc::clone(&stream_id);
                 let model = Arc::clone(&model);
 
@@ -909,7 +947,7 @@ pub async fn messages(
                             event,
                             stream_id.as_str(),
                             model.as_str(),
-                            active_block_index,
+                            active_block,
                         );
 
                         anthropic_events
@@ -1411,7 +1449,7 @@ pub async fn messages_passthrough(
             let full_stream = start_event.chain(event_stream);
 
             let sse_stream = full_stream
-                .scan(None::<u32>, move |active_block_index, result| {
+                .scan(None::<ActiveBlock>, move |active_block, result| {
                     let stream_id = Arc::clone(&stream_id);
                     let model = Arc::clone(&model_arc);
                     let sse_events: Vec<Result<Event, IngressError>> = match result {
@@ -1420,7 +1458,7 @@ pub async fn messages_passthrough(
                                 event,
                                 stream_id.as_str(),
                                 model.as_str(),
-                                active_block_index,
+                                active_block,
                             );
                             events
                                 .into_iter()
@@ -2914,7 +2952,7 @@ mod tests {
     fn test_cross_dialect_stream_event_conversion() {
         use lunaroute_core::normalized::Delta;
 
-        let mut active_block_index: Option<u32> = None;
+        let mut active_block: Option<ActiveBlock> = None;
 
         let event = NormalizedStreamEvent::Delta {
             index: 0,
@@ -2928,10 +2966,10 @@ mod tests {
             event,
             "msg_test123",
             "@cf/moonshotai/kimi-k2.5",
-            &mut active_block_index,
+            &mut active_block,
         );
 
-        assert_eq!(active_block_index, Some(0));
+        assert_eq!(active_block, Some(ActiveBlock::Text(0)));
         assert!(anthropic_events.len() >= 2);
     }
 
@@ -3013,7 +3051,7 @@ mod tests {
     fn test_cross_dialect_stream_error_produces_sse_error_event() {
         use lunaroute_core::normalized::Delta;
 
-        let mut active_block_index: Option<u32> = None;
+        let mut active_block: Option<ActiveBlock> = None;
 
         // First send a valid delta to start content block
         let event = NormalizedStreamEvent::Delta {
@@ -3023,13 +3061,9 @@ mod tests {
                 content: Some("partial".to_string()),
             },
         };
-        let events = stream_event_to_anthropic_events(
-            event,
-            "msg_test",
-            "test-model",
-            &mut active_block_index,
-        );
-        assert_eq!(active_block_index, Some(0));
+        let events =
+            stream_event_to_anthropic_events(event, "msg_test", "test-model", &mut active_block);
+        assert_eq!(active_block, Some(ActiveBlock::Text(0)));
         assert!(!events.is_empty());
 
         // Verify error SSE event can be constructed (matching the cross-dialect error path)
@@ -3175,7 +3209,7 @@ mod tests {
     fn test_streaming_tool_call_block_lifecycle() {
         use lunaroute_core::normalized::{FinishReason, FunctionCallDelta};
 
-        let mut active_block_index: Option<u32> = None;
+        let mut active_block: Option<ActiveBlock> = None;
 
         // 1. Start event resets state
         let events = stream_event_to_anthropic_events(
@@ -3185,9 +3219,9 @@ mod tests {
             },
             "msg_test",
             "test-model",
-            &mut active_block_index,
+            &mut active_block,
         );
-        assert_eq!(active_block_index, None);
+        assert_eq!(active_block, None);
         assert_eq!(events.len(), 1); // message_start
 
         // 2. Tool call start — should open a block
@@ -3203,9 +3237,9 @@ mod tests {
             },
             "msg_test",
             "test-model",
-            &mut active_block_index,
+            &mut active_block,
         );
-        assert_eq!(active_block_index, Some(0));
+        assert_eq!(active_block, Some(ActiveBlock::Tool(0)));
         // Should have ContentBlockStart (no prior block to close)
         assert!(
             events
@@ -3226,7 +3260,7 @@ mod tests {
             },
             "msg_test",
             "test-model",
-            &mut active_block_index,
+            &mut active_block,
         );
         assert_eq!(events.len(), 1); // Just the delta
         assert!(matches!(
@@ -3241,9 +3275,9 @@ mod tests {
             },
             "msg_test",
             "test-model",
-            &mut active_block_index,
+            &mut active_block,
         );
-        assert_eq!(active_block_index, None);
+        assert_eq!(active_block, None);
         // Should have ContentBlockStop at index 0, MessageDelta, MessageStop
         assert!(
             events
@@ -3261,7 +3295,7 @@ mod tests {
     fn test_streaming_text_to_tool_transition() {
         use lunaroute_core::normalized::{Delta, FinishReason, FunctionCallDelta};
 
-        let mut active_block_index: Option<u32> = None;
+        let mut active_block: Option<ActiveBlock> = None;
 
         // Start
         let _ = stream_event_to_anthropic_events(
@@ -3271,7 +3305,7 @@ mod tests {
             },
             "msg_test",
             "test-model",
-            &mut active_block_index,
+            &mut active_block,
         );
 
         // Text delta — opens block 0
@@ -3285,9 +3319,9 @@ mod tests {
             },
             "msg_test",
             "test-model",
-            &mut active_block_index,
+            &mut active_block,
         );
-        assert_eq!(active_block_index, Some(0));
+        assert_eq!(active_block, Some(ActiveBlock::Text(0)));
 
         // Tool call starts — should close text block 0, open tool block 1
         let events = stream_event_to_anthropic_events(
@@ -3302,9 +3336,9 @@ mod tests {
             },
             "msg_test",
             "test-model",
-            &mut active_block_index,
+            &mut active_block,
         );
-        assert_eq!(active_block_index, Some(1));
+        assert_eq!(active_block, Some(ActiveBlock::Tool(1)));
         // Should have ContentBlockStop for index 0, then ContentBlockStart for index 1
         assert!(
             events
@@ -3324,9 +3358,9 @@ mod tests {
             },
             "msg_test",
             "test-model",
-            &mut active_block_index,
+            &mut active_block,
         );
-        assert_eq!(active_block_index, None);
+        assert_eq!(active_block, None);
         assert!(
             events
                 .iter()
