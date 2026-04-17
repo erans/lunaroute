@@ -123,11 +123,11 @@ async fn run_ws_session(
             }
         };
 
-        // Note: `ws_frames_total` tracks application-level activity, so we
-        // count Text frames only after a successful parse (in
-        // `handle_client_text`), plus Binary frames here as `"binary"`.
-        // Ping/Pong/Close are transport-level frames — not counted, since they
-        // aren't useful signals for application dashboards.
+        // Note: `ws_frames_total` tracks application-level activity. Text
+        // frames are counted inside `handle_client_text` (once per inbound
+        // frame, labeled by parse outcome), plus Binary frames here as
+        // `"binary"`. Ping/Pong/Close are transport-level frames — not counted,
+        // since they aren't useful signals for application dashboards.
         match msg {
             Message::Text(text) => {
                 if let Err(e) =
@@ -176,14 +176,16 @@ async fn handle_client_text(
     const ENDPOINT: &str = "responses";
     let event = match parse_client_frame(text) {
         Ok(e) => e,
-        // Invalid frames are not counted under `ws_frames_total` — that
-        // counter tracks successful application-level events. The
-        // corresponding outbound error frame is counted as `type="error"` on
-        // the server direction by `send_error` instead.
         Err(FrameError::MalformedJson(e)) => {
+            if let Some(metrics) = &state.metrics {
+                metrics.record_ws_frame(ENDPOINT, "client", "malformed_json");
+            }
             return send_error(socket, state, "malformed_json", &e.to_string()).await;
         }
         Err(FrameError::MissingField(f)) => {
+            if let Some(metrics) = &state.metrics {
+                metrics.record_ws_frame(ENDPOINT, "client", "invalid_request");
+            }
             return send_error(
                 socket,
                 state,
@@ -193,6 +195,9 @@ async fn handle_client_text(
             .await;
         }
         Err(FrameError::UnsupportedType(t)) => {
+            if let Some(metrics) = &state.metrics {
+                metrics.record_ws_frame(ENDPOINT, "client", "unsupported_event_type");
+            }
             return send_error(
                 socket,
                 state,
@@ -383,5 +388,65 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("unsupported_event_type")
         );
+    }
+
+    // Note: integration tests that exercise the `ws_frames_total`
+    // instrumentation end-to-end would require threading a real `Metrics`
+    // through the test `passthrough_router`, which is out of scope for this
+    // fix. The unit tests below pin the `event_label` precedence that those
+    // instrumentation paths depend on.
+
+    #[test]
+    fn event_label_prefers_json_type_over_sse_event() {
+        let ev = SseEvent {
+            event: "response.output_text.delta".to_string(),
+            data: r#"{"type":"response.completed"}"#.to_string(),
+        };
+        assert_eq!(event_label(&ev), "response.completed");
+    }
+
+    #[test]
+    fn event_label_falls_back_to_sse_event_when_data_not_json() {
+        let ev = SseEvent {
+            event: "response.output_text.delta".to_string(),
+            data: "not-json".to_string(),
+        };
+        assert_eq!(event_label(&ev), "response.output_text.delta");
+    }
+
+    #[test]
+    fn event_label_falls_back_to_sse_event_when_json_has_no_type() {
+        let ev = SseEvent {
+            event: "custom.event".to_string(),
+            data: r#"{"foo":"bar"}"#.to_string(),
+        };
+        assert_eq!(event_label(&ev), "custom.event");
+    }
+
+    #[test]
+    fn event_label_falls_back_to_sse_event_when_json_type_empty() {
+        let ev = SseEvent {
+            event: "custom.event".to_string(),
+            data: r#"{"type":""}"#.to_string(),
+        };
+        assert_eq!(event_label(&ev), "custom.event");
+    }
+
+    #[test]
+    fn event_label_returns_message_when_both_empty() {
+        let ev = SseEvent {
+            event: String::new(),
+            data: String::new(),
+        };
+        assert_eq!(event_label(&ev), "message");
+    }
+
+    #[test]
+    fn event_label_returns_message_when_data_not_json_and_event_empty() {
+        let ev = SseEvent {
+            event: String::new(),
+            data: "not-json".to_string(),
+        };
+        assert_eq!(event_label(&ev), "message");
     }
 }
