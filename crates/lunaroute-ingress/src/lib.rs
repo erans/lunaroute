@@ -14,6 +14,7 @@ pub mod middleware;
 pub mod multi_dialect;
 pub mod openai;
 pub mod provider_registry;
+pub mod responses_ws;
 pub mod streaming_metrics;
 pub mod types;
 
