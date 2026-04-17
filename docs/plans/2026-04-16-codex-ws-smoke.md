@@ -22,7 +22,7 @@ Verify the end-to-end Codex → lunaroute → OpenAI path using the WS transport
 5. Optionally, to watch WS lifecycle logs, run the server in the foreground with debug logging instead of `eval $(lunaroute-server env)`:
 
    ```bash
-   RUST_LOG=lunaroute_ingress=debug lunaroute-server serve
+   LUNAROUTE_LOG_LEVEL=debug lunaroute-server serve
    ```
 
    You should see `WS session started` then `WS session ended` for each request.
