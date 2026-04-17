@@ -15,7 +15,7 @@ use lunaroute_session::SessionEvent;
 use serde_json::json;
 use std::sync::Arc;
 use tokio_tungstenite::tungstenite::Message;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Bind the passthrough router to a random localhost port and return the port.
@@ -67,8 +67,13 @@ async fn ws_connect(
 async fn ws_response_create_streams_events_and_records_session() {
     let mock_server = MockServer::start().await;
 
+    // The mock requires content-type: application/json and stream=true in the upstream
+    // POST, which proves that the WS bridge injects these regardless of what the client
+    // sends (the client deliberately sends stream=false below).
     Mock::given(method("POST"))
         .and(path("/responses"))
+        .and(header("content-type", "application/json"))
+        .and(body_partial_json(serde_json::json!({"stream": true})))
         .respond_with(ResponseTemplate::new(200).set_body_string(upstream_sse_body()))
         .expect(1)
         .mount(&mock_server)
@@ -93,12 +98,14 @@ async fn ws_response_create_streams_events_and_records_session() {
     let url = format!("ws://127.0.0.1:{port}/v1/responses");
     let mut ws = ws_connect(&url).await;
 
-    // Send a response.create frame.
+    // Send a response.create frame with stream=false — the WS bridge must overwrite
+    // this to stream=true before forwarding to the upstream.
     let create = json!({
         "type": "response.create",
         "response": {
             "model": "gpt-5",
-            "input": "hello"
+            "input": "hello",
+            "stream": false
         }
     });
     ws.send(Message::Text(create.to_string().into()))
@@ -279,5 +286,78 @@ async fn ws_sends_error_frame_for_unsupported_event_type() {
         "expected code=unsupported_event_type; got {value}"
     );
 
+    // Unsupported event types must never reach the upstream; the mock server
+    // must have received zero requests.
+    let reqs = mock_server.received_requests().await.unwrap();
+    assert!(
+        reqs.is_empty(),
+        "unsupported event type must not hit upstream; got {} requests",
+        reqs.len()
+    );
+
+    ws.close(None).await.ok();
+}
+
+#[tokio::test]
+async fn ws_works_on_compat_responses_path_and_post_coexists() {
+    // Exercises the /responses compat route (no /v1 prefix).
+    // Pins that the dual-route wiring (GET=WS upgrade, POST=HTTP) is registered
+    // for the compat path.  The POST-coexistence half is omitted because the
+    // mock server returns an SSE body that the non-streaming passthrough handler
+    // cannot parse as JSON; a dedicated HTTP-only test covers POST separately.
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(upstream_sse_body()))
+        .mount(&mock_server)
+        .await;
+
+    let store = Arc::new(InMemorySessionStore::new());
+
+    let config = OpenAIConfig {
+        api_key: "test-api-key".to_string(),
+        base_url: mock_server.uri(),
+        organization: None,
+        client_config: Default::default(),
+        custom_headers: None,
+        request_body_config: None,
+        response_body_config: None,
+        codex_auth: None,
+        switch_notification_message: None,
+    };
+    let connector = Arc::new(OpenAIConnector::new(config).await.unwrap());
+    let port = spawn_passthrough(connector, store).await;
+
+    // WS upgrade to /responses (no /v1 prefix) — pins compat-route wiring.
+    let url = format!("ws://127.0.0.1:{port}/responses");
+    let mut ws = ws_connect(&url).await;
+
+    let create = json!({
+        "type": "response.create",
+        "response": { "model": "gpt-5", "input": "hi" }
+    });
+    ws.send(Message::Text(create.to_string().into()))
+        .await
+        .unwrap();
+
+    let mut got_completed = false;
+    while let Some(frame) = ws.next().await {
+        let msg = frame.unwrap();
+        let text = match msg {
+            Message::Text(t) => t.to_string(),
+            Message::Close(_) => break,
+            _ => continue,
+        };
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        if value.get("type").and_then(|v| v.as_str()) == Some("response.completed") {
+            got_completed = true;
+            break;
+        }
+    }
+    assert!(
+        got_completed,
+        "WS on /responses compat route must drive full pipeline"
+    );
     ws.close(None).await.ok();
 }
