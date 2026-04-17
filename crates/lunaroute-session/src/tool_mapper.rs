@@ -235,22 +235,22 @@ mod tests {
 
     #[test]
     fn test_cleanup_prevents_unbounded_growth() {
-        let mapper = ToolCallMapper::with_ttl(Duration::from_millis(50));
+        // TTL needs to be larger than the time it takes to insert 200 entries
+        // even under slow instrumentation (tarpaulin), otherwise the opportunistic
+        // cleanup at op 100 can evict entries before the first assertion runs.
+        let ttl = Duration::from_secs(1);
+        let mapper = ToolCallMapper::with_ttl(ttl);
 
-        // Add many entries
         for i in 0..200 {
             mapper.record_call(format!("call_{}", i), format!("tool_{}", i));
         }
 
         assert_eq!(mapper.len(), 200);
 
-        // Wait for expiry
-        sleep(Duration::from_millis(100));
+        sleep(ttl + Duration::from_millis(100));
 
-        // Force cleanup
         mapper.force_cleanup();
 
-        // All should be expired and removed
         assert_eq!(mapper.len(), 0);
     }
 }
