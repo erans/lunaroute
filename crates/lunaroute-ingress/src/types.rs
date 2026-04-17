@@ -146,14 +146,23 @@ pub enum IngressError {
     #[error("Provider error: {0}")]
     ProviderError(String),
 
-    /// Provider returned a non-success HTTP response; status code is preserved.
-    #[error("Provider error {status}: {message}")]
-    ProviderErrorResponse { status: u16, message: String },
+    /// Provider returned a non-success HTTP response; status code and body are preserved verbatim.
+    #[error("Provider error {status}")]
+    ProviderErrorResponse {
+        status: u16,
+        body: serde_json::Value,
+    },
 }
 
 impl axum::response::IntoResponse for IngressError {
     fn into_response(self) -> axum::response::Response {
         use axum::http::StatusCode;
+
+        // ProviderErrorResponse forwards the provider's JSON body unchanged.
+        if let IngressError::ProviderErrorResponse { status, body } = self {
+            let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+            return (status_code, axum::Json(body)).into_response();
+        }
 
         let (status, message) = match self {
             IngressError::InvalidRequest(msg) => (StatusCode::BAD_REQUEST, msg),
@@ -171,10 +180,7 @@ impl axum::response::IntoResponse for IngressError {
             IngressError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             IngressError::UnsupportedFeature(msg) => (StatusCode::NOT_IMPLEMENTED, msg),
             IngressError::ProviderError(msg) => (StatusCode::BAD_GATEWAY, msg),
-            IngressError::ProviderErrorResponse { status, message } => (
-                StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
-                message,
-            ),
+            IngressError::ProviderErrorResponse { .. } => unreachable!("handled above"),
         };
 
         let body = serde_json::json!({

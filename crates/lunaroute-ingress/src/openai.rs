@@ -1217,9 +1217,11 @@ pub(crate) async fn responses_sse_stream(
                     message,
                 } => {
                     tracing::debug!("Provider returned error: {} - {}", status_code, message);
+                    let body: serde_json::Value = serde_json::from_str(&message)
+                        .unwrap_or(serde_json::Value::String(message));
                     Err(IngressError::ProviderErrorResponse {
                         status: status_code,
-                        message,
+                        body,
                     })
                 }
                 _ => Err(IngressError::ProviderError(e.to_string())),
@@ -1513,7 +1515,7 @@ pub(crate) async fn responses_sse_stream(
                     data: event.data,
                 })),
                 Err(e) => Some(Ok::<SseEvent, IngressError>(SseEvent {
-                    event: "error".into(),
+                    event: String::new(),
                     data: format!("error: {e}"),
                 })),
             }
@@ -1844,7 +1846,13 @@ async fn responses_passthrough(
         use futures::StreamExt as _;
         let axum_stream = event_stream.map(|result| match result {
             Ok(ev) => {
-                Ok::<_, std::convert::Infallible>(Event::default().data(ev.data).event(ev.event))
+                let base = Event::default().data(ev.data);
+                let axum_ev = if ev.event.is_empty() {
+                    base
+                } else {
+                    base.event(ev.event)
+                };
+                Ok::<_, std::convert::Infallible>(axum_ev)
             }
             Err(e) => {
                 Ok::<_, std::convert::Infallible>(Event::default().data(format!("error: {e}")))
