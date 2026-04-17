@@ -145,6 +145,10 @@ pub enum IngressError {
     /// Provider error
     #[error("Provider error: {0}")]
     ProviderError(String),
+
+    /// Provider returned a non-success HTTP response; status code is preserved.
+    #[error("Provider error {status}: {message}")]
+    ProviderErrorResponse { status: u16, message: String },
 }
 
 impl axum::response::IntoResponse for IngressError {
@@ -167,6 +171,10 @@ impl axum::response::IntoResponse for IngressError {
             IngressError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             IngressError::UnsupportedFeature(msg) => (StatusCode::NOT_IMPLEMENTED, msg),
             IngressError::ProviderError(msg) => (StatusCode::BAD_GATEWAY, msg),
+            IngressError::ProviderErrorResponse { status, message } => (
+                StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                message,
+            ),
         };
 
         let body = serde_json::json!({

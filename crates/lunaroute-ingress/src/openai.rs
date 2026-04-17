@@ -32,6 +32,17 @@ const MAX_TOOL_ARGS_SIZE: usize = 1_000_000;
 /// Maximum number of SSE events to collect for async parsing (prevents OOM on very long streams)
 const MAX_COLLECTED_EVENTS: usize = 10_000;
 
+/// A single SSE event yielded by the shared responses pipeline.
+///
+/// Both the HTTP handler (which re-wraps in `axum::response::sse::Event`)
+/// and the WebSocket handler (which sends the `data` payload as a text frame)
+/// consume this.
+#[derive(Debug, Clone)]
+pub(crate) struct SseEvent {
+    pub event: String,
+    pub data: String,
+}
+
 /// Detect if a tool result content indicates an error using keyword heuristics.
 /// OpenAI doesn't have an explicit is_error field, so we use pattern matching.
 fn detect_tool_error(content: &str) -> bool {
@@ -899,6 +910,619 @@ struct ModelObject {
     owned_by: String,
 }
 
+/// Drive the upstream `/responses` streaming pipeline and return a stream of
+/// SSE events. Shared by HTTP `responses_passthrough` and the WebSocket
+/// handler in `crate::responses_ws`.
+///
+/// Performs: header filtering, LUNAROUTE marker detection, session recording
+/// (Started / RequestRecorded / StatsUpdated / ToolCallRecorded / Completed),
+/// upstream call via `OpenAIConnector::stream_passthrough_to_endpoint_bytes`,
+/// SSE parsing, and metric extraction. Identical side effects to the original
+/// streaming branch — just no axum wrapping.
+pub(crate) async fn responses_sse_stream(
+    state: Arc<OpenAIPassthroughState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<futures::stream::BoxStream<'static, Result<SseEvent, IngressError>>, IngressError> {
+    let start_time = std::time::Instant::now();
+
+    // Extract user-agent from headers for session tracking
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            if s.len() > 255 {
+                s.chars().take(255).collect()
+            } else {
+                s.to_string()
+            }
+        });
+
+    // Pass through only standard OpenAI API headers
+    let mut passthrough_headers = std::collections::HashMap::new();
+    let allowed_headers = [
+        "authorization",
+        "content-type",
+        "accept",
+        "user-agent",
+        "openai-beta",
+        "openai-organization",
+        "x-request-id",
+    ];
+
+    // Extract session_id header for session grouping (before filtering)
+    let client_session_id = headers
+        .get("session_id")
+        .or_else(|| headers.get("session-id"))
+        .or_else(|| headers.get("x-session-id"))
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    for (name, value) in headers.iter() {
+        let name_str = name.as_str().to_lowercase();
+        if !allowed_headers.contains(&name_str.as_str()) {
+            continue;
+        }
+        if let Ok(value_str) = value.to_str() {
+            passthrough_headers.insert(name.as_str().to_lowercase(), value_str.to_string());
+        }
+    }
+
+    // Parse body to extract metadata for session recording
+    let (model, req_json) = if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
+        let model = parsed
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        (model, Some(parsed))
+    } else {
+        ("unknown".to_string(), None)
+    };
+
+    let before_provider = std::time::Instant::now();
+    let pre_provider_overhead = before_provider.duration_since(start_time);
+
+    // Use client-provided session ID if available, otherwise generate new one
+    let recording_session_id = if state.session_store.is_some() {
+        Some(client_session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+    } else {
+        None
+    };
+
+    let recording_request_id = if state.session_store.is_some() {
+        Some(uuid::Uuid::new_v4().to_string())
+    } else {
+        None
+    };
+
+    // Start session recording if enabled (using async events)
+    if let (Some(session_store), Some(session_id), Some(request_id), Some(req)) = (
+        &state.session_store,
+        &recording_session_id,
+        &recording_request_id,
+        &req_json,
+    ) {
+        use lunaroute_session::{SessionEvent, events::SessionMetadata as V2Metadata};
+
+        // Write Started event asynchronously (spawn task for zero latency)
+        let store = session_store.clone();
+        let sid = session_id.clone();
+        let rid = request_id.clone();
+        let m = model.clone();
+        let ua = user_agent.clone();
+        tokio::spawn(async move {
+            let event = serde_json::to_value(SessionEvent::Started {
+                session_id: sid,
+                request_id: rid,
+                timestamp: chrono::Utc::now(),
+                model_requested: m,
+                provider: "openai".to_string(),
+                listener: "openai".to_string(),
+                is_streaming: true,
+                metadata: V2Metadata {
+                    client_ip: None,
+                    user_agent: ua,
+                    api_version: None,
+                    request_headers: Default::default(),
+                    session_tags: vec![],
+                },
+            })
+            .ok();
+            if let Some(ev) = event {
+                let _ = store.write_event(None, ev).await;
+            }
+        });
+
+        // Record RequestRecorded event asynchronously
+        use lunaroute_session::events::RequestStats;
+
+        // Extract request text from messages or prompt (best effort)
+        let request_text = req
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .and_then(|msgs| msgs.last())
+            .and_then(|msg| msg.get("content"))
+            .and_then(|c| c.as_str())
+            .or_else(|| req.get("prompt").and_then(|p| p.as_str()))
+            .unwrap_or("")
+            .to_string();
+
+        let message_count = req
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+
+        let has_system_prompt = req
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .and_then(|msgs| msgs.first())
+            .and_then(|msg| msg.get("role").and_then(|r| r.as_str()))
+            .map(|role| role == "system")
+            .unwrap_or(false);
+
+        let has_tools = req.get("tools").is_some();
+        let tool_count = req
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+
+        let store_clone = session_store.clone();
+        let session_id_clone = session_id.clone();
+        let request_id_clone = request_id.clone();
+        let req_size = body.len();
+        let req_clone = req.clone();
+        let tool_call_mapper_clone = state.tool_call_mapper.clone();
+        tokio::spawn(async move {
+            let event = SessionEvent::RequestRecorded {
+                session_id: session_id_clone.clone(),
+                request_id: request_id_clone.clone(),
+                timestamp: chrono::Utc::now(),
+                request_text,
+                request_json: req_clone.clone(),
+                estimated_tokens: 0,
+                stats: RequestStats {
+                    pre_processing_ms: pre_provider_overhead.as_secs_f64() * 1000.0,
+                    request_size_bytes: req_size,
+                    message_count,
+                    has_system_prompt,
+                    has_tools,
+                    tool_count,
+                },
+            };
+            if let Ok(json) = serde_json::to_value(event) {
+                let _ = store_clone.write_event(None, json).await;
+            }
+
+            // Extract and record tool results from request body
+            let input_array = req_clone.get("input").or_else(|| req_clone.get("messages"));
+
+            if let Some(messages) = input_array.and_then(|m| m.as_array()) {
+                for message in messages {
+                    let mut tool_call_id: Option<&str> = None;
+                    let mut output_content: Option<&str> = None;
+                    let mut exit_code: Option<i64> = None;
+
+                    if let Some(msg_type) = message.get("type").and_then(|t| t.as_str())
+                        && msg_type == "function_call_output"
+                    {
+                        tool_call_id = message.get("call_id").and_then(|id| id.as_str());
+                        output_content = message.get("output").and_then(|o| o.as_str());
+
+                        if let Some(output) = output_content
+                            && output.starts_with("Exit code: ")
+                            && let Some(code_str) = output
+                                .lines()
+                                .next()
+                                .and_then(|line| line.strip_prefix("Exit code: "))
+                        {
+                            exit_code = code_str.trim().parse::<i64>().ok();
+                        }
+                    }
+
+                    if tool_call_id.is_none()
+                        && let Some(role) = message.get("role").and_then(|r| r.as_str())
+                        && role == "tool"
+                    {
+                        tool_call_id = message.get("tool_call_id").and_then(|id| id.as_str());
+                        output_content = message.get("content").and_then(|c| c.as_str());
+                        exit_code = message.get("exit_code").and_then(|e| e.as_i64());
+                    }
+
+                    if let Some(call_id) = tool_call_id {
+                        let success = exit_code.map(|code| code == 0);
+
+                        let tool_name = tool_call_mapper_clone
+                            .lookup(call_id)
+                            .unwrap_or_else(|| "unknown".to_string());
+
+                        let output_size = output_content.map(|c| c.len()).unwrap_or(0);
+                        let tool_result_event = SessionEvent::ToolCallRecorded {
+                            session_id: session_id_clone.clone(),
+                            request_id: request_id_clone.clone(),
+                            timestamp: chrono::Utc::now(),
+                            tool_name,
+                            tool_call_id: call_id.to_string(),
+                            execution_time_ms: None,
+                            input_size_bytes: 0,
+                            output_size_bytes: Some(output_size),
+                            success,
+                            tool_arguments: None,
+                        };
+
+                        if let Ok(json) = serde_json::to_value(tool_result_event) {
+                            let _ = store_clone.write_event(None, json).await;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Handle streaming passthrough for responses endpoint - pass raw bytes
+    let stream_response = match state
+        .connector
+        .stream_passthrough_to_endpoint_bytes("responses", body, passthrough_headers)
+        .await
+    {
+        Ok(response) => response,
+        Err(e) => {
+            // Record error in session if recording is enabled
+            if let (Some(session_store), Some(session_id), Some(request_id)) = (
+                &state.session_store,
+                &recording_session_id,
+                &recording_request_id,
+            ) {
+                use lunaroute_session::{SessionEvent, events::FinalSessionStats};
+
+                // Record error asynchronously
+                let store_clone = session_store.clone();
+                let session_id_clone = session_id.clone();
+                let request_id_clone = request_id.clone();
+                let error_msg = e.to_string();
+                let start_clone = start_time;
+                tokio::spawn(async move {
+                    let duration = start_clone.elapsed();
+                    let event = SessionEvent::Completed {
+                        session_id: session_id_clone.clone(),
+                        request_id: request_id_clone,
+                        timestamp: chrono::Utc::now(),
+                        success: false,
+                        error: Some(error_msg),
+                        finish_reason: Some("error".to_string()),
+                        final_stats: Box::new(FinalSessionStats {
+                            total_duration_ms: duration.as_millis() as u64,
+                            provider_time_ms: 0,
+                            proxy_overhead_ms: duration.as_millis() as f64,
+                            total_tokens: Default::default(),
+                            tool_summary: Default::default(),
+                            performance: Default::default(),
+                            streaming_stats: None,
+                            estimated_cost: None,
+                        }),
+                    };
+                    if let Ok(json) = serde_json::to_value(event) {
+                        let _ = store_clone.write_event(None, json).await;
+                    }
+                });
+            }
+
+            // Handle provider errors by returning proper status codes
+            use lunaroute_egress::EgressError;
+            return match e {
+                EgressError::ProviderError {
+                    status_code,
+                    message,
+                } => {
+                    tracing::debug!("Provider returned error: {} - {}", status_code, message);
+                    Err(IngressError::ProviderErrorResponse {
+                        status: status_code,
+                        message,
+                    })
+                }
+                _ => Err(IngressError::ProviderError(e.to_string())),
+            };
+        }
+    };
+
+    use futures::StreamExt;
+    let byte_stream = stream_response.bytes_stream();
+    let sse_stream = eventsource_stream::EventStream::new(byte_stream);
+
+    // Track token data and model from streaming events
+    use std::sync::{Arc as StdArc, Mutex};
+
+    #[derive(Default, Clone)]
+    struct StreamingStats {
+        prompt_tokens: u64,
+        completion_tokens: u64,
+        total_tokens: u64,
+        model_used: Option<String>,
+        finish_reason: Option<String>,
+        response_size_bytes: usize,
+        stats_emitted: bool,
+        // Tool call tracking for Responses API
+        tool_calls: std::collections::HashMap<String, (String, String)>, // id -> (name, arguments)
+    }
+
+    let stats = StdArc::new(Mutex::new(StreamingStats {
+        model_used: Some(model.clone()),
+        ..Default::default()
+    }));
+    let stats_clone = stats.clone();
+
+    // Clone session recording info for use in stream
+    let session_store_clone = state.session_store.clone();
+    let session_id_clone = recording_session_id.clone();
+    let request_id_clone = recording_request_id.clone();
+    let start_time_clone = start_time;
+    let user_agent_clone = user_agent.clone();
+    let tool_call_mapper_clone = state.tool_call_mapper.clone();
+
+    let mapped_stream = sse_stream.filter_map(move |result| {
+        // Clone Arc-wrapped values before async move
+        let stats_for_async = stats_clone.clone();
+        let session_store_for_async = session_store_clone.clone();
+        let session_id_for_async = session_id_clone.clone();
+        let request_id_for_async = request_id_clone.clone();
+        let user_agent_for_async = user_agent_clone.clone();
+        let start_time_for_async = start_time_clone;
+        let tool_call_mapper_for_async = tool_call_mapper_clone.clone();
+
+        async move {
+            match &result {
+                Ok(event) => {
+                    // Try to parse event data as JSON to extract usage stats
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&event.data) {
+                        // Debug log to see event type and structure
+                        if !event.event.is_empty() {
+                            tracing::debug!("SSE event type: {}", event.event);
+                        }
+                        if let Some(response_type) = json.get("type").and_then(|t| t.as_str()) {
+                            tracing::debug!("Response type: {}", response_type);
+                        }
+
+                        let mut stats_guard = stats_for_async.lock().unwrap();
+
+                        // Extract tool calls from Responses API events
+                        if let Some(response_type) = json.get("type").and_then(|t| t.as_str()) {
+                            match response_type {
+                                // When a function_call output item is added, extract call_id and name
+                                "response.output_item.added" => {
+                                    if let Some(item) = json.get("item")
+                                        && let Some("function_call") =
+                                            item.get("type").and_then(|t| t.as_str())
+                                        && let (Some(call_id), Some(name)) = (
+                                            item.get("call_id").and_then(|id| id.as_str()),
+                                            item.get("name").and_then(|n| n.as_str()),
+                                        )
+                                    {
+                                        // Initialize tool call entry with name
+                                        stats_guard.tool_calls.insert(
+                                            call_id.to_string(),
+                                            (name.to_string(), String::new()),
+                                        );
+                                    }
+                                }
+                                // Accumulate function call arguments
+                                "response.function_call_arguments.delta" => {
+                                    if let (Some(call_id), Some(arguments)) = (
+                                        json.get("call_id").and_then(|id| id.as_str()),
+                                        json.get("arguments").and_then(|a| a.as_str()),
+                                    ) && let Some(entry) =
+                                        stats_guard.tool_calls.get_mut(call_id)
+                                    {
+                                        entry.1.push_str(arguments);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // Extract usage data if present (check both top-level and nested in response)
+                        let usage = json
+                            .get("usage")
+                            .or_else(|| json.get("response").and_then(|r| r.get("usage")));
+
+                        if let Some(usage) = usage {
+                            tracing::debug!("Found usage data in SSE event: {:?}", usage);
+                            // Responses API uses "input_tokens" and "output_tokens"
+                            // Chat Completions API uses "prompt_tokens" and "completion_tokens"
+                            stats_guard.prompt_tokens = usage
+                                .get("input_tokens")
+                                .or_else(|| usage.get("prompt_tokens"))
+                                .and_then(|t| t.as_u64())
+                                .unwrap_or(0);
+                            stats_guard.completion_tokens = usage
+                                .get("output_tokens")
+                                .or_else(|| usage.get("completion_tokens"))
+                                .and_then(|t| t.as_u64())
+                                .unwrap_or(0);
+                            stats_guard.total_tokens = usage
+                                .get("total_tokens")
+                                .and_then(|t| t.as_u64())
+                                .unwrap_or(0);
+
+                            // Emit events when we receive usage data (only once)
+                            if !stats_guard.stats_emitted
+                                && (stats_guard.prompt_tokens > 0
+                                    || stats_guard.completion_tokens > 0)
+                            {
+                                stats_guard.stats_emitted = true;
+
+                                // Clone data for async task
+                                let session_store_task = session_store_for_async.clone();
+                                let session_id_task = session_id_for_async.clone();
+                                let request_id_task = request_id_for_async.clone();
+                                let start_time_task = start_time_for_async;
+                                let user_agent_task = user_agent_for_async.clone();
+                                let prompt_tokens = stats_guard.prompt_tokens;
+                                let completion_tokens = stats_guard.completion_tokens;
+                                let total_tokens = stats_guard.total_tokens;
+                                let model_used = stats_guard.model_used.clone();
+                                let finish_reason = stats_guard.finish_reason.clone();
+                                let response_size = stats_guard.response_size_bytes;
+                                let tool_calls = stats_guard.tool_calls.clone();
+                                let tool_call_mapper = tool_call_mapper_for_async.clone();
+
+                                // Emit events asynchronously
+                                if let (Some(store), Some(sid), Some(rid)) =
+                                    (session_store_task, session_id_task, request_id_task)
+                                {
+                                    tokio::spawn(async move {
+                                        use lunaroute_session::{
+                                            SessionEvent,
+                                            events::{FinalSessionStats, TokenTotals},
+                                        };
+
+                                        // Emit StatsUpdated event
+                                        let token_updates = Some(TokenTotals {
+                                            total_input: prompt_tokens,
+                                            total_output: completion_tokens,
+                                            total_thinking: 0,
+                                            total_reasoning: 0,
+                                            total_cached: 0,
+                                            total_cache_read: 0,
+                                            total_cache_creation: 0,
+                                            total_audio_input: 0,
+                                            total_audio_output: 0,
+                                            grand_total: total_tokens,
+                                            by_model: Default::default(),
+                                        });
+
+                                        let stats_event = SessionEvent::StatsUpdated {
+                                            session_id: sid.clone(),
+                                            request_id: rid.clone(),
+                                            timestamp: chrono::Utc::now(),
+                                            token_updates,
+                                            tool_call_updates: None,
+                                            model_used: model_used.clone(),
+                                            response_size_bytes: response_size,
+                                            content_blocks: 1,
+                                            has_refusal: false,
+                                            user_agent: user_agent_task.clone(),
+                                        };
+
+                                        if let Ok(json) = serde_json::to_value(stats_event) {
+                                            let _ = store.write_event(None, json).await;
+                                        }
+
+                                        // Record and emit tool calls
+                                        for (tool_call_id, (tool_name, tool_arguments)) in
+                                            tool_calls
+                                        {
+                                            // Record to mapper for later lookup
+                                            tool_call_mapper.record_call(
+                                                tool_call_id.clone(),
+                                                tool_name.clone(),
+                                            );
+
+                                            // Emit ToolCallRecorded event
+                                            let input_size = tool_arguments.len();
+                                            let tool_call_event = SessionEvent::ToolCallRecorded {
+                                                session_id: sid.clone(),
+                                                request_id: rid.clone(),
+                                                timestamp: chrono::Utc::now(),
+                                                tool_name,
+                                                tool_call_id,
+                                                execution_time_ms: None,
+                                                input_size_bytes: input_size,
+                                                output_size_bytes: None,
+                                                success: None,
+                                                tool_arguments: Some(tool_arguments),
+                                            };
+
+                                            if let Ok(json) = serde_json::to_value(tool_call_event)
+                                            {
+                                                let _ = store.write_event(None, json).await;
+                                            }
+                                        }
+
+                                        // Emit Completed event
+                                        let duration = start_time_task.elapsed();
+                                        let completed_event = SessionEvent::Completed {
+                                            session_id: sid,
+                                            request_id: rid,
+                                            timestamp: chrono::Utc::now(),
+                                            success: true,
+                                            error: None,
+                                            finish_reason,
+                                            final_stats: Box::new(FinalSessionStats {
+                                                total_duration_ms: duration.as_millis() as u64,
+                                                provider_time_ms: duration.as_millis() as u64,
+                                                proxy_overhead_ms: 0.0,
+                                                total_tokens: TokenTotals {
+                                                    total_input: prompt_tokens,
+                                                    total_output: completion_tokens,
+                                                    total_thinking: 0,
+                                                    total_reasoning: 0,
+                                                    total_cached: 0,
+                                                    total_cache_read: 0,
+                                                    total_cache_creation: 0,
+                                                    total_audio_input: 0,
+                                                    total_audio_output: 0,
+                                                    grand_total: total_tokens,
+                                                    by_model: Default::default(),
+                                                },
+                                                tool_summary: Default::default(),
+                                                performance: Default::default(),
+                                                streaming_stats: None,
+                                                estimated_cost: None,
+                                            }),
+                                        };
+
+                                        if let Ok(json) = serde_json::to_value(completed_event) {
+                                            let _ = store.write_event(None, json).await;
+                                        }
+                                    });
+                                }
+                            }
+                        }
+
+                        // Extract model if present
+                        if let Some(model) = json.get("model").and_then(|m| m.as_str()) {
+                            stats_guard.model_used = Some(model.to_string());
+                        }
+
+                        // Extract finish_reason if present
+                        if let Some(choices) = json.get("choices").and_then(|c| c.as_array())
+                            && let Some(choice) = choices.first()
+                            && let Some(finish_reason) =
+                                choice.get("finish_reason").and_then(|fr| fr.as_str())
+                            && finish_reason != "null"
+                            && !finish_reason.is_empty()
+                        {
+                            stats_guard.finish_reason = Some(finish_reason.to_string());
+                        }
+
+                        // Track response size
+                        stats_guard.response_size_bytes += event.data.len();
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Stream error: {}", e);
+                }
+            }
+
+            // Pass through all events unchanged
+            match result {
+                Ok(event) => Some(Ok::<SseEvent, IngressError>(SseEvent {
+                    event: event.event,
+                    data: event.data,
+                })),
+                Err(e) => Some(Ok::<SseEvent, IngressError>(SseEvent {
+                    event: "error".into(),
+                    data: format!("error: {e}"),
+                })),
+            }
+        }
+    });
+
+    Ok(mapped_stream.boxed())
+}
+
 /// Passthrough handler for /v1/responses endpoint (OpenAI Responses API)
 /// Takes raw bytes, sends directly to OpenAI, returns raw response
 async fn responses_passthrough(
@@ -908,10 +1532,6 @@ async fn responses_passthrough(
 ) -> Result<Response, IngressError> {
     let start_time = std::time::Instant::now();
     tracing::debug!("OpenAI Responses API passthrough mode");
-
-    // Clone SSE config early before state is moved into closures
-    let sse_keepalive_interval = state.sse_keepalive_interval_secs;
-    let sse_keepalive_enabled_flag = state.sse_keepalive_enabled;
 
     // Extract user-agent from headers for session tracking
     // Truncate to 255 chars to prevent database issues with extremely long user agents
@@ -1029,13 +1649,16 @@ async fn responses_passthrough(
         None
     };
 
-    // Start session recording if enabled (using async events)
-    if let (Some(session_store), Some(session_id), Some(request_id), Some(req)) = (
-        &state.session_store,
-        &recording_session_id,
-        &recording_request_id,
-        &req_json,
-    ) {
+    // Start session recording if enabled (using async events).
+    // For streaming, session recording is handled inside responses_sse_stream.
+    if !is_streaming
+        && let (Some(session_store), Some(session_id), Some(request_id), Some(req)) = (
+            &state.session_store,
+            &recording_session_id,
+            &recording_request_id,
+            &req_json,
+        )
+    {
         use lunaroute_session::{SessionEvent, events::SessionMetadata as V2Metadata};
 
         // Write Started event asynchronously (spawn task for zero latency)
@@ -1211,394 +1834,30 @@ async fn responses_passthrough(
     }
 
     if is_streaming {
-        // Handle streaming passthrough for responses endpoint - pass raw bytes
-        let stream_response = match state
-            .connector
-            .stream_passthrough_to_endpoint_bytes("responses", body, passthrough_headers)
-            .await
-        {
-            Ok(response) => response,
-            Err(e) => {
-                // Record error in session if recording is enabled
-                if let (Some(session_store), Some(session_id), Some(request_id)) = (
-                    &state.session_store,
-                    &recording_session_id,
-                    &recording_request_id,
-                ) {
-                    use lunaroute_session::{SessionEvent, events::FinalSessionStats};
+        let sse_keepalive_interval = state.sse_keepalive_interval_secs;
+        let sse_keepalive_enabled_flag = state.sse_keepalive_enabled;
 
-                    // Record error asynchronously
-                    let store_clone = session_store.clone();
-                    let session_id_clone = session_id.clone();
-                    let request_id_clone = request_id.clone();
-                    let error_msg = e.to_string();
-                    let start_clone = start_time;
-                    tokio::spawn(async move {
-                        let duration = start_clone.elapsed();
-                        let event = SessionEvent::Completed {
-                            session_id: session_id_clone.clone(),
-                            request_id: request_id_clone,
-                            timestamp: chrono::Utc::now(),
-                            success: false,
-                            error: Some(error_msg),
-                            finish_reason: Some("error".to_string()),
-                            final_stats: Box::new(FinalSessionStats {
-                                total_duration_ms: duration.as_millis() as u64,
-                                provider_time_ms: 0,
-                                proxy_overhead_ms: duration.as_millis() as f64,
-                                total_tokens: Default::default(),
-                                tool_summary: Default::default(),
-                                performance: Default::default(),
-                                streaming_stats: None,
-                                estimated_cost: None,
-                            }),
-                        };
-                        if let Ok(json) = serde_json::to_value(event) {
-                            let _ = store_clone.write_event(None, json).await;
-                        }
-                    });
-                }
+        let event_stream =
+            responses_sse_stream(state.clone(), headers.clone(), body.clone()).await?;
 
-                // Handle provider errors by returning proper status codes
-                use lunaroute_egress::EgressError;
-                return match e {
-                    EgressError::ProviderError {
-                        status_code,
-                        message,
-                    } => {
-                        tracing::debug!("Provider returned error: {} - {}", status_code, message);
-                        // Parse error body as JSON if possible, otherwise wrap in error object
-                        let error_json = serde_json::from_str::<serde_json::Value>(&message)
-                            .unwrap_or_else(|_| {
-                                serde_json::json!({
-                                    "error": {
-                                        "message": message,
-                                        "type": "provider_error",
-                                        "code": status_code,
-                                    }
-                                })
-                            });
-                        Ok((
-                            axum::http::StatusCode::from_u16(status_code)
-                                .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
-                            Json(error_json),
-                        )
-                            .into_response())
-                    }
-                    _ => Err(IngressError::ProviderError(e.to_string())),
-                };
+        use axum::response::sse::{Event, KeepAlive, Sse};
+        use futures::StreamExt as _;
+        let axum_stream = event_stream.map(|result| match result {
+            Ok(ev) => {
+                Ok::<_, std::convert::Infallible>(Event::default().data(ev.data).event(ev.event))
             }
-        };
-
-        use futures::StreamExt;
-        let byte_stream = stream_response.bytes_stream();
-        let sse_stream = eventsource_stream::EventStream::new(byte_stream);
-
-        // Track token data and model from streaming events
-        use std::sync::{Arc, Mutex};
-
-        #[derive(Default, Clone)]
-        struct StreamingStats {
-            prompt_tokens: u64,
-            completion_tokens: u64,
-            total_tokens: u64,
-            model_used: Option<String>,
-            finish_reason: Option<String>,
-            response_size_bytes: usize,
-            stats_emitted: bool,
-            // Tool call tracking for Responses API
-            tool_calls: std::collections::HashMap<String, (String, String)>, // id -> (name, arguments)
-        }
-
-        let stats = Arc::new(Mutex::new(StreamingStats {
-            model_used: Some(model.clone()),
-            ..Default::default()
-        }));
-        let stats_clone = stats.clone();
-
-        // Clone session recording info for use in stream
-        let session_store_clone = state.session_store.clone();
-        let session_id_clone = recording_session_id.clone();
-        let request_id_clone = recording_request_id.clone();
-        let start_time_clone = start_time;
-        let user_agent_clone = user_agent.clone();
-        let tool_call_mapper_clone = state.tool_call_mapper.clone();
-
-        let mapped_stream = sse_stream.filter_map(move |result| {
-            // Clone Arc-wrapped values before async move
-            let stats_for_async = stats_clone.clone();
-            let session_store_for_async = session_store_clone.clone();
-            let session_id_for_async = session_id_clone.clone();
-            let request_id_for_async = request_id_clone.clone();
-            let user_agent_for_async = user_agent_clone.clone();
-            let start_time_for_async = start_time_clone;
-            let tool_call_mapper_for_async = tool_call_mapper_clone.clone();
-
-            async move {
-                match &result {
-                    Ok(event) => {
-                        // Try to parse event data as JSON to extract usage stats
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&event.data) {
-                            // Debug log to see event type and structure
-                            if !event.event.is_empty() {
-                                tracing::debug!("SSE event type: {}", event.event);
-                            }
-                            if let Some(response_type) = json.get("type").and_then(|t| t.as_str()) {
-                                tracing::debug!("Response type: {}", response_type);
-                            }
-
-                            let mut stats_guard = stats_for_async.lock().unwrap();
-
-                            // Extract tool calls from Responses API events
-                            if let Some(response_type) = json.get("type").and_then(|t| t.as_str()) {
-                                match response_type {
-                                    // When a function_call output item is added, extract call_id and name
-                                    "response.output_item.added" => {
-                                        if let Some(item) = json.get("item")
-                                            && let Some("function_call") =
-                                                item.get("type").and_then(|t| t.as_str())
-                                            && let (Some(call_id), Some(name)) = (
-                                                item.get("call_id").and_then(|id| id.as_str()),
-                                                item.get("name").and_then(|n| n.as_str()),
-                                            )
-                                        {
-                                            // Initialize tool call entry with name
-                                            stats_guard.tool_calls.insert(
-                                                call_id.to_string(),
-                                                (name.to_string(), String::new()),
-                                            );
-                                        }
-                                    }
-                                    // Accumulate function call arguments
-                                    "response.function_call_arguments.delta" => {
-                                        if let (Some(call_id), Some(arguments)) = (
-                                            json.get("call_id").and_then(|id| id.as_str()),
-                                            json.get("arguments").and_then(|a| a.as_str()),
-                                        ) && let Some(entry) =
-                                            stats_guard.tool_calls.get_mut(call_id)
-                                        {
-                                            entry.1.push_str(arguments);
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            // Extract usage data if present (check both top-level and nested in response)
-                            let usage = json
-                                .get("usage")
-                                .or_else(|| json.get("response").and_then(|r| r.get("usage")));
-
-                            if let Some(usage) = usage {
-                                tracing::debug!("Found usage data in SSE event: {:?}", usage);
-                                // Responses API uses "input_tokens" and "output_tokens"
-                                // Chat Completions API uses "prompt_tokens" and "completion_tokens"
-                                stats_guard.prompt_tokens = usage
-                                    .get("input_tokens")
-                                    .or_else(|| usage.get("prompt_tokens"))
-                                    .and_then(|t| t.as_u64())
-                                    .unwrap_or(0);
-                                stats_guard.completion_tokens = usage
-                                    .get("output_tokens")
-                                    .or_else(|| usage.get("completion_tokens"))
-                                    .and_then(|t| t.as_u64())
-                                    .unwrap_or(0);
-                                stats_guard.total_tokens = usage
-                                    .get("total_tokens")
-                                    .and_then(|t| t.as_u64())
-                                    .unwrap_or(0);
-
-                                // Emit events when we receive usage data (only once)
-                                if !stats_guard.stats_emitted
-                                    && (stats_guard.prompt_tokens > 0
-                                        || stats_guard.completion_tokens > 0)
-                                {
-                                    stats_guard.stats_emitted = true;
-
-                                    // Clone data for async task
-                                    let session_store_task = session_store_for_async.clone();
-                                    let session_id_task = session_id_for_async.clone();
-                                    let request_id_task = request_id_for_async.clone();
-                                    let start_time_task = start_time_for_async;
-                                    let user_agent_task = user_agent_for_async.clone();
-                                    let prompt_tokens = stats_guard.prompt_tokens;
-                                    let completion_tokens = stats_guard.completion_tokens;
-                                    let total_tokens = stats_guard.total_tokens;
-                                    let model_used = stats_guard.model_used.clone();
-                                    let finish_reason = stats_guard.finish_reason.clone();
-                                    let response_size = stats_guard.response_size_bytes;
-                                    let tool_calls = stats_guard.tool_calls.clone();
-                                    let tool_call_mapper = tool_call_mapper_for_async.clone();
-
-                                    // Emit events asynchronously
-                                    if let (Some(store), Some(sid), Some(rid)) =
-                                        (session_store_task, session_id_task, request_id_task)
-                                    {
-                                        tokio::spawn(async move {
-                                            use lunaroute_session::{
-                                                SessionEvent,
-                                                events::{FinalSessionStats, TokenTotals},
-                                            };
-
-                                            // Emit StatsUpdated event
-                                            let token_updates = Some(TokenTotals {
-                                                total_input: prompt_tokens,
-                                                total_output: completion_tokens,
-                                                total_thinking: 0,
-                                                total_reasoning: 0,
-                                                total_cached: 0,
-                                                total_cache_read: 0,
-                                                total_cache_creation: 0,
-                                                total_audio_input: 0,
-                                                total_audio_output: 0,
-                                                grand_total: total_tokens,
-                                                by_model: Default::default(),
-                                            });
-
-                                            let stats_event = SessionEvent::StatsUpdated {
-                                                session_id: sid.clone(),
-                                                request_id: rid.clone(),
-                                                timestamp: chrono::Utc::now(),
-                                                token_updates,
-                                                tool_call_updates: None,
-                                                model_used: model_used.clone(),
-                                                response_size_bytes: response_size,
-                                                content_blocks: 1,
-                                                has_refusal: false,
-                                                user_agent: user_agent_task.clone(),
-                                            };
-
-                                            if let Ok(json) = serde_json::to_value(stats_event) {
-                                                let _ = store.write_event(None, json).await;
-                                            }
-
-                                            // Record and emit tool calls
-                                            for (tool_call_id, (tool_name, tool_arguments)) in
-                                                tool_calls
-                                            {
-                                                // Record to mapper for later lookup
-                                                tool_call_mapper.record_call(
-                                                    tool_call_id.clone(),
-                                                    tool_name.clone(),
-                                                );
-
-                                                // Emit ToolCallRecorded event
-                                                let input_size = tool_arguments.len();
-                                                let tool_call_event =
-                                                    SessionEvent::ToolCallRecorded {
-                                                        session_id: sid.clone(),
-                                                        request_id: rid.clone(),
-                                                        timestamp: chrono::Utc::now(),
-                                                        tool_name,
-                                                        tool_call_id,
-                                                        execution_time_ms: None,
-                                                        input_size_bytes: input_size,
-                                                        output_size_bytes: None,
-                                                        success: None,
-                                                        tool_arguments: Some(tool_arguments),
-                                                    };
-
-                                                if let Ok(json) =
-                                                    serde_json::to_value(tool_call_event)
-                                                {
-                                                    let _ = store.write_event(None, json).await;
-                                                }
-                                            }
-
-                                            // Emit Completed event
-                                            let duration = start_time_task.elapsed();
-                                            let completed_event = SessionEvent::Completed {
-                                                session_id: sid,
-                                                request_id: rid,
-                                                timestamp: chrono::Utc::now(),
-                                                success: true,
-                                                error: None,
-                                                finish_reason,
-                                                final_stats: Box::new(FinalSessionStats {
-                                                    total_duration_ms: duration.as_millis() as u64,
-                                                    provider_time_ms: duration.as_millis() as u64,
-                                                    proxy_overhead_ms: 0.0,
-                                                    total_tokens: TokenTotals {
-                                                        total_input: prompt_tokens,
-                                                        total_output: completion_tokens,
-                                                        total_thinking: 0,
-                                                        total_reasoning: 0,
-                                                        total_cached: 0,
-                                                        total_cache_read: 0,
-                                                        total_cache_creation: 0,
-                                                        total_audio_input: 0,
-                                                        total_audio_output: 0,
-                                                        grand_total: total_tokens,
-                                                        by_model: Default::default(),
-                                                    },
-                                                    tool_summary: Default::default(),
-                                                    performance: Default::default(),
-                                                    streaming_stats: None,
-                                                    estimated_cost: None,
-                                                }),
-                                            };
-
-                                            if let Ok(json) = serde_json::to_value(completed_event)
-                                            {
-                                                let _ = store.write_event(None, json).await;
-                                            }
-                                        });
-                                    }
-                                }
-                            }
-
-                            // Extract model if present
-                            if let Some(model) = json.get("model").and_then(|m| m.as_str()) {
-                                stats_guard.model_used = Some(model.to_string());
-                            }
-
-                            // Extract finish_reason if present
-                            if let Some(choices) = json.get("choices").and_then(|c| c.as_array())
-                                && let Some(choice) = choices.first()
-                                && let Some(finish_reason) =
-                                    choice.get("finish_reason").and_then(|fr| fr.as_str())
-                                && finish_reason != "null"
-                                && !finish_reason.is_empty()
-                            {
-                                stats_guard.finish_reason = Some(finish_reason.to_string());
-                            }
-
-                            // Track response size
-                            stats_guard.response_size_bytes += event.data.len();
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Stream error: {}", e);
-                    }
-                }
-
-                // Pass through all events unchanged
-                match result {
-                    Ok(event) => Some(
-                        Ok::<_, eventsource_stream::EventStreamError<std::io::Error>>(
-                            Event::default().data(event.data).event(event.event),
-                        ),
-                    ),
-                    Err(e) => Some(
-                        Ok::<_, eventsource_stream::EventStreamError<std::io::Error>>(
-                            Event::default().data(format!("error: {}", e)),
-                        ),
-                    ),
-                }
+            Err(e) => {
+                Ok::<_, std::convert::Infallible>(Event::default().data(format!("error: {e}")))
             }
         });
 
-        // Create SSE response with configured keepalive
-        let sse_keepalive = if sse_keepalive_enabled_flag {
+        let keepalive = if sse_keepalive_enabled_flag {
             KeepAlive::new().interval(std::time::Duration::from_secs(sse_keepalive_interval))
         } else {
-            // Disable keepalive by setting a very long interval
-            KeepAlive::new().interval(std::time::Duration::from_secs(86400)) // 24 hours
+            KeepAlive::new().interval(std::time::Duration::from_secs(86400))
         };
 
-        Ok(Sse::new(mapped_stream)
-            .keep_alive(sse_keepalive)
-            .into_response())
+        Ok(Sse::new(axum_stream).keep_alive(keepalive).into_response())
     } else {
         // Send directly to OpenAI API (non-streaming) - pass raw bytes
         match state
