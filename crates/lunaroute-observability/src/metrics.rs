@@ -130,6 +130,16 @@ pub struct Metrics {
     /// Pool configuration settings (max_idle_per_host, idle_timeout_secs, etc.)
     /// NOTE: This CAN be populated at startup - instrumentation TODO
     pub pool_config: GaugeVec,
+
+    // WebSocket metrics
+    /// Total WebSocket connections accepted, by endpoint
+    pub ws_connections_opened: CounterVec,
+    /// Total WebSocket connections closed, by endpoint
+    pub ws_connections_closed: CounterVec,
+    /// Duration of WebSocket connections in seconds, by endpoint
+    pub ws_connection_duration_seconds: HistogramVec,
+    /// Total WebSocket frames, by endpoint, direction (client|server), and type
+    pub ws_frames_total: CounterVec,
 }
 
 impl Metrics {
@@ -417,6 +427,37 @@ impl Metrics {
             &["provider", "setting"],
         )?;
 
+        // WebSocket metrics
+        let ws_connections_opened = CounterVec::new(
+            Opts::new(
+                "lunaroute_ws_connections_opened_total",
+                "Total WebSocket connections accepted, by endpoint",
+            ),
+            &["endpoint"],
+        )?;
+        let ws_connections_closed = CounterVec::new(
+            Opts::new(
+                "lunaroute_ws_connections_closed_total",
+                "Total WebSocket connections closed, by endpoint",
+            ),
+            &["endpoint"],
+        )?;
+        let ws_connection_duration_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "lunaroute_ws_connection_duration_seconds",
+                "Duration of WebSocket connections in seconds, by endpoint",
+            )
+            .buckets(vec![1.0, 10.0, 60.0, 300.0, 900.0, 1800.0, 3600.0]),
+            &["endpoint"],
+        )?;
+        let ws_frames_total = CounterVec::new(
+            Opts::new(
+                "lunaroute_ws_frames_total",
+                "Total WebSocket frames, by endpoint, direction (client|server), and type",
+            ),
+            &["endpoint", "direction", "type"],
+        )?;
+
         // Register all metrics
         registry.register(Box::new(requests_total.clone()))?;
         registry.register(Box::new(requests_success.clone()))?;
@@ -451,6 +492,10 @@ impl Metrics {
         registry.register(Box::new(pool_connections_idle.clone()))?;
         registry.register(Box::new(pool_connection_lifetime_seconds.clone()))?;
         registry.register(Box::new(pool_config.clone()))?;
+        registry.register(Box::new(ws_connections_opened.clone()))?;
+        registry.register(Box::new(ws_connections_closed.clone()))?;
+        registry.register(Box::new(ws_connection_duration_seconds.clone()))?;
+        registry.register(Box::new(ws_frames_total.clone()))?;
 
         Ok(Self {
             registry: Arc::new(registry),
@@ -487,6 +532,10 @@ impl Metrics {
             pool_connections_idle,
             pool_connection_lifetime_seconds,
             pool_config,
+            ws_connections_opened,
+            ws_connections_closed,
+            ws_connection_duration_seconds,
+            ws_frames_total,
         })
     }
 
@@ -799,6 +848,30 @@ impl Metrics {
             "tcp_keepalive_secs",
             tcp_keepalive_secs as f64,
         );
+    }
+
+    /// Record a new WebSocket connection opening
+    pub fn record_ws_connection_opened(&self, endpoint: &str) {
+        self.ws_connections_opened
+            .with_label_values(&[endpoint])
+            .inc();
+    }
+
+    /// Record a WebSocket connection closing, with duration observation
+    pub fn record_ws_connection_closed(&self, endpoint: &str, duration_secs: f64) {
+        self.ws_connections_closed
+            .with_label_values(&[endpoint])
+            .inc();
+        self.ws_connection_duration_seconds
+            .with_label_values(&[endpoint])
+            .observe(duration_secs);
+    }
+
+    /// Record a WebSocket frame (by direction and type)
+    pub fn record_ws_frame(&self, endpoint: &str, direction: &str, frame_type: &str) {
+        self.ws_frames_total
+            .with_label_values(&[endpoint, direction, frame_type])
+            .inc();
     }
 }
 

@@ -106,6 +106,12 @@ async fn run_ws_session(
     state: Arc<OpenAIPassthroughState>,
     upgrade_headers: HeaderMap,
 ) {
+    const ENDPOINT: &str = "responses";
+    let started = std::time::Instant::now();
+    if let Some(metrics) = &state.metrics {
+        metrics.record_ws_connection_opened(ENDPOINT);
+    }
+
     tracing::debug!("WS session started");
 
     while let Some(msg) = socket.recv().await {
@@ -119,6 +125,9 @@ async fn run_ws_session(
 
         match msg {
             Message::Text(text) => {
+                if let Some(metrics) = &state.metrics {
+                    metrics.record_ws_frame(ENDPOINT, "client", "text");
+                }
                 if let Err(e) =
                     handle_client_text(&mut socket, &state, &upgrade_headers, text.as_ref()).await
                 {
@@ -145,7 +154,10 @@ async fn run_ws_session(
         }
     }
 
-    tracing::debug!("WS session ended");
+    if let Some(metrics) = &state.metrics {
+        metrics.record_ws_connection_closed(ENDPOINT, started.elapsed().as_secs_f64());
+    }
+    tracing::debug!("WS session ended after {:?}", started.elapsed());
 }
 
 /// Dispatch one client text frame: parse, run the pipeline, forward events.
@@ -201,7 +213,7 @@ async fn handle_client_text(
                 }
             };
 
-            forward_stream(socket, stream).await
+            forward_stream(socket, state, stream).await
         }
     }
 }
@@ -210,11 +222,21 @@ async fn handle_client_text(
 /// event is seen or the stream ends.
 async fn forward_stream(
     socket: &mut WebSocket,
+    state: &Arc<OpenAIPassthroughState>,
     mut stream: futures::stream::BoxStream<'static, Result<SseEvent, crate::IngressError>>,
 ) -> Result<(), axum::Error> {
+    const ENDPOINT: &str = "responses";
     while let Some(result) = stream.next().await {
         match result {
             Ok(ev) => {
+                if let Some(metrics) = &state.metrics {
+                    let ty = if ev.event.is_empty() {
+                        "message"
+                    } else {
+                        ev.event.as_str()
+                    };
+                    metrics.record_ws_frame(ENDPOINT, "server", ty);
+                }
                 // Send just the `data` payload — the event name is already
                 // embedded in the JSON's `type` field per the Responses WS spec.
                 socket.send(Message::Text(ev.data.clone().into())).await?;
