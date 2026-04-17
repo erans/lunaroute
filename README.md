@@ -526,7 +526,7 @@ See `examples/configs/provider-switch-notification.yaml` for complete example.
 ### Supported AI Assistants
 
 - ✅ **Claude Code** - Full passthrough support, zero config
-- ✅ **OpenAI Codex CLI** - Automatic auth.json integration
+- ✅ **OpenAI Codex CLI** - Automatic auth.json integration. Supports both HTTP and WebSocket transports — set `supports_websockets = true` in `~/.codex/config.toml` to use the WS path (lunaroute terminates the WS and drives the HTTP pipeline; session recording, markers, and metrics all work the same).
 - ✅ **OpenCode** - Standard OpenAI/Anthropic API compatibility
 - ✅ **Custom Clients** - Any tool using OpenAI or Anthropic APIs
 

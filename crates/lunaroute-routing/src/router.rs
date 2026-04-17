@@ -261,7 +261,7 @@ impl RouteTable {
     /// Create a route table with the given rules
     pub fn with_rules(mut rules: Vec<RoutingRule>) -> Self {
         // Sort rules by priority (highest first)
-        rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        rules.sort_by_key(|r| std::cmp::Reverse(r.priority));
         Self { rules }
     }
 
@@ -269,7 +269,7 @@ impl RouteTable {
     pub fn add_rule(&mut self, rule: RoutingRule) {
         self.rules.push(rule);
         // Re-sort after adding
-        self.rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        self.rules.sort_by_key(|r| std::cmp::Reverse(r.priority));
     }
 
     /// Find a matching route for the given request and context

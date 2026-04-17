@@ -31,3 +31,4 @@ reqwest = { workspace = true }
 [dev-dependencies]
 dotenv = "0.15"
 tracing-subscriber = { workspace = true }
+tokio-tungstenite = { workspace = true }

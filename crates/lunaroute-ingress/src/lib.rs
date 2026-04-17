@@ -14,12 +14,14 @@ pub mod middleware;
 pub mod multi_dialect;
 pub mod openai;
 pub mod provider_registry;
+pub mod responses_ws;
 pub mod streaming_metrics;
 pub mod types;
 
 pub use bypass::{BypassError, BypassProvider, proxy_request, with_bypass};
 pub use middleware::CorsConfig;
 pub use provider_registry::{ProviderEntry, ProviderRegistry, ProviderType};
+pub use responses_ws::responses_ws_handler;
 pub use types::{
     IngressError, IngressResult, RequestId, RequestMetadata, StreamEvent, TraceContext,
 };

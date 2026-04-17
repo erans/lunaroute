@@ -332,8 +332,10 @@ async fn test_cross_dialect_notification() {
         .await;
 
     // Create OpenAI provider
-    let mut client_config = HttpClientConfig::default();
-    client_config.max_retries = 0; // Disable retries for predictable mock expectations
+    let client_config = HttpClientConfig {
+        max_retries: 0, // Disable retries for predictable mock expectations
+        ..Default::default()
+    };
 
     let openai_config = OpenAIConfig {
         api_key: "test-key".to_string(),
@@ -580,8 +582,10 @@ async fn test_notification_idempotency_cascading_fallbacks() {
         .await;
 
     // Create providers
-    let mut client_config = HttpClientConfig::default();
-    client_config.max_retries = 0; // Disable retries for predictable mock expectations
+    let client_config = HttpClientConfig {
+        max_retries: 0, // Disable retries for predictable mock expectations
+        ..Default::default()
+    };
 
     let primary_config = OpenAIConfig {
         api_key: "test-key".to_string(),
