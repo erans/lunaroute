@@ -144,10 +144,10 @@ mod tests {
     }
 
     #[test]
-    fn test_switch_reason_clone() {
+    fn test_switch_reason_copy() {
         let reason = SwitchReason::RateLimit;
-        let cloned = reason.clone();
-        assert_eq!(reason.to_generic_message(), cloned.to_generic_message());
+        let copied = reason;
+        assert_eq!(reason.to_generic_message(), copied.to_generic_message());
     }
 
     #[test]
