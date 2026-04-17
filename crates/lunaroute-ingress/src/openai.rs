@@ -1217,8 +1217,17 @@ pub(crate) async fn responses_sse_stream(
                     message,
                 } => {
                     tracing::debug!("Provider returned error: {} - {}", status_code, message);
-                    let body: serde_json::Value = serde_json::from_str(&message)
-                        .unwrap_or(serde_json::Value::String(message));
+                    // Parse error body as JSON if possible, otherwise wrap in error object
+                    let body: serde_json::Value =
+                        serde_json::from_str(&message).unwrap_or_else(|_| {
+                            serde_json::json!({
+                                "error": {
+                                    "message": message,
+                                    "type": "provider_error",
+                                    "code": status_code,
+                                }
+                            })
+                        });
                     Err(IngressError::ProviderErrorResponse {
                         status: status_code,
                         body,
