@@ -123,11 +123,13 @@ async fn run_ws_session(
             }
         };
 
+        // Note: `ws_frames_total` tracks application-level activity, so we
+        // count Text frames only after a successful parse (in
+        // `handle_client_text`), plus Binary frames here as `"binary"`.
+        // Ping/Pong/Close are transport-level frames — not counted, since they
+        // aren't useful signals for application dashboards.
         match msg {
             Message::Text(text) => {
-                if let Some(metrics) = &state.metrics {
-                    metrics.record_ws_frame(ENDPOINT, "client", "text");
-                }
                 if let Err(e) =
                     handle_client_text(&mut socket, &state, &upgrade_headers, text.as_ref()).await
                 {
@@ -144,8 +146,12 @@ async fn run_ws_session(
                 // axum handles ping/pong automatically; nothing to do.
             }
             Message::Binary(_) => {
+                if let Some(metrics) = &state.metrics {
+                    metrics.record_ws_frame(ENDPOINT, "client", "binary");
+                }
                 let _ = send_error(
                     &mut socket,
+                    &state,
                     "unsupported_frame_type",
                     "binary frames are not supported",
                 )
@@ -167,17 +173,29 @@ async fn handle_client_text(
     upgrade_headers: &HeaderMap,
     text: &str,
 ) -> Result<(), axum::Error> {
+    const ENDPOINT: &str = "responses";
     let event = match parse_client_frame(text) {
         Ok(e) => e,
+        // Invalid frames are not counted under `ws_frames_total` — that
+        // counter tracks successful application-level events. The
+        // corresponding outbound error frame is counted as `type="error"` on
+        // the server direction by `send_error` instead.
         Err(FrameError::MalformedJson(e)) => {
-            return send_error(socket, "malformed_json", &e.to_string()).await;
+            return send_error(socket, state, "malformed_json", &e.to_string()).await;
         }
         Err(FrameError::MissingField(f)) => {
-            return send_error(socket, "invalid_request", &format!("missing field: {f}")).await;
+            return send_error(
+                socket,
+                state,
+                "invalid_request",
+                &format!("missing field: {f}"),
+            )
+            .await;
         }
         Err(FrameError::UnsupportedType(t)) => {
             return send_error(
                 socket,
+                state,
                 "unsupported_event_type",
                 &format!("unsupported event type: {t}"),
             )
@@ -187,6 +205,9 @@ async fn handle_client_text(
 
     match event {
         ClientEvent::ResponseCreate { mut response } => {
+            if let Some(metrics) = &state.metrics {
+                metrics.record_ws_frame(ENDPOINT, "client", "response.create");
+            }
             // Force stream=true unconditionally: the WebSocket transport is
             // inherently streaming; a client-supplied {"stream": false} would
             // break the pipeline.
@@ -194,7 +215,7 @@ async fn handle_client_text(
             let body_bytes = match serde_json::to_vec(&response) {
                 Ok(b) => axum::body::Bytes::from(b),
                 Err(e) => {
-                    return send_error(socket, "internal_error", &e.to_string()).await;
+                    return send_error(socket, state, "internal_error", &e.to_string()).await;
                 }
             };
 
@@ -209,7 +230,7 @@ async fn handle_client_text(
             let stream = match responses_sse_stream(state.clone(), ws_headers, body_bytes).await {
                 Ok(s) => s,
                 Err(e) => {
-                    return send_error(socket, "upstream_error", &e.to_string()).await;
+                    return send_error(socket, state, "upstream_error", &e.to_string()).await;
                 }
             };
 
@@ -230,12 +251,8 @@ async fn forward_stream(
         match result {
             Ok(ev) => {
                 if let Some(metrics) = &state.metrics {
-                    let ty = if ev.event.is_empty() {
-                        "message"
-                    } else {
-                        ev.event.as_str()
-                    };
-                    metrics.record_ws_frame(ENDPOINT, "server", ty);
+                    let ty = event_label(&ev);
+                    metrics.record_ws_frame(ENDPOINT, "server", &ty);
                 }
                 // Send just the `data` payload — the event name is already
                 // embedded in the JSON's `type` field per the Responses WS spec.
@@ -245,7 +262,7 @@ async fn forward_stream(
                 }
             }
             Err(e) => {
-                return send_error(socket, "stream_error", &e.to_string()).await;
+                return send_error(socket, state, "stream_error", &e.to_string()).await;
             }
         }
     }
@@ -253,10 +270,30 @@ async fn forward_stream(
     // client doesn't hang waiting.
     send_error(
         socket,
+        state,
         "stream_ended",
         "upstream stream ended without a terminal event",
     )
     .await
+}
+
+/// Derive the `type` label for `ws_frames_total` from a server-side SSE event.
+///
+/// Prefers the Responses API event type embedded in `ev.data`'s `type` field
+/// (e.g. `response.output_text.delta`, `response.completed`). Falls back to
+/// the SSE `event:` name, and finally to `"message"` for an otherwise opaque
+/// frame. Keeps cardinality bounded to the Responses API vocabulary.
+fn event_label(ev: &SseEvent) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&ev.data)
+        && let Some(t) = value.get("type").and_then(|v| v.as_str())
+        && !t.is_empty()
+    {
+        return t.to_string();
+    }
+    if !ev.event.is_empty() {
+        return ev.event.clone();
+    }
+    "message".to_string()
 }
 
 fn is_terminal(ev: &SseEvent) -> bool {
@@ -272,7 +309,18 @@ fn is_terminal(ev: &SseEvent) -> bool {
     false
 }
 
-async fn send_error(socket: &mut WebSocket, code: &str, message: &str) -> Result<(), axum::Error> {
+async fn send_error(
+    socket: &mut WebSocket,
+    state: &Arc<OpenAIPassthroughState>,
+    code: &str,
+    message: &str,
+) -> Result<(), axum::Error> {
+    // Error frames are server-originated and represent abnormal application
+    // activity — count them so they show up in dashboards alongside normal
+    // `response.*` event types.
+    if let Some(metrics) = &state.metrics {
+        metrics.record_ws_frame("responses", "server", "error");
+    }
     socket
         .send(Message::Text(error_frame(code, message).into()))
         .await
