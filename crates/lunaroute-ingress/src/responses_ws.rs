@@ -7,11 +7,18 @@
 //!
 //! See `docs/superpowers/specs/2026-04-16-codex-websocket-responses-design.md`.
 
+use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::http::HeaderMap;
+use axum::response::Response;
+use futures::StreamExt as _;
 use serde::Deserialize;
+use std::sync::Arc;
+
+use crate::openai::{OpenAIPassthroughState, SseEvent, responses_sse_stream};
 
 /// Parsed client-to-server WebSocket frame.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) enum ClientEvent {
     /// `{"type": "response.create", "response": {...}}` — create a response.
     /// The inner `response` object is the usual Responses API create payload.
@@ -20,7 +27,6 @@ pub(crate) enum ClientEvent {
 
 /// Error returned by `parse_client_frame`.
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
 pub(crate) enum FrameError {
     #[error("malformed JSON: {0}")]
     MalformedJson(#[from] serde_json::Error),
@@ -35,7 +41,6 @@ pub(crate) enum FrameError {
 /// Accepted shape: `{"type": "response.create", "response": {...}}` with
 /// `response` being any JSON object (the Responses API create body). Anything
 /// else returns a `FrameError` the caller maps to a structured error frame.
-#[allow(dead_code)]
 pub(crate) fn parse_client_frame(text: &str) -> Result<ClientEvent, FrameError> {
     #[derive(Deserialize)]
     struct Envelope {
@@ -60,7 +65,6 @@ pub(crate) fn parse_client_frame(text: &str) -> Result<ClientEvent, FrameError> 
 }
 
 /// Build a server-side error frame payload in the Responses API event shape.
-#[allow(dead_code)]
 pub(crate) fn error_frame(code: &str, message: &str) -> String {
     serde_json::json!({
         "type": "error",
@@ -70,6 +74,184 @@ pub(crate) fn error_frame(code: &str, message: &str) -> String {
         }
     })
     .to_string()
+}
+
+/// Terminal Responses API event types — receiving one of these means the
+/// current response is finished and the read loop may accept the next
+/// `response.create` frame on the same connection.
+const TERMINAL_EVENTS: &[&str] = &[
+    "response.completed",
+    "response.failed",
+    "response.incomplete",
+    "response.cancelled",
+];
+
+/// axum handler: accept the WebSocket upgrade on `/responses` or
+/// `/v1/responses` and spawn a per-connection session.
+pub async fn responses_ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<OpenAIPassthroughState>>,
+    headers: HeaderMap,
+) -> Response {
+    tracing::debug!("Responses API WebSocket upgrade");
+    ws.on_upgrade(move |socket| run_ws_session(socket, state, headers))
+}
+
+/// Own the socket for a single WebSocket connection. Reads client frames,
+/// runs each `response.create` through the shared SSE pipeline, sends each
+/// resulting event back as a WS text frame. Sequential by construction — we
+/// await each stream to completion before the next `recv`.
+async fn run_ws_session(
+    mut socket: WebSocket,
+    state: Arc<OpenAIPassthroughState>,
+    upgrade_headers: HeaderMap,
+) {
+    tracing::debug!("WS session started");
+
+    while let Some(msg) = socket.recv().await {
+        let msg = match msg {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("WS recv error: {e}");
+                break;
+            }
+        };
+
+        match msg {
+            Message::Text(text) => {
+                if let Err(e) =
+                    handle_client_text(&mut socket, &state, &upgrade_headers, text.as_ref()).await
+                {
+                    tracing::warn!("WS text handling error: {e}");
+                    // Connection stays open unless the error indicates a send failure
+                    // (in which case the next recv will fail too).
+                }
+            }
+            Message::Close(_) => {
+                tracing::debug!("WS client closed");
+                break;
+            }
+            Message::Ping(_) | Message::Pong(_) => {
+                // axum handles ping/pong automatically; nothing to do.
+            }
+            Message::Binary(_) => {
+                let _ = send_error(
+                    &mut socket,
+                    "unsupported_frame_type",
+                    "binary frames are not supported",
+                )
+                .await;
+            }
+        }
+    }
+
+    tracing::debug!("WS session ended");
+}
+
+/// Dispatch one client text frame: parse, run the pipeline, forward events.
+async fn handle_client_text(
+    socket: &mut WebSocket,
+    state: &Arc<OpenAIPassthroughState>,
+    upgrade_headers: &HeaderMap,
+    text: &str,
+) -> Result<(), axum::Error> {
+    let event = match parse_client_frame(text) {
+        Ok(e) => e,
+        Err(FrameError::MalformedJson(e)) => {
+            return send_error(socket, "malformed_json", &e.to_string()).await;
+        }
+        Err(FrameError::MissingField(f)) => {
+            return send_error(socket, "invalid_request", &format!("missing field: {f}")).await;
+        }
+        Err(FrameError::UnsupportedType(t)) => {
+            return send_error(
+                socket,
+                "unsupported_event_type",
+                &format!("unsupported event type: {t}"),
+            )
+            .await;
+        }
+    };
+
+    match event {
+        ClientEvent::ResponseCreate { mut response } => {
+            // Force stream=true: upstream HTTP needs it for streaming.
+            if response.get("stream").is_none() {
+                response["stream"] = serde_json::Value::Bool(true);
+            }
+            let body_bytes = match serde_json::to_vec(&response) {
+                Ok(b) => axum::body::Bytes::from(b),
+                Err(e) => {
+                    return send_error(socket, "internal_error", &e.to_string()).await;
+                }
+            };
+
+            let stream = match responses_sse_stream(
+                state.clone(),
+                upgrade_headers.clone(),
+                body_bytes,
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    return send_error(socket, "upstream_error", &e.to_string()).await;
+                }
+            };
+
+            forward_stream(socket, stream).await
+        }
+    }
+}
+
+/// Forward a stream of `SseEvent`s as WebSocket text frames until a terminal
+/// event is seen or the stream ends.
+async fn forward_stream(
+    socket: &mut WebSocket,
+    mut stream: futures::stream::BoxStream<'static, Result<SseEvent, crate::IngressError>>,
+) -> Result<(), axum::Error> {
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(ev) => {
+                // Send just the `data` payload — the event name is already
+                // embedded in the JSON's `type` field per the Responses WS spec.
+                socket.send(Message::Text(ev.data.clone().into())).await?;
+                if is_terminal(&ev) {
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                return send_error(socket, "stream_error", &e.to_string()).await;
+            }
+        }
+    }
+    // Stream ended with no terminal event — emit a synthetic error so the
+    // client doesn't hang waiting.
+    send_error(
+        socket,
+        "stream_ended",
+        "upstream stream ended without a terminal event",
+    )
+    .await
+}
+
+fn is_terminal(ev: &SseEvent) -> bool {
+    if TERMINAL_EVENTS.contains(&ev.event.as_str()) {
+        return true;
+    }
+    // Fall back to inspecting the JSON `type` field inside `data`.
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&ev.data)
+        && let Some(t) = value.get("type").and_then(|v| v.as_str())
+    {
+        return TERMINAL_EVENTS.contains(&t);
+    }
+    false
+}
+
+async fn send_error(socket: &mut WebSocket, code: &str, message: &str) -> Result<(), axum::Error> {
+    socket
+        .send(Message::Text(error_frame(code, message).into()))
+        .await
 }
 
 #[cfg(test)]
