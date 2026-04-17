@@ -39,3 +39,6 @@ temp/
 
 # private configs
 examples/configs/private/
+
+# Git worktrees
+.worktrees/
