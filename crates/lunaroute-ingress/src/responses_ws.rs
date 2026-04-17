@@ -175,10 +175,10 @@ async fn handle_client_text(
 
     match event {
         ClientEvent::ResponseCreate { mut response } => {
-            // Force stream=true: upstream HTTP needs it for streaming.
-            if response.get("stream").is_none() {
-                response["stream"] = serde_json::Value::Bool(true);
-            }
+            // Force stream=true unconditionally: the WebSocket transport is
+            // inherently streaming; a client-supplied {"stream": false} would
+            // break the pipeline.
+            response["stream"] = serde_json::Value::Bool(true);
             let body_bytes = match serde_json::to_vec(&response) {
                 Ok(b) => axum::body::Bytes::from(b),
                 Err(e) => {
@@ -186,13 +186,15 @@ async fn handle_client_text(
                 }
             };
 
-            let stream = match responses_sse_stream(
-                state.clone(),
-                upgrade_headers.clone(),
-                body_bytes,
-            )
-            .await
-            {
+            // The upgrade is a GET with no body, so Content-Type is absent.
+            // Inject it so the upstream POST is handled as JSON.
+            let mut ws_headers = upgrade_headers.clone();
+            ws_headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/json"),
+            );
+
+            let stream = match responses_sse_stream(state.clone(), ws_headers, body_bytes).await {
                 Ok(s) => s,
                 Err(e) => {
                     return send_error(socket, "upstream_error", &e.to_string()).await;
