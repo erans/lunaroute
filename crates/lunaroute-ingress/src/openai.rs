@@ -8,7 +8,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::post,
+    routing::{get, post},
 };
 use futures::StreamExt;
 #[cfg(test)]
@@ -2228,10 +2228,18 @@ pub fn passthrough_router(
 
     Router::new()
         .route("/v1/chat/completions", post(chat_completions_passthrough))
-        .route("/v1/responses", post(responses_passthrough))
-        .route("/responses", post(responses_passthrough)) // For Codex compatibility (base_url without /v1)
-        .route("/v1/models", axum::routing::get(models_passthrough))
-        .route("/models", axum::routing::get(models_passthrough)) // For Codex compatibility (base_url without /v1)
+        .route(
+            "/v1/responses",
+            post(responses_passthrough).get(crate::responses_ws::responses_ws_handler),
+        )
+        // Codex compat: base_url without /v1
+        .route(
+            "/responses",
+            post(responses_passthrough).get(crate::responses_ws::responses_ws_handler),
+        )
+        .route("/v1/models", get(models_passthrough))
+        // Codex compat: base_url without /v1
+        .route("/models", get(models_passthrough))
         .layer(tower_http::compression::CompressionLayer::new())
         .with_state(state)
 }
