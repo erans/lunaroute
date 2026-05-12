@@ -185,19 +185,19 @@ pub async fn get_cost_stats(pool: &SqlitePool) -> Result<CostStats> {
     .await?;
 
     // Last 30 days, per model per day — bounded by models × ~30 rows.
+    // Filter on ss.created_at to hit idx_session_stats_model and avoid the JOIN.
     let daily_rows = sqlx::query(
         r#"
         SELECT
-            DATE(s.started_at) AS day,
+            DATE(ss.created_at) AS day,
             ss.model_name AS model_name,
             COALESCE(SUM(ss.input_tokens), 0) AS input_tokens,
             COALESCE(SUM(ss.output_tokens), 0) AS output_tokens,
             COALESCE(SUM(ss.thinking_tokens), 0) AS thinking_tokens
         FROM session_stats ss
-        INNER JOIN sessions s ON ss.session_id = s.session_id
         WHERE ss.model_name IS NOT NULL
-          AND s.started_at >= datetime('now', '-30 days')
-        GROUP BY DATE(s.started_at), ss.model_name
+          AND ss.created_at >= datetime('now', '-30 days')
+        GROUP BY DATE(ss.created_at), ss.model_name
         "#,
     )
     .fetch_all(pool)
@@ -952,6 +952,10 @@ pub async fn get_sessions_by_hour(pool: &SqlitePool, hours: i64) -> Result<Vec<H
 pub async fn get_spending_stats(pool: &SqlitePool, hours: Option<i64>) -> Result<SpendingStats> {
     // Aggregate in SQL: per-model SUM tokens + COUNT requests + COUNT(DISTINCT session).
     // Result set is bounded by distinct model count (dozens, not hundreds of thousands).
+    //
+    // Filter on ss.created_at (covered by idx_session_stats_model) instead of joining
+    // sessions and filtering on s.started_at — joining + the `OR completed_at IS NULL`
+    // clause prevented use of any time-range index and forced a near-full scan.
     let query = if let Some(h) = hours {
         format!(
             r#"
@@ -963,9 +967,8 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: Option<i64>) -> Result
                 COALESCE(SUM(ss.output_tokens), 0) AS output_tokens,
                 COALESCE(SUM(ss.thinking_tokens), 0) AS thinking_tokens
             FROM session_stats ss
-            INNER JOIN sessions s ON ss.session_id = s.session_id
-            WHERE (s.started_at >= datetime('now', '-{} hours') OR s.completed_at IS NULL)
-                AND ss.model_name IS NOT NULL
+            WHERE ss.model_name IS NOT NULL
+              AND ss.created_at >= datetime('now', '-{} hours')
             GROUP BY ss.model_name
             "#,
             h

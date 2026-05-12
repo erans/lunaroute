@@ -343,6 +343,14 @@ impl SqliteWriter {
                 .await
                 .map_err(|e| WriterError::Database(e.to_string()))?;
 
+            // Covering index for the global tool-usage aggregation query.
+            // GROUP BY tool_name with SUM/AVG/MIN/MAX over these columns is answered
+            // entirely from the index, avoiding a full table scan.
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_stats_name_covering ON tool_stats(tool_name, call_count, error_count, avg_execution_time_ms)")
+                .execute(pool)
+                .await
+                .map_err(|e| WriterError::Database(e.to_string()))?;
+
             // Unique index for ON CONFLICT handling (prevents duplicate tool entries per session/request)
             sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_stats_unique ON tool_stats(session_id, request_id, tool_name)")
                 .execute(pool)
