@@ -1030,21 +1030,24 @@ pub async fn get_spending_stats(pool: &SqlitePool, hours: Option<i64>) -> Result
         })
         .collect();
 
-    // Get total unique sessions count with optional time filter
+    // Get total session count with optional time filter.
+    // session_id is the primary key of sessions, so COUNT(*) is equivalent to
+    // COUNT(DISTINCT session_id) and avoids the unnecessary dedup work.
+    // The hours filter uses idx_sessions_started_at directly (no OR-completed_at
+    // clause that would defeat index selection).
     let count_query = if let Some(h) = hours {
         format!(
             r#"
-            SELECT COUNT(DISTINCT session_id) as count
+            SELECT COUNT(*) as count
             FROM sessions
             WHERE started_at >= datetime('now', '-{} hours')
-                OR completed_at IS NULL
             "#,
             h
         )
     } else {
         // All-time query
         r#"
-        SELECT COUNT(DISTINCT session_id) as count
+        SELECT COUNT(*) as count
         FROM sessions
         "#
         .to_string()

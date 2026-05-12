@@ -277,6 +277,13 @@ impl SqliteWriter {
             .await
             .map_err(|e| WriterError::Database(e.to_string()))?;
 
+        // Covering index for all-time per-model token totals. Lets SUM/GROUP BY model_name
+        // be answered entirely from the index without touching the row data.
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_session_stats_model_covering ON session_stats(model_name, input_tokens, output_tokens, thinking_tokens)")
+            .execute(pool)
+            .await
+            .map_err(|e| WriterError::Database(e.to_string()))?;
+
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_session_stats_user_agent ON session_stats(user_agent)",
         )
