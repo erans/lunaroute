@@ -30,6 +30,67 @@ const MAX_TOOL_ARGS_SIZE: usize = 1_000_000;
 /// Maximum number of SSE events to collect for async parsing (prevents OOM on very long streams)
 const MAX_COLLECTED_EVENTS: usize = 10_000;
 
+/// Extract a session ID from `metadata.user_id`. Handles three shapes the
+/// Anthropic client has used:
+///   1. Object: `{"session_id": "...", ...}`
+///   2. JSON-encoded string: `"{\"session_id\":\"...\"}"`
+///   3. Legacy flat: `"user_<hash>_account_<uuid>_session_<uuid>"`
+///
+/// Returns `None` if no shape matches or the candidate fails validation
+/// (length / charset). Validation enforces alphanumeric, dash, underscore
+/// only to prevent path traversal in downstream session-id consumers.
+fn extract_session_id_from_user_id(value: &serde_json::Value) -> Option<String> {
+    // Shape 1: object literal
+    if let Some(obj) = value.as_object() {
+        let candidate = obj.get("session_id").and_then(|v| v.as_str())?;
+        return validate_session_id_candidate(candidate);
+    }
+
+    let s = value.as_str()?;
+
+    // Shape 2: JSON-encoded string (current Claude clients send this)
+    if s.trim_start().starts_with('{') {
+        if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(s)
+            && let Some(candidate) = obj.get("session_id").and_then(|v| v.as_str())
+        {
+            return validate_session_id_candidate(candidate);
+        }
+        // JSON-shaped but unparseable or missing session_id; nothing to recover.
+        tracing::debug!("metadata.user_id looked like JSON but had no usable session_id");
+        return None;
+    }
+
+    // Shape 3: legacy `user_<hash>_account_<uuid>_session_<uuid>` or bare token
+    let candidate = if let Some(pos) = s.rfind("_session_") {
+        &s[pos + "_session_".len()..]
+    } else {
+        s
+    };
+    validate_session_id_candidate(candidate)
+}
+
+fn validate_session_id_candidate(candidate: &str) -> Option<String> {
+    if candidate.is_empty() {
+        tracing::debug!("Empty session ID extracted from user_id");
+        return None;
+    }
+    if candidate.len() > 255 {
+        tracing::warn!("Session ID too long: {} chars (max 255)", candidate.len());
+        return None;
+    }
+    if !candidate
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        tracing::warn!(
+            "Invalid session ID format (contains unsafe characters): {}",
+            candidate
+        );
+        return None;
+    }
+    Some(candidate.to_string())
+}
+
 /// Validate tool input schema (must be valid JSON Schema)
 fn validate_tool_schema(schema: &serde_json::Value, tool_name: &str) -> IngressResult<()> {
     // Ensure it's a valid JSON Schema object
@@ -1189,52 +1250,13 @@ pub async fn messages_passthrough(
         crate::marker::MarkerResult::None => {}
     }
 
-    // Extract session ID from metadata.user_id
-    // The user_id may contain the session ID embedded like: "user_xxx_session_<uuid>"
-    // We need to parse out the actual session ID (the part after "_session_")
+    // Extract session ID from metadata.user_id. The shape has changed over time
+    // (legacy "user_..._session_<uuid>" flat string, current JSON-encoded object);
+    // extract_session_id_from_user_id handles all known shapes.
     let session_id = req
         .get("metadata")
         .and_then(|m| m.get("user_id"))
-        .and_then(|v| v.as_str())
-        .and_then(|user_id| {
-            // Try to extract session ID from user_id field
-            // Format: user_<hash>_account_<uuid>_session_<uuid>
-            let session_part = if let Some(pos) = user_id.rfind("_session_") {
-                // Extract everything after "_session_"
-                &user_id[pos + "_session_".len()..]
-            } else {
-                // Fallback: use entire user_id if no "_session_" marker found
-                user_id
-            };
-
-            // Validate session ID format to prevent path traversal attacks
-            // Only allow alphanumeric characters, hyphens, and underscores
-            if session_part.is_empty() {
-                tracing::warn!("Empty session ID extracted from user_id");
-                return None;
-            }
-
-            if session_part.len() > 255 {
-                tracing::warn!(
-                    "Session ID too long: {} chars (max 255)",
-                    session_part.len()
-                );
-                return None;
-            }
-
-            if !session_part
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-            {
-                tracing::warn!(
-                    "Invalid session ID format (contains unsafe characters): {}",
-                    session_part
-                );
-                return None;
-            }
-
-            Some(session_part.to_string())
-        });
+        .and_then(extract_session_id_from_user_id);
 
     // Pass through ALL headers from the client (except hop-by-hop headers)
     // This allows client to provide auth headers if no API key is configured
@@ -2662,29 +2684,46 @@ mod tests {
 
     // Helper function for testing session ID extraction
     fn extract_and_validate_session_id(user_id: &str) -> Option<String> {
-        let session_part = if let Some(pos) = user_id.rfind("_session_") {
-            &user_id[pos + "_session_".len()..]
-        } else {
-            user_id
-        };
+        super::extract_session_id_from_user_id(&serde_json::Value::String(user_id.to_string()))
+    }
 
-        // Validate session ID format
-        if session_part.is_empty() {
-            return None;
-        }
+    #[test]
+    fn test_session_id_extraction_from_json_object_user_id() {
+        // Current Claude client format: user_id is a JSON-encoded object
+        let user_id = serde_json::json!(
+            r#"{"device_id":"6d7768e28857b8461693cf8c58547d1ce156a657b3ab25880fa0409a28a23fea","account_uuid":"92005441-c12f-433c-89b2-43bc95d78f69","session_id":"bdfe0e7b-af96-4629-95ae-22bf20dbd9ff"}"#
+        );
+        assert_eq!(
+            super::extract_session_id_from_user_id(&user_id),
+            Some("bdfe0e7b-af96-4629-95ae-22bf20dbd9ff".to_string())
+        );
+    }
 
-        if session_part.len() > 255 {
-            return None;
-        }
+    #[test]
+    fn test_session_id_extraction_from_unstringified_object() {
+        // Defensive: if a client sends metadata.user_id as a real JSON object
+        let user_id = serde_json::json!({
+            "device_id": "abc",
+            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+        });
+        assert_eq!(
+            super::extract_session_id_from_user_id(&user_id),
+            Some("550e8400-e29b-41d4-a716-446655440000".to_string())
+        );
+    }
 
-        if !session_part
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-        {
-            return None;
-        }
+    #[test]
+    fn test_session_id_extraction_json_missing_field() {
+        // JSON-shaped but no session_id → None, no fallback to substring parse
+        let user_id = serde_json::json!(r#"{"device_id":"abc"}"#);
+        assert_eq!(super::extract_session_id_from_user_id(&user_id), None);
+    }
 
-        Some(session_part.to_string())
+    #[test]
+    fn test_session_id_extraction_json_with_bad_chars_rejected() {
+        // session_id present but contains forbidden chars
+        let user_id = serde_json::json!(r#"{"session_id":"../../../etc/passwd"}"#);
+        assert_eq!(super::extract_session_id_from_user_id(&user_id), None);
     }
 
     #[test]
