@@ -3172,7 +3172,7 @@ pub async fn chat_completions_passthrough(
                             total_cache_creation: 0, // OpenAI doesn't report cache creation separately
                             total_audio_input: audio_in,
                             total_audio_output: audio_out,
-                            grand_total: input_tokens + output_tokens + reasoning,
+                            grand_total: input_tokens + output_tokens,
                             by_model: Default::default(),
                         })
                     } else {

@@ -9,6 +9,7 @@ use thiserror::Error;
 pub mod anthropic;
 pub mod client;
 pub mod codex_auth;
+pub mod codex_headers;
 pub mod openai;
 mod retry_after;
 

@@ -242,7 +242,7 @@ where
                         && let Some(reasoning) =
                             details.get("reasoning_tokens").and_then(|t| t.as_u64())
                     {
-                        data.tokens.total_thinking = reasoning;
+                        data.tokens.total_reasoning = reasoning;
                     }
 
                     // Extract cached tokens from prompt_tokens_details
@@ -662,6 +662,28 @@ mod tests {
         assert_eq!(parsed.tokens.total_output, 50);
         assert_eq!(parsed.tokens.grand_total, 150);
         assert_eq!(parsed.model_used, Some("gpt-4".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_parse_openai_stream_reasoning_tokens() {
+        let events: Vec<
+            Result<
+                eventsource_stream::Event,
+                eventsource_stream::EventStreamError<std::convert::Infallible>,
+            >,
+        > = vec![Ok(eventsource_stream::Event {
+            event: "data".to_string(),
+            data: r#"{"model":"o1-preview","usage":{"prompt_tokens":100,"completion_tokens":50,"completion_tokens_details":{"reasoning_tokens":42}}}"#
+                .to_string(),
+            id: String::new(),
+            retry: None,
+        })];
+
+        let stream = stream::iter(events);
+        let parsed = parse_openai_stream(stream).await;
+
+        assert_eq!(parsed.tokens.total_reasoning, 42);
+        assert_eq!(parsed.tokens.total_thinking, 0);
     }
 
     #[tokio::test]

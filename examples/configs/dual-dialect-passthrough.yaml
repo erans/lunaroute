@@ -57,13 +57,26 @@ providers:
   # OpenAI provider - passthrough for gpt-* models
   openai:
     enabled: true
-    # No api_key field = passthrough mode - will use:
-    #   1. OPENAI_API_KEY environment variable, OR
-    #   2. Client's Authorization header (Codex provides this)
-    # Use ChatGPT backend API for Codex compatibility
+    # Configured for Codex CLI (ChatGPT Plus/Pro auth via ~/.codex/auth.json).
+    # codex_auth makes LunaRoute masquerade as the Codex CLI (User-Agent:
+    # codex_cli_rs/..., originator: codex_cli_rs) so ChatGPT-issued tokens
+    # are accepted.
     base_url: "https://chatgpt.com/backend-api/codex"
     codex_auth:
-      enabled: true  # Required for ChatGPT Codex backend
+      enabled: true
+    #
+    # --- Alternative: api.openai.com with a plain API key ---
+    # If you have a regular OPENAI_API_KEY (not a ChatGPT-Plus subscription),
+    # swap the three lines above for:
+    #   base_url: "https://api.openai.com/v1"
+    # and drop the codex_auth block.
+    #
+    # WARNING — Linux: Cloudflare in front of chatgpt.com fingerprints the
+    # TLS JA3 signature of the proxy's rustls stack and can return 403. This
+    # affects the native Codex CLI on Linux too (openai/codex#17860). macOS
+    # tends to work because the native Codex binary uses system TLS with a
+    # browser-like fingerprint. If you hit 403s on Linux, fall back to
+    # api.openai.com + a regular API key.
 
   # Anthropic provider - passthrough for claude-* models
   anthropic:

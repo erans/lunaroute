@@ -12,7 +12,6 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::HeaderMap;
 use axum::response::Response;
 use futures::StreamExt as _;
-use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::openai::{OpenAIPassthroughState, SseEvent, responses_sse_stream};
@@ -20,9 +19,19 @@ use crate::openai::{OpenAIPassthroughState, SseEvent, responses_sse_stream};
 /// Parsed client-to-server WebSocket frame.
 #[derive(Debug, Clone)]
 pub(crate) enum ClientEvent {
-    /// `{"type": "response.create", "response": {...}}` — create a response.
-    /// The inner `response` object is the usual Responses API create payload.
-    ResponseCreate { response: serde_json::Value },
+    /// `{"type": "response.create", ...}` — create a response.
+    ///
+    /// Codex (the only known WS client) sends a flat payload tagged by `type`
+    /// (`#[serde(tag = "type")]`), not a nested envelope. `response` holds every
+    /// field except `type`, `generate`, and `client_metadata`, and is forwarded
+    /// as the body of the upstream Responses API POST.
+    ResponseCreate {
+        response: serde_json::Value,
+        /// `generate: false` — Codex's warmup ping sent during session startup
+        /// to prime the connection. Short-circuits locally so we don't burn an
+        /// upstream call on every Codex launch.
+        warmup: bool,
+    },
 }
 
 /// Error returned by `parse_client_frame`.
@@ -38,29 +47,81 @@ pub(crate) enum FrameError {
 
 /// Parse a client text frame into a `ClientEvent`.
 ///
-/// Accepted shape: `{"type": "response.create", "response": {...}}` with
-/// `response` being any JSON object (the Responses API create body). Anything
-/// else returns a `FrameError` the caller maps to a structured error frame.
+/// Accepted shape: `{"type": "response.create", "model": "...", "input": [...], ...}` —
+/// the fields of the Responses API create body are at the top level, next to
+/// `type`. This matches Codex's `ResponsesWsRequest` enum (`#[serde(tag =
+/// "type")]`) in `codex-rs/codex-api/src/common.rs`.
+///
+/// Codex-only fields are stripped before forwarding upstream:
+/// * `generate: false` signals a warmup ping — we short-circuit on the
+///   `warmup` flag rather than forwarding.
+/// * `client_metadata` carries traceparent/tracestate; the Responses API
+///   doesn't accept it.
 pub(crate) fn parse_client_frame(text: &str) -> Result<ClientEvent, FrameError> {
-    #[derive(Deserialize)]
-    struct Envelope {
-        r#type: String,
-        #[serde(default)]
-        response: Option<serde_json::Value>,
-    }
+    let value: serde_json::Value = serde_json::from_str(text)?;
+    let obj = match value {
+        serde_json::Value::Object(map) => map,
+        _ => {
+            return Err(FrameError::MissingField(
+                "type (frame must be a JSON object)",
+            ));
+        }
+    };
+    let mut obj = obj;
 
-    let envelope: Envelope = serde_json::from_str(text)?;
-    match envelope.r#type.as_str() {
+    let type_field = obj
+        .remove("type")
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .ok_or(FrameError::MissingField("type"))?;
+
+    match type_field.as_str() {
         "response.create" => {
-            let response = envelope
-                .response
-                .ok_or(FrameError::MissingField("response"))?;
-            if !response.is_object() {
-                return Err(FrameError::MissingField("response (must be object)"));
-            }
-            Ok(ClientEvent::ResponseCreate { response })
+            let warmup = obj
+                .remove("generate")
+                .and_then(|v| v.as_bool())
+                .map(|generate| !generate)
+                .unwrap_or(false);
+            obj.remove("client_metadata");
+            Ok(ClientEvent::ResponseCreate {
+                response: serde_json::Value::Object(obj),
+                warmup,
+            })
         }
         other => Err(FrameError::UnsupportedType(other.to_string())),
+    }
+}
+
+/// Build a synthetic `response.completed` frame for a warmup ping.
+///
+/// Codex's `prewarm_websocket` loop exits when it sees a `ResponseEvent::Completed`
+/// event, which `process_responses_event` only yields if the frame has
+/// `type == "response.completed"` and a `response` object containing an `id`.
+/// No upstream call happens — this is sent straight back to the client.
+fn warmup_completed_frame() -> String {
+    serde_json::json!({
+        "type": "response.completed",
+        "response": {
+            "id": format!("warmup-{}", uuid::Uuid::new_v4()),
+        },
+    })
+    .to_string()
+}
+
+/// Strip a synthetic `previous_response_id` before forwarding upstream.
+///
+/// Codex's session state captures the `id` from each `response.completed` and
+/// echoes it as `previous_response_id` on the next turn. Our warmup's synthetic
+/// id (`warmup-<uuid>`) is not known upstream, which would 400 with
+/// "Unsupported parameter: previous_response_id". Dropping it makes the first
+/// real turn behave like a fresh conversation; real ids from upstream on
+/// subsequent turns pass through untouched.
+fn strip_synthetic_warmup_previous_id(response: &mut serde_json::Value) {
+    let is_warmup_id = response
+        .get("previous_response_id")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s.starts_with("warmup-"));
+    if is_warmup_id && let Some(obj) = response.as_object_mut() {
+        obj.remove("previous_response_id");
     }
 }
 
@@ -209,14 +270,33 @@ async fn handle_client_text(
     };
 
     match event {
-        ClientEvent::ResponseCreate { mut response } => {
+        ClientEvent::ResponseCreate {
+            mut response,
+            warmup,
+        } => {
             if let Some(metrics) = &state.metrics {
-                metrics.record_ws_frame(ENDPOINT, "client", "response.create");
+                let label = if warmup {
+                    "response.create.warmup"
+                } else {
+                    "response.create"
+                };
+                metrics.record_ws_frame(ENDPOINT, "client", label);
+            }
+            // Codex sends a warmup ping (`generate: false`) on session startup
+            // to prime the connection. Short-circuit locally — forwarding it
+            // upstream would burn a real Responses API call on every Codex
+            // launch. Codex's `prewarm_websocket` loop exits as soon as it
+            // sees a `response.completed` event.
+            if warmup {
+                return socket
+                    .send(Message::Text(warmup_completed_frame().into()))
+                    .await;
             }
             // Force stream=true unconditionally: the WebSocket transport is
             // inherently streaming; a client-supplied {"stream": false} would
             // break the pipeline.
             response["stream"] = serde_json::Value::Bool(true);
+            strip_synthetic_warmup_previous_id(&mut response);
             let body_bytes = match serde_json::to_vec(&response) {
                 Ok(b) => axum::body::Bytes::from(b),
                 Err(e) => {
@@ -336,11 +416,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_response_create() {
-        let text = r#"{"type":"response.create","response":{"model":"gpt-5","input":"hi"}}"#;
+    fn parses_response_create_flat_shape() {
+        // Codex's actual wire format: fields flat at top level next to `type`.
+        let text =
+            r#"{"type":"response.create","model":"gpt-5","input":"hi","instructions":"be brief"}"#;
         let ev = parse_client_frame(text).unwrap();
         match ev {
-            ClientEvent::ResponseCreate { response } => {
+            ClientEvent::ResponseCreate { response, warmup } => {
+                assert!(!warmup, "no `generate` field means not a warmup");
+                assert_eq!(
+                    response.get("model").and_then(|v| v.as_str()),
+                    Some("gpt-5")
+                );
+                assert_eq!(
+                    response.get("instructions").and_then(|v| v.as_str()),
+                    Some("be brief")
+                );
+                // `type` is stripped before forwarding upstream.
+                assert!(response.get("type").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn generate_false_marks_warmup() {
+        let text = r#"{"type":"response.create","model":"gpt-5","input":"hi","generate":false}"#;
+        let ev = parse_client_frame(text).unwrap();
+        match ev {
+            ClientEvent::ResponseCreate { response, warmup } => {
+                assert!(warmup, "generate: false is Codex's warmup ping");
+                // `generate` must be stripped before forwarding upstream.
+                assert!(response.get("generate").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn generate_true_is_not_warmup() {
+        let text = r#"{"type":"response.create","model":"gpt-5","input":"hi","generate":true}"#;
+        let ev = parse_client_frame(text).unwrap();
+        match ev {
+            ClientEvent::ResponseCreate { response, warmup } => {
+                assert!(!warmup);
+                assert!(response.get("generate").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn client_metadata_is_stripped() {
+        // Codex sends `client_metadata` with traceparent/tracestate; the
+        // Responses API doesn't accept it, so strip it before forwarding.
+        let text = r#"{"type":"response.create","model":"gpt-5","input":"hi","client_metadata":{"traceparent":"00-abc"}}"#;
+        let ev = parse_client_frame(text).unwrap();
+        match ev {
+            ClientEvent::ResponseCreate { response, .. } => {
+                assert!(response.get("client_metadata").is_none());
                 assert_eq!(
                     response.get("model").and_then(|v| v.as_str()),
                     Some("gpt-5")
@@ -357,15 +488,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_response_field() {
-        let text = r#"{"type":"response.create"}"#;
+    fn rejects_missing_type_field() {
+        let text = r#"{"model":"gpt-5"}"#;
         let err = parse_client_frame(text).unwrap_err();
-        assert!(matches!(err, FrameError::MissingField("response")));
+        assert!(matches!(err, FrameError::MissingField("type")));
     }
 
     #[test]
-    fn rejects_non_object_response() {
-        let text = r#"{"type":"response.create","response":"not-an-object"}"#;
+    fn rejects_non_object_frame() {
+        let text = r#"[1,2,3]"#;
         let err = parse_client_frame(text).unwrap_err();
         assert!(matches!(err, FrameError::MissingField(_)));
     }
@@ -374,6 +505,56 @@ mod tests {
     fn rejects_malformed_json() {
         let err = parse_client_frame("{not json").unwrap_err();
         assert!(matches!(err, FrameError::MalformedJson(_)));
+    }
+
+    #[test]
+    fn warmup_completed_frame_has_response_id() {
+        // Codex's `prewarm_websocket` loop only accepts a frame as "completed"
+        // if it's `type == "response.completed"` AND has a parseable
+        // `response.id`. Pin that shape.
+        let frame = warmup_completed_frame();
+        let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(
+            value.get("type").and_then(|v| v.as_str()),
+            Some("response.completed")
+        );
+        let id = value
+            .get("response")
+            .and_then(|r| r.get("id"))
+            .and_then(|v| v.as_str())
+            .expect("response.id must be present");
+        assert!(id.starts_with("warmup-"), "got {id}");
+    }
+
+    #[test]
+    fn strips_warmup_previous_response_id() {
+        // After the synthetic warmup completes, Codex echoes the warmup id as
+        // `previous_response_id` on the first real turn. Upstream 400s on
+        // unknown ids, so strip them before forwarding.
+        let mut body = serde_json::json!({
+            "model": "gpt-5",
+            "previous_response_id": "warmup-abc-123",
+            "input": "hi",
+        });
+        strip_synthetic_warmup_previous_id(&mut body);
+        assert!(body.get("previous_response_id").is_none());
+        assert_eq!(body.get("model").and_then(|v| v.as_str()), Some("gpt-5"));
+    }
+
+    #[test]
+    fn preserves_real_previous_response_id() {
+        // Real upstream-issued ids (e.g. `resp_...`) must NOT be stripped —
+        // they're needed for multi-turn session continuity.
+        let mut body = serde_json::json!({
+            "model": "gpt-5",
+            "previous_response_id": "resp_abc123",
+            "input": "hi",
+        });
+        strip_synthetic_warmup_previous_id(&mut body);
+        assert_eq!(
+            body.get("previous_response_id").and_then(|v| v.as_str()),
+            Some("resp_abc123")
+        );
     }
 
     #[test]

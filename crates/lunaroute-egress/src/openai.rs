@@ -293,6 +293,22 @@ impl OpenAIConnector {
         }
     }
 
+    /// Returns true when `codex_auth` is enabled and we should masquerade as
+    /// the Codex CLI by overriding the `User-Agent` and `originator` headers.
+    ///
+    /// This is defense-in-depth for the `chatgpt.com/backend-api/codex` upstream.
+    /// Cloudflare's bot detection primarily uses TLS JA3 fingerprinting, so
+    /// matching these headers alone won't defeat it — but it removes LunaRoute's
+    /// default `LunaRoute/x.y.z` UA as a signal and provides the expected
+    /// `originator: codex_cli_rs` value.
+    fn uses_codex_auth(&self) -> bool {
+        self.config
+            .codex_auth
+            .as_ref()
+            .map(|c| c.enabled)
+            .unwrap_or(false)
+    }
+
     /// Get the authorization header value to use as fallback (when client doesn't provide one)
     ///
     /// Priority order:
@@ -396,6 +412,7 @@ impl OpenAIConnector {
                 // Check if we have configured API key that should override client auth
                 let has_override_auth = self.has_override_auth();
                 let should_override_account_id = self.should_override_account_id();
+                let uses_codex_auth = self.uses_codex_auth();
                 let mut client_provided_auth = false;
 
                 // Forward headers from client, skipping only if configured API key should override
@@ -417,6 +434,12 @@ impl OpenAIConnector {
                         continue;
                     }
 
+                    if uses_codex_auth
+                        && (name_lower == "user-agent" || name_lower == "originator")
+                    {
+                        continue;
+                    }
+
                     request_builder = request_builder.header(name, value);
                 }
 
@@ -430,6 +453,14 @@ impl OpenAIConnector {
                 if let Some(account_id) = self.get_codex_account_id() {
                     debug!("Adding chatgpt-account-id header: {}", account_id);
                     request_builder = request_builder.header("chatgpt-account-id", account_id);
+                }
+
+                if uses_codex_auth {
+                    let ua = crate::codex_headers::codex_user_agent();
+                    debug!("Overriding User-Agent to match Codex CLI: {}", ua);
+                    request_builder = request_builder
+                        .header("User-Agent", ua)
+                        .header("originator", crate::codex_headers::CODEX_ORIGINATOR);
                 }
 
                 // Send raw JSON body without .json() to avoid modifying headers
@@ -483,6 +514,7 @@ impl OpenAIConnector {
                 // Check if we have configured API key that should override client auth
                 let has_override_auth = self.has_override_auth();
                 let should_override_account_id = self.should_override_account_id();
+                let uses_codex_auth = self.uses_codex_auth();
                 let mut client_provided_auth = false;
 
                 // Forward headers from client, skipping only if configured API key should override
@@ -504,6 +536,12 @@ impl OpenAIConnector {
                         continue;
                     }
 
+                    if uses_codex_auth
+                        && (name_lower == "user-agent" || name_lower == "originator")
+                    {
+                        continue;
+                    }
+
                     request_builder = request_builder.header(name, value);
                 }
 
@@ -517,6 +555,14 @@ impl OpenAIConnector {
                 if let Some(account_id) = self.get_codex_account_id() {
                     debug!("Adding chatgpt-account-id header: {}", account_id);
                     request_builder = request_builder.header("chatgpt-account-id", account_id);
+                }
+
+                if uses_codex_auth {
+                    let ua = crate::codex_headers::codex_user_agent();
+                    debug!("Overriding User-Agent to match Codex CLI: {}", ua);
+                    request_builder = request_builder
+                        .header("User-Agent", ua)
+                        .header("originator", crate::codex_headers::CODEX_ORIGINATOR);
                 }
 
                 // In passthrough mode, do NOT apply organization header - use only client headers
@@ -630,6 +676,7 @@ impl OpenAIConnector {
         // Check if we have configured API key that should override client auth
         let has_override_auth = self.has_override_auth();
         let should_override_account_id = self.should_override_account_id();
+        let uses_codex_auth = self.uses_codex_auth();
         let mut client_provided_auth = false;
 
         // Forward headers from client, skipping only if configured API key should override
@@ -655,6 +702,10 @@ impl OpenAIConnector {
                 continue;
             }
 
+            if uses_codex_auth && (name_lower == "user-agent" || name_lower == "originator") {
+                continue;
+            }
+
             request_builder = request_builder.header(name, value);
         }
 
@@ -667,6 +718,14 @@ impl OpenAIConnector {
         if let Some(account_id) = self.get_codex_account_id() {
             debug!("Adding chatgpt-account-id header: {}", account_id);
             request_builder = request_builder.header("chatgpt-account-id", account_id);
+        }
+
+        if uses_codex_auth {
+            let ua = crate::codex_headers::codex_user_agent();
+            debug!("Overriding User-Agent to match Codex CLI: {}", ua);
+            request_builder = request_builder
+                .header("User-Agent", ua)
+                .header("originator", crate::codex_headers::CODEX_ORIGINATOR);
         }
 
         // Send raw JSON body without .json() to avoid modifying headers
@@ -722,6 +781,7 @@ impl OpenAIConnector {
         // Check if we have configured API key that should override client auth
         let has_override_auth = self.has_override_auth();
         let should_override_account_id = self.should_override_account_id();
+        let uses_codex_auth = self.uses_codex_auth();
         let mut client_provided_auth = false;
 
         // Forward headers from client, skipping only if configured API key should override
@@ -747,6 +807,10 @@ impl OpenAIConnector {
                 continue;
             }
 
+            if uses_codex_auth && (name_lower == "user-agent" || name_lower == "originator") {
+                continue;
+            }
+
             request_builder = request_builder.header(name, value);
         }
 
@@ -759,6 +823,14 @@ impl OpenAIConnector {
         if let Some(account_id) = self.get_codex_account_id() {
             debug!("Adding chatgpt-account-id header: {}", account_id);
             request_builder = request_builder.header("chatgpt-account-id", account_id);
+        }
+
+        if uses_codex_auth {
+            let ua = crate::codex_headers::codex_user_agent();
+            debug!("Overriding User-Agent to match Codex CLI: {}", ua);
+            request_builder = request_builder
+                .header("User-Agent", ua)
+                .header("originator", crate::codex_headers::CODEX_ORIGINATOR);
         }
 
         let response = request_builder.send().await?;
@@ -799,6 +871,7 @@ impl OpenAIConnector {
         // Check if we have configured API key that should override client auth
         let has_override_auth = self.has_override_auth();
         let should_override_account_id = self.should_override_account_id();
+        let uses_codex_auth = self.uses_codex_auth();
         let mut client_provided_auth = false;
 
         // Forward headers from client, skipping only if configured API key should override
@@ -825,6 +898,10 @@ impl OpenAIConnector {
                 continue;
             }
 
+            if uses_codex_auth && (name_lower == "user-agent" || name_lower == "originator") {
+                continue;
+            }
+
             request_builder = request_builder.header(name, value);
         }
 
@@ -838,6 +915,14 @@ impl OpenAIConnector {
         if let Some(account_id) = self.get_codex_account_id() {
             debug!("Adding chatgpt-account-id header: {}", account_id);
             request_builder = request_builder.header("chatgpt-account-id", account_id);
+        }
+
+        if uses_codex_auth {
+            let ua = crate::codex_headers::codex_user_agent();
+            debug!("Overriding User-Agent to match Codex CLI: {}", ua);
+            request_builder = request_builder
+                .header("User-Agent", ua)
+                .header("originator", crate::codex_headers::CODEX_ORIGINATOR);
         }
 
         debug!("=== ALL HEADERS BEING SENT TO OPENAI ===");

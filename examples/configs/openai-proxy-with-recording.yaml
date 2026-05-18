@@ -12,16 +12,24 @@ providers:
     enabled: true
     # api_key: ""  # -> Set to an OpenAI API Key if you need to use a specific key
 
-    # This is the base URL that should be used with an OpenAI API key.
-    # When doing passthrough with the chatgpt authentication from codex, use the 
-    # base url below.
-    #base_url: "https://api.openai.com/v1"
+    # RECOMMENDED: api.openai.com with a regular API key.
+    # Works on all platforms including Linux.
+    base_url: "https://api.openai.com/v1"
 
-    # When you want to use your chatgpt logged in account from codex
-    # you must set this base_url instead of the standard OpenAI one.
-    base_url: "https://chatgpt.com/backend-api/codex"
+    # --- ChatGPT backend (advanced) ---
+    # To use your ChatGPT Plus/Pro subscription instead of API credits, swap
+    # the base_url above for the line below and flip codex_auth.enabled to true.
+    # LunaRoute will then masquerade as the Codex CLI (User-Agent:
+    # codex_cli_rs/... + originator: codex_cli_rs).
+    #
+    # WARNING — Linux: Cloudflare in front of chatgpt.com fingerprints the
+    # proxy's rustls TLS signature and returns 403. This affects the native
+    # Codex CLI on Linux too (openai/codex#17860). macOS tends to work because
+    # the native Codex binary uses system TLS. If you're on Linux, prefer
+    # api.openai.com above.
+    #base_url: "https://chatgpt.com/backend-api/codex"
     codex_auth:
-        enabled: false  # Disabled to test pure passthrough
+        enabled: false
 
   # Explicitly disable other providers for passthrough mode
   anthropic:
