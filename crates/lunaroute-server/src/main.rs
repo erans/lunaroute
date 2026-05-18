@@ -1188,6 +1188,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     config.http_server.sse_keepalive_enabled,
                     Some(provider_registry.clone()),
                 )
+            } else if let Some(session_store) = session_store_for_passthrough.clone() {
+                openai::router_with_session_store(router, session_store, "openai", "openai")
             } else {
                 openai::router(router)
             }
@@ -1207,8 +1209,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Some(provider_registry.clone()),
                     )
                 } else {
-                    anthropic_ingress::router(router)
+                    if let Some(session_store) = session_store_for_passthrough.clone() {
+                        anthropic_ingress::router_with_session_store(
+                            router,
+                            session_store,
+                            "anthropic",
+                            "anthropic",
+                        )
+                    } else {
+                        anthropic_ingress::router(router)
+                    }
                 }
+            } else if let Some(session_store) = session_store_for_passthrough.clone() {
+                anthropic_ingress::router_with_session_store(
+                    router,
+                    session_store,
+                    "anthropic",
+                    "anthropic",
+                )
             } else {
                 anthropic_ingress::router(router)
             }
@@ -1238,7 +1256,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
             } else {
                 info!("🔄 Dual dialect with routing (normalization may occur)");
-                lunaroute_ingress::multi_dialect::router(router)
+                if let Some(session_store) = session_store_for_passthrough.clone() {
+                    lunaroute_ingress::multi_dialect::router_with_session_store(
+                        router,
+                        session_store,
+                    )
+                } else {
+                    lunaroute_ingress::multi_dialect::router(router)
+                }
             }
         }
     };

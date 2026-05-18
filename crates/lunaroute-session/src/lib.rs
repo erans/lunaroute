@@ -14,6 +14,7 @@ pub mod pii_redaction;
 pub mod recorder;
 pub mod recording_provider;
 pub mod session;
+pub mod session_store_recording_provider;
 pub mod tool_mapper;
 
 // V2 async recording system
@@ -33,6 +34,7 @@ pub mod import;
 pub use recorder::{FileSessionRecorder, RecordedSession, SessionRecorder};
 pub use recording_provider::RecordingProvider;
 pub use session::{SessionId, SessionMetadata, SessionQuery};
+pub use session_store_recording_provider::SessionStoreRecordingProvider;
 pub use tool_mapper::ToolCallMapper;
 
 // V2 exports

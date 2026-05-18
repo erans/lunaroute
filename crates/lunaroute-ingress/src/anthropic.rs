@@ -2241,6 +2241,22 @@ pub fn router(provider: Arc<dyn Provider>) -> Router {
         .with_state(provider)
 }
 
+/// Create Anthropic router with session recording for normalized routed requests.
+pub fn router_with_session_store(
+    provider: Arc<dyn Provider>,
+    session_store: Arc<dyn SessionStore>,
+    provider_name: impl Into<String>,
+    listener_name: impl Into<String>,
+) -> Router {
+    let recording_provider = Arc::new(lunaroute_session::SessionStoreRecordingProvider::new(
+        provider,
+        session_store,
+        provider_name,
+        listener_name,
+    ));
+    router(recording_provider)
+}
+
 /// Create Anthropic passthrough router (for Anthropic→Anthropic direct routing)
 #[allow(clippy::too_many_arguments)]
 pub fn passthrough_router(

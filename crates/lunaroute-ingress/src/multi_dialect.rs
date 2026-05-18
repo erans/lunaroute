@@ -31,6 +31,27 @@ pub fn router(provider: Arc<dyn Provider>) -> Router {
     openai_router.merge(anthropic_router)
 }
 
+/// Create a dual-dialect router with session recording for normalized routed requests.
+pub fn router_with_session_store(
+    provider: Arc<dyn Provider>,
+    session_store: Arc<dyn SessionStore>,
+) -> Router {
+    let openai_router = crate::openai::router_with_session_store(
+        provider.clone(),
+        session_store.clone(),
+        "openai",
+        "openai",
+    );
+    let anthropic_router = crate::anthropic::router_with_session_store(
+        provider,
+        session_store,
+        "anthropic",
+        "anthropic",
+    );
+
+    openai_router.merge(anthropic_router)
+}
+
 /// Create a dual-dialect passthrough router
 ///
 /// This is used when:
