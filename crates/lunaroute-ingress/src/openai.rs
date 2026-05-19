@@ -2192,6 +2192,22 @@ pub fn router(provider: Arc<dyn Provider>) -> Router {
         .with_state(provider)
 }
 
+/// Create OpenAI router with session recording for normalized routed requests.
+pub fn router_with_session_store(
+    provider: Arc<dyn Provider>,
+    session_store: Arc<dyn SessionStore>,
+    provider_name: impl Into<String>,
+    listener_name: impl Into<String>,
+) -> Router {
+    let recording_provider = Arc::new(lunaroute_session::SessionStoreRecordingProvider::new(
+        provider,
+        session_store,
+        provider_name,
+        listener_name,
+    ));
+    router(recording_provider)
+}
+
 /// State for OpenAI passthrough handler (connector + optional stats tracker + metrics + session store)
 pub struct OpenAIPassthroughState {
     pub connector: Arc<lunaroute_egress::openai::OpenAIConnector>,
