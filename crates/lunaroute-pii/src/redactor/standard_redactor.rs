@@ -3,7 +3,7 @@
 use crate::detector::{CustomPattern, CustomRedactionMode, Detection, PIIType};
 use crate::redactor::{PIIRedactor, RedactionMode, RedactorConfig, TypeRedactionOverride};
 use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::collections::HashMap;
 
