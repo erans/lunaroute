@@ -6,7 +6,7 @@
 //! # Security
 //!
 //! Session IDs are generated using cryptographically secure random number
-//! generation (OsRng) with 128 bits of entropy, encoded as 32 hex characters.
+//! generation (SysRng) with 128 bits of entropy, encoded as 32 hex characters.
 //! This ensures session IDs are unpredictable and filesystem-safe.
 
 use crate::session::{SessionId, SessionMetadata, SessionQuery};
@@ -15,18 +15,18 @@ use lunaroute_core::{
     Error, Result,
     normalized::{NormalizedRequest, NormalizedResponse, NormalizedStreamEvent},
 };
-use rand::rngs::OsRng;
+use rand::rngs::SysRng;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
-/// Generate a cryptographically secure session ID using OsRng
+/// Generate a cryptographically secure session ID using SysRng
 /// Format: 32 hex characters (128 bits of entropy)
 fn generate_secure_session_id() -> String {
     let mut bytes = [0u8; 16];
-    use rand::TryRngCore;
-    OsRng.try_fill_bytes(&mut bytes).expect("OsRng failed");
+    use rand::TryRng;
+    SysRng.try_fill_bytes(&mut bytes).expect("SysRng failed");
     hex::encode(bytes)
 }
 
