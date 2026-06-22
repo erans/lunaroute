@@ -33,7 +33,7 @@ anyhow = { workspace = true }
 dashmap = { workspace = true }
 
 # SQLite support for session recording
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"], optional = true }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "chrono"], optional = true }
 
 [features]
 default = []

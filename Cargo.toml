@@ -44,7 +44,7 @@ hyper-util = { version = "0.1", features = ["full"] }
 http = "1.0"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["full"] }
-tower-http = { version = "0.6", features = ["full"] }
+tower-http = { version = "0.7", features = ["full"] }
 reqwest = { version = "0.13", features = ["json", "stream", "rustls"], default-features = false }
 eventsource-stream = "0.2"
 tokio-tungstenite = "0.29"
