@@ -313,6 +313,30 @@ struct SessionStoreRecordingStream {
 }
 
 impl SessionStoreRecordingStream {
+    #[cfg(test)]
+    fn new_for_test(
+        inner: Box<dyn Stream<Item = Result<NormalizedStreamEvent>> + Send + Unpin>,
+        session_store: Arc<dyn SessionStore>,
+        session_id: String,
+        request_id: String,
+        requested_model: String,
+    ) -> Self {
+        Self {
+            inner,
+            session_store,
+            session_id,
+            request_id,
+            requested_model,
+            started: Instant::now(),
+            first_event_seen: false,
+            ttft_ms: 0,
+            chunk_count: 0,
+            usage: None,
+            finish_reason: None,
+            completed: false,
+        }
+    }
+
     fn mark_first_event(&mut self) {
         if self.first_event_seen {
             return;
@@ -415,6 +439,14 @@ impl Stream for SessionStoreRecordingStream {
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for SessionStoreRecordingStream {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.complete(false, Some("interrupted: client disconnected".to_string()));
         }
     }
 }
@@ -558,5 +590,183 @@ fn tool_summary_from_response(response: &NormalizedResponse) -> ToolUsageSummary
         by_tool,
         total_tool_time_ms: 0,
         tool_error_count: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::stream;
+    use lunaroute_core::session_store::SessionStore;
+    use lunaroute_core::tenant::TenantId;
+    use std::sync::{Arc, Mutex};
+
+    /// Mock store capturing serialized Completed events.
+    struct CapturingStore {
+        events: Mutex<Vec<serde_json::Value>>,
+    }
+
+    impl CapturingStore {
+        fn new() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn completed_events(&self) -> Vec<serde_json::Value> {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("completed"))
+                .cloned()
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionStore for CapturingStore {
+        async fn write_event(&self, _t: Option<TenantId>, event: serde_json::Value) -> Result<()> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+
+        async fn search(
+            &self,
+            _t: Option<TenantId>,
+            _q: serde_json::Value,
+        ) -> Result<serde_json::Value> {
+            Ok(serde_json::json!({"sessions": []}))
+        }
+
+        async fn get_session(&self, _t: Option<TenantId>, _id: &str) -> Result<serde_json::Value> {
+            Ok(serde_json::json!(null))
+        }
+
+        async fn cleanup(
+            &self,
+            _t: Option<TenantId>,
+            _r: serde_json::Value,
+        ) -> Result<serde_json::Value> {
+            Ok(serde_json::json!({"deleted": 0}))
+        }
+
+        async fn get_stats(
+            &self,
+            _t: Option<TenantId>,
+            _tr: serde_json::Value,
+        ) -> Result<serde_json::Value> {
+            Ok(serde_json::json!({}))
+        }
+
+        async fn list_sessions(
+            &self,
+            _t: Option<TenantId>,
+            _l: usize,
+            _o: usize,
+        ) -> Result<Vec<serde_json::Value>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// A drop must produce exactly one Completed{success:false, error:"interrupted..."}.
+    #[tokio::test]
+    async fn drop_without_completion_writes_interrupted_completed() {
+        let store = Arc::new(CapturingStore::new());
+        // inner stream that just yields one delta then waits (we won't poll to completion)
+        let inner: Box<dyn Stream<Item = Result<NormalizedStreamEvent>> + Send + Unpin> =
+            Box::new(stream::iter(vec![Ok(NormalizedStreamEvent::Delta {
+                index: 0,
+                delta: lunaroute_core::normalized::Delta {
+                    role: None,
+                    content: Some("hi".to_string()),
+                },
+            })]));
+        let mut s = SessionStoreRecordingStream::new_for_test(
+            inner,
+            store.clone(),
+            "sess-1".to_string(),
+            "req-1".to_string(),
+            "model-x".to_string(),
+        );
+
+        // Poll once so it starts but does NOT complete.
+        use futures::StreamExt;
+        use std::pin::pin;
+        let mut pinned = pin!(&mut s);
+        let _ = pinned.next().await;
+
+        // Drop without draining to completion — simulates client disconnect.
+        drop(s);
+
+        // The Drop spawns the Completed event fire-and-forget; let it land.
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+            if !store.completed_events().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let completed = store.completed_events();
+        assert_eq!(
+            completed.len(),
+            1,
+            "drop should write exactly one Completed"
+        );
+        assert_eq!(
+            completed[0].get("success").and_then(|v| v.as_bool()),
+            Some(false),
+            "interrupted completion must be success:false"
+        );
+        let err = completed[0]
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            err.contains("interrupted"),
+            "error should mention 'interrupted', got: {err}"
+        );
+    }
+
+    /// A stream that completed normally must NOT produce a second Completed on drop.
+    #[tokio::test]
+    async fn drop_after_normal_completion_writes_no_duplicate() {
+        let store = Arc::new(CapturingStore::new());
+        let inner: Box<dyn Stream<Item = Result<NormalizedStreamEvent>> + Send + Unpin> =
+            Box::new(stream::iter(vec![
+                Ok(NormalizedStreamEvent::Delta {
+                    index: 0,
+                    delta: lunaroute_core::normalized::Delta {
+                        role: None,
+                        content: Some("hi".to_string()),
+                    },
+                }),
+                Ok(NormalizedStreamEvent::End {
+                    finish_reason: lunaroute_core::normalized::FinishReason::Stop,
+                }),
+            ]));
+        let mut s = SessionStoreRecordingStream::new_for_test(
+            inner,
+            store.clone(),
+            "sess-2".to_string(),
+            "req-2".to_string(),
+            "model-x".to_string(),
+        );
+        use futures::StreamExt;
+        use std::pin::pin;
+        let mut pinned = pin!(&mut s);
+        while pinned.next().await.is_some() {}
+        drop(s);
+
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            store.completed_events().len(),
+            1,
+            "exactly one Completed, no duplicate on drop"
+        );
     }
 }
