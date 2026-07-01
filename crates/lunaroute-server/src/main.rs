@@ -630,7 +630,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create AppState if both stores are available
     // Clone session_store for passthrough routers before creating AppState
-    let session_store_for_passthrough = session_store.clone();
+    let session_store_for_passthrough = session_store.clone().map(|s| {
+        Arc::new(lunaroute_session::TenantScopedStore::new(s, tenant_id)) as Arc<dyn SessionStore>
+    });
     let _app_state: Option<app::AppState> = if let (Some(config_st), Some(session_st)) =
         (config_store, session_store)
     {
