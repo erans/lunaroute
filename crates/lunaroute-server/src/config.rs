@@ -266,6 +266,14 @@ pub struct HttpServerSettings {
     /// Default: null
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recv_buffer_size: Option<usize>,
+
+    /// Maximum inbound request body size in bytes. Applies to ALL routes
+    /// (chat completions, messages, bypass paths). Enforced at the body-stream
+    /// level by axum's DefaultBodyLimit, so chunked or omitted Content-Length
+    /// cannot bypass it. Default: 100 MiB (large enough for big multimodal
+    /// prompts, small enough to stop OOM attacks).
+    #[serde(default = "default_max_request_body_bytes")]
+    pub max_request_body_bytes: usize,
 }
 
 impl Default for HttpServerSettings {
@@ -277,6 +285,7 @@ impl Default for HttpServerSettings {
             sse_keepalive_enabled: true,
             send_buffer_size: None,
             recv_buffer_size: None,
+            max_request_body_bytes: default_max_request_body_bytes(),
         }
     }
 }
@@ -760,6 +769,10 @@ fn default_sse_keepalive_interval_secs() -> u64 {
     15
 }
 
+fn default_max_request_body_bytes() -> usize {
+    100 * 1024 * 1024 // 100 MiB
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -831,6 +844,26 @@ mod tests {
         assert_eq!(config.connect_timeout_secs, 10); // Default
         assert_eq!(config.pool_max_idle_per_host, 64); // Custom
         assert_eq!(config.pool_idle_timeout_secs, 600); // Default (updated to 600s in v0.1.4)
+    }
+
+    #[test]
+    fn test_http_server_settings_default_max_request_body_bytes() {
+        let settings = HttpServerSettings::default();
+        assert_eq!(
+            settings.max_request_body_bytes,
+            100 * 1024 * 1024,
+            "default max_request_body_bytes should be 100 MiB"
+        );
+    }
+
+    #[test]
+    fn test_http_server_settings_yaml_overrides_max_request_body_bytes() {
+        let yaml = r#"
+tcp_nodelay: true
+max_request_body_bytes: 5242880
+"#;
+        let settings: HttpServerSettings = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(settings.max_request_body_bytes, 5 * 1024 * 1024);
     }
 
     #[test]
