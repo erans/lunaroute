@@ -274,11 +274,11 @@ where
                                         .unwrap_or(0)
                                         as u32;
 
+                                    // First delta for this tool call carries function.name -> register it.
                                     if let Some(function) = tool_call.get("function")
                                         && let Some(name) =
                                             function.get("name").and_then(|n| n.as_str())
                                     {
-                                        // Use tool call ID if available, otherwise fall back to index-based tracking
                                         let tool_id = tool_call
                                             .get("id")
                                             .and_then(|id| id.as_str())
@@ -293,27 +293,25 @@ where
                                                 format!("{}_{}", name, seen_tool_ids.len())
                                             });
 
-                                        // Track tool ID by index
                                         tool_id_by_index.insert(index, tool_id.clone());
                                         tool_name_by_id.insert(tool_id.clone(), name.to_string());
 
-                                        // Only count if we haven't seen this tool ID before
                                         if seen_tool_ids.insert(tool_id) {
                                             *tool_calls.entry(name.to_string()).or_insert(0) += 1;
                                         }
+                                    }
 
-                                        // Extract arguments if present
-                                        if let Some(arguments) =
+                                    // Argument fragments arrive on EVERY delta (first + subsequent).
+                                    // Hoisted OUT of the name guard: later deltas have no name.
+                                    if let Some(function) = tool_call.get("function")
+                                        && let Some(arguments) =
                                             function.get("arguments").and_then(|a| a.as_str())
-                                        {
-                                            // Append to existing arguments (for streaming)
-                                            if let Some(tool_id) = tool_id_by_index.get(&index) {
-                                                tool_args_by_id
-                                                    .entry(tool_id.clone())
-                                                    .or_default()
-                                                    .push_str(arguments);
-                                            }
-                                        }
+                                        && let Some(tool_id) = tool_id_by_index.get(&index)
+                                    {
+                                        tool_args_by_id
+                                            .entry(tool_id.clone())
+                                            .or_default()
+                                            .push_str(arguments);
                                     }
                                 }
                             }
@@ -710,5 +708,53 @@ mod tests {
         assert_eq!(parsed.tool_summary.unique_tool_count, 2);
         assert!(parsed.tool_summary.by_tool.contains_key("get_weather"));
         assert!(parsed.tool_summary.by_tool.contains_key("search"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_openai_stream_tool_arguments_across_multiple_deltas() {
+        // Regression: OpenAI streams tool args across many deltas; only the FIRST
+        // delta carries function.name, later deltas carry only function.arguments.
+        // The old code nested args accumulation inside the name guard, dropping
+        // all post-first fragments.
+        let events: Vec<
+            Result<eventsource_stream::Event, eventsource_stream::EventStreamError<std::convert::Infallible>>,
+        > = vec![
+            // delta 1: name + id, no args yet
+            Ok(eventsource_stream::Event {
+                event: "data".to_string(),
+                data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_7","function":{"name":"get_weather"}}]}}]}"#
+                    .to_string(),
+                id: String::new(),
+                retry: None,
+            }),
+            // delta 2: arguments part A, NO name
+            Ok(eventsource_stream::Event {
+                event: "data".to_string(),
+                data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"loc\":"}}]}}]}"#
+                    .to_string(),
+                id: String::new(),
+                retry: None,
+            }),
+            // delta 3: arguments part B, NO name
+            Ok(eventsource_stream::Event {
+                event: "data".to_string(),
+                data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"NYC\"}"}}]}}]}"#
+                    .to_string(),
+                id: String::new(),
+                retry: None,
+            }),
+        ];
+
+        let stream = stream::iter(events);
+        let parsed = parse_openai_stream(stream).await;
+
+        assert_eq!(parsed.tool_summary.total_tool_calls, 1);
+        assert_eq!(parsed.tool_summary.unique_tool_count, 1);
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].tool_name, "get_weather");
+        assert_eq!(
+            parsed.tool_calls[0].tool_arguments, "{\"loc\":\"NYC\"}",
+            "arguments must accumulate across ALL deltas, not just the first"
+        );
     }
 }

@@ -810,6 +810,43 @@ struct AnthropicStreamUsage {
     output_tokens: u32,
 }
 
+/// Emit normalized events for a single Anthropic `message_delta`.
+///
+/// A real Anthropic `message_delta` typically carries BOTH `usage.output_tokens`
+/// and `delta.stop_reason` in the same event. We emit `Usage` first (if any),
+/// then `End` (if any). Returns an empty vec if neither is present.
+///
+/// Extracted as a pure function so both `create_anthropic_stream` and the
+/// test helper exercise the same logic.
+fn emit_message_delta_events(
+    usage: &AnthropicStreamUsage,
+    delta: &AnthropicStreamMessageDelta,
+) -> Vec<lunaroute_core::Result<NormalizedStreamEvent>> {
+    let mut out = Vec::new();
+    if usage.output_tokens > 0 {
+        out.push(Ok(NormalizedStreamEvent::Usage {
+            usage: Usage {
+                prompt_tokens: 0, // Not available in delta
+                completion_tokens: usage.output_tokens,
+                total_tokens: usage.output_tokens,
+            },
+        }));
+    }
+    if let Some(stop_reason) = &delta.stop_reason {
+        let reason = match stop_reason.as_str() {
+            "end_turn" => FinishReason::Stop,
+            "max_tokens" => FinishReason::Length,
+            "tool_use" => FinishReason::ToolCalls,
+            "stop_sequence" => FinishReason::Stop,
+            _ => FinishReason::Stop,
+        };
+        out.push(Ok(NormalizedStreamEvent::End {
+            finish_reason: reason,
+        }));
+    }
+    out
+}
+
 fn create_anthropic_stream(
     response: reqwest::Response,
 ) -> Pin<Box<dyn Stream<Item = lunaroute_core::Result<NormalizedStreamEvent>> + Send + Unpin>> {
@@ -821,19 +858,20 @@ fn create_anthropic_stream(
 
     // Track state across events with HashMap for per-index tracking
     let stream = event_stream.scan(
-        (None, HashMap::new(), HashMap::new()),
-        |(stream_id, tool_call_states, tool_args_buffers): &mut (
+        (None, HashMap::new(), HashMap::new(), false),
+        |(stream_id, tool_call_states, tool_args_buffers, end_sent): &mut (
             Option<String>,
             HashMap<u32, (String, String)>, // index -> (id, name)
             HashMap<u32, String>,           // index -> accumulated args
+            bool,                           // whether End has been emitted
         ),
          result| {
             let event = match result {
                 Ok(event) => event,
                 Err(e) => {
-                    return futures::future::ready(Some(Err(lunaroute_core::Error::Provider(
-                        format!("SSE stream error: {}", e),
-                    ))));
+                    return futures::future::ready(Some(vec![Err(
+                        lunaroute_core::Error::Provider(format!("SSE stream error: {}", e)),
+                    )]));
                 }
             };
 
@@ -842,9 +880,12 @@ fn create_anthropic_stream(
                 Ok(evt) => evt,
                 Err(e) => {
                     debug!("Failed to parse Anthropic stream event: {}", e);
-                    return futures::future::ready(Some(Err(lunaroute_core::Error::Provider(
-                        format!("Failed to parse stream event: {}", e),
-                    ))));
+                    return futures::future::ready(Some(vec![Err(
+                        lunaroute_core::Error::Provider(format!(
+                            "Failed to parse stream event: {}",
+                            e
+                        )),
+                    )]));
                 }
             };
 
@@ -867,7 +908,7 @@ fn create_anthropic_stream(
                         AnthropicStreamContentBlock::Text { .. } => {
                             // Text block start - just track state, don't emit event
                             debug!("Text content block started at index {}", index);
-                            return futures::future::ready(None);
+                            return futures::future::ready(Some(Vec::new()));
                         }
                         AnthropicStreamContentBlock::ToolUse { id, name } => {
                             // Start of tool call - track by index
@@ -877,7 +918,7 @@ fn create_anthropic_stream(
                             );
                             tool_call_states.insert(index, (id.clone(), name.clone()));
                             tool_args_buffers.insert(index, String::new());
-                            return futures::future::ready(None);
+                            return futures::future::ready(Some(Vec::new()));
                         }
                     }
                 }
@@ -914,7 +955,7 @@ fn create_anthropic_stream(
                                     "InputJsonDelta at index {} without active tool call",
                                     index
                                 );
-                                return futures::future::ready(None);
+                                return futures::future::ready(Some(Vec::new()));
                             }
                         }
                     }
@@ -924,69 +965,49 @@ fn create_anthropic_stream(
                     // Remove tool call state for this specific index
                     tool_call_states.remove(&index);
                     tool_args_buffers.remove(&index);
-                    return futures::future::ready(None);
+                    return futures::future::ready(Some(Vec::new()));
                 }
 
                 AnthropicStreamEvent::MessageDelta { delta, usage } => {
-                    // Collect events to emit (may have both usage and end)
-                    let mut events_to_emit = Vec::new();
+                    let mut events = emit_message_delta_events(&usage, &delta);
+                    let has_end = events
+                        .iter()
+                        .any(|event| matches!(event, Ok(NormalizedStreamEvent::End { .. })));
 
-                    // Send usage event first if we have output tokens
-                    if usage.output_tokens > 0 {
-                        events_to_emit.push(Ok(NormalizedStreamEvent::Usage {
-                            usage: Usage {
-                                prompt_tokens: 0, // Not available in delta
-                                completion_tokens: usage.output_tokens,
-                                total_tokens: usage.output_tokens,
-                            },
-                        }));
+                    if *end_sent {
+                        events.retain(|event| {
+                            !matches!(event, Ok(NormalizedStreamEvent::End { .. }))
+                        });
+                    } else if has_end {
+                        *end_sent = true;
                     }
 
-                    if let Some(stop_reason) = delta.stop_reason {
-                        let reason = match stop_reason.as_str() {
-                            "end_turn" => FinishReason::Stop,
-                            "max_tokens" => FinishReason::Length,
-                            "tool_use" => FinishReason::ToolCalls,
-                            "stop_sequence" => FinishReason::Stop,
-                            _ => FinishReason::Stop,
-                        };
-                        events_to_emit.push(Ok(NormalizedStreamEvent::End {
-                            finish_reason: reason,
-                        }));
-                    }
-
-                    if events_to_emit.is_empty() {
-                        return futures::future::ready(None);
-                    }
-
-                    // For now, return the first event (scan returns Option<T>, not Option<Vec<T>>)
-                    // This is a limitation - ideally we'd use flat_map instead
-                    return futures::future::ready(Some(
-                        events_to_emit.into_iter().next().unwrap(),
-                    ));
+                    return futures::future::ready(Some(events));
                 }
 
                 AnthropicStreamEvent::MessageStop => {
-                    // Final event - already sent End in MessageDelta
+                    // No normalized emission; End comes from the message_delta carrying stop_reason.
                     debug!("Anthropic stream stopped");
-                    return futures::future::ready(None);
+                    return futures::future::ready(Some(Vec::new()));
                 }
 
                 AnthropicStreamEvent::Ping => {
                     // Ping event - used to keep connection alive, no action needed
                     debug!("Received ping event");
-                    return futures::future::ready(None);
+                    return futures::future::ready(Some(Vec::new()));
                 }
 
                 AnthropicStreamEvent::Unknown => {
                     debug!("Unknown Anthropic stream event type");
-                    return futures::future::ready(None);
+                    return futures::future::ready(Some(Vec::new()));
                 }
             };
 
-            futures::future::ready(Some(normalized))
+            futures::future::ready(Some(vec![normalized]))
         },
     );
+
+    let stream = stream.flat_map(futures::stream::iter);
 
     Box::pin(stream)
 }
@@ -1813,27 +1834,7 @@ mod tests {
                     }
 
                     AnthropicStreamEvent::MessageDelta { delta, usage } => {
-                        if usage.output_tokens > 0 {
-                            results.push(Ok(NormalizedStreamEvent::Usage {
-                                usage: Usage {
-                                    prompt_tokens: 0,
-                                    completion_tokens: usage.output_tokens,
-                                    total_tokens: usage.output_tokens,
-                                },
-                            }));
-                        }
-                        if let Some(stop_reason) = delta.stop_reason {
-                            let reason = match stop_reason.as_str() {
-                                "end_turn" => FinishReason::Stop,
-                                "max_tokens" => FinishReason::Length,
-                                "tool_use" => FinishReason::ToolCalls,
-                                "stop_sequence" => FinishReason::Stop,
-                                _ => FinishReason::Stop,
-                            };
-                            results.push(Ok(NormalizedStreamEvent::End {
-                                finish_reason: reason,
-                            }));
-                        }
+                        results.extend(emit_message_delta_events(&usage, &delta));
                     }
 
                     AnthropicStreamEvent::MessageStop => {
@@ -1913,6 +1914,66 @@ mod tests {
                 }
                 _ => panic!("Expected End event"),
             }
+        }
+
+        #[tokio::test]
+        async fn test_stream_does_not_truncate_on_content_block_stop() {
+            use futures::StreamExt;
+            use wiremock::{
+                Mock, MockServer, ResponseTemplate,
+                matchers::{method, path},
+            };
+
+            let events = [
+                r#"{"type":"message_start","message":{"id":"msg_stop","type":"message","role":"assistant","model":"claude-3-opus","usage":{"input_tokens":10,"output_tokens":0}}}"#,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#,
+                r#"{"type":"content_block_stop","index":0}"#,
+                r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}"#,
+                r#"{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":3}}"#,
+                r#"{"type":"message_stop"}"#,
+            ];
+            let sse_body = events
+                .iter()
+                .map(|event| format!("data: {}\n\n", event))
+                .collect::<String>();
+
+            let mock_server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/stream"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/event-stream")
+                        .set_body_string(sse_body),
+                )
+                .mount(&mock_server)
+                .await;
+
+            let response = reqwest::Client::new()
+                .get(format!("{}/stream", mock_server.uri()))
+                .send()
+                .await
+                .unwrap();
+            let collected: Vec<_> = create_anthropic_stream(response)
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .map(|event| event.unwrap())
+                .collect();
+
+            let usage_tokens: Vec<_> = collected
+                .iter()
+                .filter_map(|event| match event {
+                    NormalizedStreamEvent::Usage { usage } => Some(usage.completion_tokens),
+                    _ => None,
+                })
+                .collect();
+            let end_count = collected
+                .iter()
+                .filter(|event| matches!(event, NormalizedStreamEvent::End { .. }))
+                .count();
+
+            assert_eq!(usage_tokens, vec![5, 3]);
+            assert_eq!(end_count, 1);
         }
 
         #[tokio::test]
@@ -2009,6 +2070,59 @@ mod tests {
                 }
                 _ => panic!("Expected End event with Length reason"),
             }
+        }
+
+        #[tokio::test]
+        async fn test_message_delta_with_both_usage_and_stop_emits_both() {
+            // Regression: a SINGLE message_delta carrying BOTH output_tokens>0 AND
+            // stop_reason must emit Usage THEN End. The scan-with-next() bug dropped End.
+            let usage = AnthropicStreamUsage { output_tokens: 42 };
+            let delta = AnthropicStreamMessageDelta {
+                stop_reason: Some("end_turn".to_string()),
+                stop_sequence: None,
+            };
+            let emitted = emit_message_delta_events(&usage, &delta);
+            assert_eq!(emitted.len(), 2, "expected Usage + End");
+            assert!(
+                matches!(emitted[0], Ok(NormalizedStreamEvent::Usage { usage }) if usage.completion_tokens == 42)
+            );
+            assert!(matches!(
+                emitted[1],
+                Ok(NormalizedStreamEvent::End {
+                    finish_reason: FinishReason::Stop
+                })
+            ));
+        }
+
+        #[tokio::test]
+        async fn test_message_delta_only_stop_emits_only_end() {
+            let usage = AnthropicStreamUsage { output_tokens: 0 };
+            let delta = AnthropicStreamMessageDelta {
+                stop_reason: Some("tool_use".to_string()),
+                stop_sequence: None,
+            };
+            let emitted = emit_message_delta_events(&usage, &delta);
+            assert_eq!(emitted.len(), 1);
+            assert!(matches!(
+                emitted[0],
+                Ok(NormalizedStreamEvent::End {
+                    finish_reason: FinishReason::ToolCalls
+                })
+            ));
+        }
+
+        #[tokio::test]
+        async fn test_message_delta_only_usage_emits_only_usage() {
+            let usage = AnthropicStreamUsage { output_tokens: 7 };
+            let delta = AnthropicStreamMessageDelta {
+                stop_reason: None,
+                stop_sequence: None,
+            };
+            let emitted = emit_message_delta_events(&usage, &delta);
+            assert_eq!(emitted.len(), 1);
+            assert!(
+                matches!(emitted[0], Ok(NormalizedStreamEvent::Usage { usage }) if usage.completion_tokens == 7)
+            );
         }
 
         #[tokio::test]
