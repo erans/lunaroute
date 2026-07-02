@@ -3,7 +3,7 @@
 use crate::types::RequestMetadata;
 use axum::{
     extract::Request,
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, header},
     middleware::Next,
     response::Response,
 };
@@ -62,24 +62,6 @@ pub async fn request_context_middleware(mut req: Request, next: Next) -> Respons
     }
 
     response
-}
-
-/// Middleware to enforce body size limits
-pub async fn body_size_limit_middleware(
-    req: Request,
-    next: Next,
-    max_size: usize,
-) -> Result<Response, StatusCode> {
-    // Check content-length header
-    if let Some(content_length) = req.headers().get(header::CONTENT_LENGTH)
-        && let Ok(length_str) = content_length.to_str()
-        && let Ok(length) = length_str.parse::<usize>()
-        && length > max_size
-    {
-        return Err(StatusCode::PAYLOAD_TOO_LARGE);
-    }
-
-    Ok(next.run(req).await)
 }
 
 /// CORS configuration
@@ -334,116 +316,6 @@ mod tests {
                 .get(header::ACCESS_CONTROL_ALLOW_METHODS)
                 .is_some()
         );
-    }
-
-    #[tokio::test]
-    async fn test_body_size_limit_within_limit() {
-        let max_size = 1024;
-        let app = Router::new()
-            .route("/test", get(test_handler))
-            .layer(middleware::from_fn(move |req, next| {
-                body_size_limit_middleware(req, next, max_size)
-            }));
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/test")
-                    .header(header::CONTENT_LENGTH, "512")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn test_body_size_limit_exceeds_limit() {
-        let max_size = 1024;
-        let app = Router::new()
-            .route("/test", get(test_handler))
-            .layer(middleware::from_fn(move |req, next| {
-                body_size_limit_middleware(req, next, max_size)
-            }));
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/test")
-                    .header(header::CONTENT_LENGTH, "2048")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    }
-
-    #[tokio::test]
-    async fn test_body_size_limit_no_content_length() {
-        let max_size = 1024;
-        let app = Router::new()
-            .route("/test", get(test_handler))
-            .layer(middleware::from_fn(move |req, next| {
-                body_size_limit_middleware(req, next, max_size)
-            }));
-
-        let response = app
-            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn test_body_size_limit_at_limit() {
-        let max_size = 1024;
-        let app = Router::new()
-            .route("/test", get(test_handler))
-            .layer(middleware::from_fn(move |req, next| {
-                body_size_limit_middleware(req, next, max_size)
-            }));
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/test")
-                    .header(header::CONTENT_LENGTH, "1024")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn test_body_size_limit_malformed_content_length() {
-        let max_size = 1024;
-        let app = Router::new()
-            .route("/test", get(test_handler))
-            .layer(middleware::from_fn(move |req, next| {
-                body_size_limit_middleware(req, next, max_size)
-            }));
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/test")
-                    .header(header::CONTENT_LENGTH, "invalid")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        // Should pass through when Content-Length is malformed
-        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
