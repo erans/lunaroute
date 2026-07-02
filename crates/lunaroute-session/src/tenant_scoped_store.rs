@@ -79,6 +79,10 @@ impl SessionStore for TenantScopedStore {
         self.inner.get_stats(tid, time_range).await
     }
 
+    async fn flush(&self) -> Result<()> {
+        self.inner.flush().await
+    }
+
     async fn list_sessions(
         &self,
         tenant_id: Option<TenantId>,
@@ -100,16 +104,21 @@ mod tests {
     /// Mock store that records every `tenant_id` it received for `write_event`.
     struct CapturingStore {
         seen: Mutex<Vec<Option<TenantId>>>,
+        flush_called: Mutex<bool>,
     }
 
     impl CapturingStore {
         fn new() -> Self {
             Self {
                 seen: Mutex::new(Vec::new()),
+                flush_called: Mutex::new(false),
             }
         }
         fn seen(&self) -> Vec<Option<TenantId>> {
             self.seen.lock().unwrap().clone()
+        }
+        fn was_flushed(&self) -> bool {
+            *self.flush_called.lock().unwrap()
         }
     }
 
@@ -134,6 +143,10 @@ mod tests {
         }
         async fn get_stats(&self, _t: Option<TenantId>, _tr: TimeRange) -> Result<AggregateStats> {
             Ok(serde_json::json!({}))
+        }
+        async fn flush(&self) -> Result<()> {
+            *self.flush_called.lock().unwrap() = true;
+            Ok(())
         }
         async fn list_sessions(
             &self,
@@ -183,5 +196,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(inner.seen(), vec![None]);
+    }
+
+    #[tokio::test]
+    async fn flush_delegates_to_inner_store() {
+        let inner = Arc::new(CapturingStore::new());
+        let scoped = TenantScopedStore::new(inner.clone(), None);
+        scoped.flush().await.unwrap();
+        assert!(
+            inner.was_flushed(),
+            "scoped flush must delegate to inner store"
+        );
     }
 }
