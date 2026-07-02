@@ -61,16 +61,26 @@ pub struct BypassProvider {
     pub name: String,
     /// HTTP client
     pub client: Arc<Client>,
+    /// Maximum inbound request body size in bytes (mirrors the server-wide
+    /// DefaultBodyLimit; used for the bypass handler's own bounded read).
+    pub max_request_body_bytes: usize,
 }
 
 impl BypassProvider {
     /// Create a new bypass provider
-    pub fn new(base_url: String, api_key: String, name: String, client: Arc<Client>) -> Self {
+    pub fn new(
+        base_url: String,
+        api_key: String,
+        name: String,
+        client: Arc<Client>,
+        max_request_body_bytes: usize,
+    ) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             name,
             client,
+            max_request_body_bytes,
         }
     }
 
@@ -145,7 +155,7 @@ async fn bypass_handler_impl(
     let headers = parts.headers;
 
     // Read body
-    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+    let body_bytes = match axum::body::to_bytes(body, provider.max_request_body_bytes).await {
         Ok(bytes) => bytes,
         Err(e) => {
             error!("Failed to read request body: {}", e);
@@ -314,6 +324,7 @@ mod tests {
             "test-key".to_string(),
             "openai".to_string(),
             client,
+            usize::MAX,
         );
 
         assert_eq!(
@@ -335,6 +346,7 @@ mod tests {
             "test-key".to_string(),
             "anthropic".to_string(),
             client,
+            usize::MAX,
         );
 
         assert_eq!(
@@ -353,6 +365,7 @@ mod tests {
             "key".to_string(),
             "test".to_string(),
             client.clone(),
+            usize::MAX,
         );
         assert_eq!(provider1.base_url, "https://api.openai.com");
 
@@ -362,6 +375,7 @@ mod tests {
             "key".to_string(),
             "test".to_string(),
             client.clone(),
+            usize::MAX,
         );
         assert_eq!(provider2.base_url, "https://api.openai.com");
     }

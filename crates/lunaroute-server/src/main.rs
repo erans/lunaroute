@@ -1289,6 +1289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             api_key,
             name,
             Arc::new(reqwest::Client::new()),
+            config.http_server.max_request_body_bytes,
         ))
     });
 
@@ -1303,7 +1304,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let health_router = health_router(health_state);
 
     // Combine routers
-    let app = api_router.merge(health_router);
+    let app = api_router
+        .merge(health_router)
+        .layer(axum::extract::DefaultBodyLimit::max(
+            config.http_server.max_request_body_bytes,
+        ));
 
     // Start server
     let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
