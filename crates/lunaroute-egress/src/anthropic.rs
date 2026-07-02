@@ -1022,6 +1022,13 @@ impl AnthropicResponseExt for reqwest::Response {
     async fn handle_anthropic_response(self) -> Result<AnthropicResponse> {
         let status = self.status();
 
+        // Capture retry-after header before consuming response
+        let retry_after_secs = self
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(crate::parse_retry_after);
+
         if !status.is_success() {
             let status_code = status.as_u16();
             let body = self
@@ -1029,9 +1036,17 @@ impl AnthropicResponseExt for reqwest::Response {
                 .await
                 .unwrap_or_else(|_| "Unable to read error body".to_string());
 
-            return Err(EgressError::ProviderError {
-                status_code,
-                message: body,
+            return Err(if status_code == 429 {
+                debug!(
+                    retry_after_secs = ?retry_after_secs,
+                    "Anthropic rate limit exceeded"
+                );
+                EgressError::RateLimitExceeded { retry_after_secs }
+            } else {
+                EgressError::ProviderError {
+                    status_code,
+                    message: body,
+                }
             });
         }
 
@@ -1322,6 +1337,29 @@ mod tests {
                 }
             }
             _ => panic!("Expected Blocks content"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_anthropic_response_429_returns_rate_limit_exceeded() {
+        use http::Response;
+        use reqwest::Response as ReqResponse;
+
+        // Build an http::Response with 429 + retry-after, convert to reqwest.
+        let http_resp = Response::builder()
+            .status(429)
+            .header("retry-after", "30")
+            .body(r#"{"type":"error","error":{"type":"rate_limit_error","message":"too many requests"}}"#.to_string())
+            .unwrap();
+        let resp: ReqResponse = http_resp.into();
+
+        let result = resp.handle_anthropic_response().await;
+
+        match result {
+            Err(EgressError::RateLimitExceeded { retry_after_secs }) => {
+                assert_eq!(retry_after_secs, Some(30));
+            }
+            other => panic!("expected RateLimitExceeded{{Some(30)}}, got {:?}", other),
         }
     }
 
