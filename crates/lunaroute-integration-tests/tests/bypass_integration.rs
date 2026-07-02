@@ -79,6 +79,7 @@ async fn test_bypass_enabled_proxies_embeddings() {
         "test-key".to_string(),
         "test-provider".to_string(),
         Arc::new(reqwest::Client::new()),
+        usize::MAX,
     ));
 
     // Create path classifier with bypass enabled
@@ -122,6 +123,7 @@ async fn test_bypass_enabled_proxies_audio() {
         "test-key".to_string(),
         "test-provider".to_string(),
         Arc::new(reqwest::Client::new()),
+        usize::MAX,
     ));
 
     // Create path classifier with bypass enabled
@@ -161,6 +163,7 @@ async fn test_bypass_enabled_proxies_images() {
         "test-key".to_string(),
         "test-provider".to_string(),
         Arc::new(reqwest::Client::new()),
+        usize::MAX,
     ));
 
     // Create path classifier with bypass enabled
@@ -186,6 +189,81 @@ async fn test_bypass_enabled_proxies_images() {
         .unwrap();
     let body_str = String::from_utf8(body.to_vec()).unwrap();
     assert!(body_str.contains("url"));
+}
+
+#[tokio::test]
+async fn test_bypass_rejects_oversized_request_body() {
+    let provider_url = mock_provider_server().await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Small limit: 16 bytes.
+    let bypass_provider = Arc::new(BypassProvider::new(
+        provider_url,
+        "test-key".to_string(),
+        "test-provider".to_string(),
+        Arc::new(reqwest::Client::new()),
+        16,
+    ));
+    let classifier = Arc::new(PathClassifier::new(true));
+    let app = Router::new();
+    let app = with_bypass(app, Some(bypass_provider), classifier);
+
+    // Body of 64 bytes (well over the 16-byte limit). The bypass handler's
+    // own to_bytes bound rejects it before forwarding.
+    let big_body = "x".repeat(64);
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/embeddings")
+        .header("content-type", "application/json")
+        .body(Body::from(big_body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_GATEWAY,
+        "oversized body must be rejected before forwarding"
+    );
+}
+
+#[tokio::test]
+async fn test_bypass_streams_response_body_intact() {
+    // Regression: after streaming the upstream response back via
+    // Body::from_stream, the client must still receive the full body.
+    let provider_url = mock_provider_server().await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let bypass_provider = Arc::new(BypassProvider::new(
+        provider_url,
+        "test-key".to_string(),
+        "test-provider".to_string(),
+        Arc::new(reqwest::Client::new()),
+        usize::MAX,
+    ));
+    let classifier = Arc::new(PathClassifier::new(true));
+    let app = Router::new();
+    let app = with_bypass(app, Some(bypass_provider), classifier);
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/embeddings")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"model":"text-embedding-3-small","input":"test"}"#,
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    // Collect the streamed body on the client side.
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        body_str.contains("embedding"),
+        "streamed response body must contain the upstream payload, got: {body_str}"
+    );
 }
 
 #[tokio::test]
@@ -223,6 +301,7 @@ async fn test_intercepted_path_not_bypassed() {
         "test-key".to_string(),
         "test-provider".to_string(),
         Arc::new(reqwest::Client::new()),
+        usize::MAX,
     ));
 
     // Create path classifier with bypass enabled
@@ -267,6 +346,7 @@ async fn test_unknown_intercepted_path_returns_404() {
         "test-key".to_string(),
         "test-provider".to_string(),
         Arc::new(reqwest::Client::new()),
+        usize::MAX,
     ));
 
     // Create a router with no routes

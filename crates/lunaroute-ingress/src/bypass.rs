@@ -41,10 +41,11 @@ impl IntoResponse for BypassError {
             _ => StatusCode::BAD_GATEWAY,
         };
 
-        let body = format!(
-            "{{\"error\": \"bypass_proxy_error\", \"message\": \"{}\"}}",
-            self
-        );
+        let body = serde_json::json!({
+            "error": "bypass_proxy_error",
+            "message": self.to_string(),
+        })
+        .to_string();
 
         (status, body).into_response()
     }
@@ -61,16 +62,26 @@ pub struct BypassProvider {
     pub name: String,
     /// HTTP client
     pub client: Arc<Client>,
+    /// Maximum inbound request body size in bytes (mirrors the server-wide
+    /// DefaultBodyLimit; used for the bypass handler's own bounded read).
+    pub max_request_body_bytes: usize,
 }
 
 impl BypassProvider {
     /// Create a new bypass provider
-    pub fn new(base_url: String, api_key: String, name: String, client: Arc<Client>) -> Self {
+    pub fn new(
+        base_url: String,
+        api_key: String,
+        name: String,
+        client: Arc<Client>,
+        max_request_body_bytes: usize,
+    ) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             name,
             client,
+            max_request_body_bytes,
         }
     }
 
@@ -145,7 +156,7 @@ async fn bypass_handler_impl(
     let headers = parts.headers;
 
     // Read body
-    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+    let body_bytes = match axum::body::to_bytes(body, provider.max_request_body_bytes).await {
         Ok(bytes) => bytes,
         Err(e) => {
             error!("Failed to read request body: {}", e);
@@ -240,14 +251,12 @@ pub async fn proxy_request(
     let status = response.status();
     let provider_headers = response.headers().clone();
 
-    // Read response body
-    let response_bytes = response.bytes().await?;
+    // Stream the upstream response back to the client without buffering it.
+    // Eliminates the response-side memory-exhaustion DoS: the proxy never
+    // holds the full response body.
+    let body_stream = response.bytes_stream();
 
-    debug!(
-        "Bypass proxy response: {} bytes, status: {}",
-        response_bytes.len(),
-        status
-    );
+    debug!("Bypass proxy streaming response back, status: {}", status);
 
     // Build response headers, filtering hop-by-hop headers
     let mut response_header_map = HeaderMap::new();
@@ -264,8 +273,8 @@ pub async fn proxy_request(
         response_header_map.insert(name.clone(), value.clone());
     }
 
-    // Build axum response
-    let mut response = Response::new(Body::from(response_bytes.to_vec()));
+    // Build axum response with a streaming body
+    let mut response = Response::new(Body::from_stream(body_stream));
     *response.status_mut() = status;
     *response.headers_mut() = response_header_map;
 
@@ -291,6 +300,29 @@ fn is_hop_by_hop_header(name: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn bypass_error_with_quote_in_display_produces_valid_json() {
+        // A BypassError whose Display contains a double-quote and backslash
+        // must serialize to valid JSON, not a broken literal.
+        use axum::body::to_bytes;
+        use axum::http::StatusCode;
+
+        // RequestFailed wraps a reqwest::Error; constructing one directly is
+        // awkward, so use BodyReadError which carries an arbitrary string.
+        let err = BypassError::BodyReadError(r#"he said "hi" \n done"#.to_string());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes)
+            .expect("error body must be valid JSON even with quotes/backslashes");
+        assert_eq!(parsed["error"], "bypass_proxy_error");
+        assert_eq!(
+            parsed["message"],
+            r#"Body read error: he said "hi" \n done"#
+        );
+    }
+
     #[test]
     fn test_is_hop_by_hop_header() {
         assert!(is_hop_by_hop_header("Connection"));
@@ -314,6 +346,7 @@ mod tests {
             "test-key".to_string(),
             "openai".to_string(),
             client,
+            usize::MAX,
         );
 
         assert_eq!(
@@ -335,6 +368,7 @@ mod tests {
             "test-key".to_string(),
             "anthropic".to_string(),
             client,
+            usize::MAX,
         );
 
         assert_eq!(
@@ -353,6 +387,7 @@ mod tests {
             "key".to_string(),
             "test".to_string(),
             client.clone(),
+            usize::MAX,
         );
         assert_eq!(provider1.base_url, "https://api.openai.com");
 
@@ -362,6 +397,7 @@ mod tests {
             "key".to_string(),
             "test".to_string(),
             client.clone(),
+            usize::MAX,
         );
         assert_eq!(provider2.base_url, "https://api.openai.com");
     }
