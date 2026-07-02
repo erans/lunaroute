@@ -250,14 +250,12 @@ pub async fn proxy_request(
     let status = response.status();
     let provider_headers = response.headers().clone();
 
-    // Read response body
-    let response_bytes = response.bytes().await?;
+    // Stream the upstream response back to the client without buffering it.
+    // Eliminates the response-side memory-exhaustion DoS: the proxy never
+    // holds the full response body.
+    let body_stream = response.bytes_stream();
 
-    debug!(
-        "Bypass proxy response: {} bytes, status: {}",
-        response_bytes.len(),
-        status
-    );
+    debug!("Bypass proxy streaming response back, status: {}", status);
 
     // Build response headers, filtering hop-by-hop headers
     let mut response_header_map = HeaderMap::new();
@@ -274,8 +272,8 @@ pub async fn proxy_request(
         response_header_map.insert(name.clone(), value.clone());
     }
 
-    // Build axum response
-    let mut response = Response::new(Body::from(response_bytes.to_vec()));
+    // Build axum response with a streaming body
+    let mut response = Response::new(Body::from_stream(body_stream));
     *response.status_mut() = status;
     *response.headers_mut() = response_header_map;
 
