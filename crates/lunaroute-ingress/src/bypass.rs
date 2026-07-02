@@ -41,10 +41,11 @@ impl IntoResponse for BypassError {
             _ => StatusCode::BAD_GATEWAY,
         };
 
-        let body = format!(
-            "{{\"error\": \"bypass_proxy_error\", \"message\": \"{}\"}}",
-            self
-        );
+        let body = serde_json::json!({
+            "error": "bypass_proxy_error",
+            "message": self.to_string(),
+        })
+        .to_string();
 
         (status, body).into_response()
     }
@@ -298,6 +299,29 @@ fn is_hop_by_hop_header(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bypass_error_with_quote_in_display_produces_valid_json() {
+        // A BypassError whose Display contains a double-quote and backslash
+        // must serialize to valid JSON, not a broken literal.
+        use axum::body::to_bytes;
+        use axum::http::StatusCode;
+
+        // RequestFailed wraps a reqwest::Error; constructing one directly is
+        // awkward, so use BodyReadError which carries an arbitrary string.
+        let err = BypassError::BodyReadError(r#"he said "hi" \n done"#.to_string());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes)
+            .expect("error body must be valid JSON even with quotes/backslashes");
+        assert_eq!(parsed["error"], "bypass_proxy_error");
+        assert_eq!(
+            parsed["message"],
+            r#"Body read error: he said "hi" \n done"#
+        );
+    }
 
     #[test]
     fn test_is_hop_by_hop_header() {
