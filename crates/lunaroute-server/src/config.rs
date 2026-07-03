@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -222,7 +223,19 @@ impl HttpClientSettings {
             tcp_keepalive_secs: self
                 .tcp_keepalive_secs
                 .unwrap_or(defaults.tcp_keepalive_secs),
-            max_retries: self.max_retries.unwrap_or(defaults.max_retries),
+            max_retries: {
+                let requested = self.max_retries.unwrap_or(defaults.max_retries);
+                if requested > 10 {
+                    warn!(
+                        requested = requested,
+                        clamped = 10,
+                        "max_retries exceeds safe ceiling; clamping to 10"
+                    );
+                    10
+                } else {
+                    requested
+                }
+            },
             enable_pool_metrics: self
                 .enable_pool_metrics
                 .unwrap_or(defaults.enable_pool_metrics),
@@ -824,6 +837,69 @@ mod tests {
         assert_eq!(config.tcp_keepalive_secs, 30);
         assert_eq!(config.max_retries, 5);
         assert!(!config.enable_pool_metrics);
+    }
+
+    #[test]
+    fn test_to_http_client_config_clamps_max_retries_to_10() {
+        let provider = ProviderSettings {
+            api_key: Some("test-key".to_string()),
+            base_url: None,
+            enabled: true,
+            http_client: Some(HttpClientSettings {
+                timeout_secs: Some(300),
+                connect_timeout_secs: Some(5),
+                pool_max_idle_per_host: Some(64),
+                pool_idle_timeout_secs: Some(120),
+                tcp_keepalive_secs: Some(30),
+                max_retries: Some(100),
+                enable_pool_metrics: Some(false),
+            }),
+            request_headers: None,
+            request_body: None,
+            response_body: None,
+            codex_auth: None,
+            provider_type: None,
+            model: None,
+        };
+        let config = provider
+            .http_client
+            .as_ref()
+            .unwrap()
+            .to_http_client_config();
+        assert_eq!(config.max_retries, 10, "max_retries must be clamped to 10");
+    }
+
+    #[test]
+    fn test_to_http_client_config_preserves_max_retries_under_10() {
+        let provider = ProviderSettings {
+            api_key: Some("test-key".to_string()),
+            base_url: None,
+            enabled: true,
+            http_client: Some(HttpClientSettings {
+                timeout_secs: Some(300),
+                connect_timeout_secs: Some(5),
+                pool_max_idle_per_host: Some(64),
+                pool_idle_timeout_secs: Some(120),
+                tcp_keepalive_secs: Some(30),
+                max_retries: Some(5),
+                enable_pool_metrics: Some(false),
+            }),
+            request_headers: None,
+            request_body: None,
+            response_body: None,
+            codex_auth: None,
+            provider_type: None,
+            model: None,
+        };
+        let config = provider
+            .http_client
+            .as_ref()
+            .unwrap()
+            .to_http_client_config();
+        assert_eq!(
+            config.max_retries, 5,
+            "max_retries under the ceiling is unchanged"
+        );
     }
 
     #[test]

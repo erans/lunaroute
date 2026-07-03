@@ -133,7 +133,12 @@ where
 
     for attempt in 0..=max_retries {
         if attempt > 0 {
-            let backoff_ms = 2u64.pow(attempt - 1) * 100; // Exponential backoff: 100ms, 200ms, 400ms
+            // Exponential backoff: 100ms, 200ms, 400ms ... saturating to avoid
+            // overflow for large max_retries (2u64.pow(64) would panic; checked_shl
+            // + saturating_mul caps instead). For realistic max_retries (3-10)
+            // values are identical to today.
+            let backoff_ms =
+                (1u64.checked_shl(attempt - 1).unwrap_or(u64::MAX)).saturating_mul(100);
             debug!(
                 "Retrying request after {}ms (attempt {}/{})",
                 backoff_ms, attempt, max_retries
@@ -253,6 +258,62 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_backoff_does_not_overflow_for_large_max_retries_success_path() {
+        // max_retries=65 would overflow 2u64.pow(64) today (panic in debug).
+        // Saturating expression must not panic. Operation succeeds on first
+        // attempt, so no actual sleep — this checks the expression compiles
+        // and the fn doesn't panic on setup.
+        let result: Result<i32> = with_retry(65, || async { Ok(42) }).await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_backoff_does_not_overflow_for_large_max_retries_retry_path() {
+        // Force the retry path with a non-429 retryable error and max_retries=65.
+        // The backoff expression is evaluated on every retry; with the old
+        // 2u64.pow(attempt-1) this would panic at attempt=64. Saturating
+        // expression must not panic. Uses paused Tokio time plus explicit
+        // virtual-time advancement so the sleeps don't block real wall-clock.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_clone = attempts.clone();
+
+        let retry_task = tokio::spawn(async move {
+            with_retry(65, move || {
+                let a = attempts_clone.clone();
+                async move {
+                    a.fetch_add(1, Ordering::SeqCst);
+                    // Non-429 retryable error -> egress retries with exponential backoff.
+                    Err(EgressError::ProviderError {
+                        status_code: 500,
+                        message: "Internal error".to_string(),
+                    })
+                }
+            })
+            .await
+        });
+
+        for _ in 0..70 {
+            if retry_task.is_finished() {
+                break;
+            }
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_millis(u64::MAX)).await;
+        }
+
+        assert!(
+            retry_task.is_finished(),
+            "retry task should finish without real-time sleeps"
+        );
+        let result: Result<i32> = retry_task.await.unwrap();
+        assert!(result.is_err());
+        // All 66 attempts (0..=65) ran without panicking.
+        assert_eq!(attempts.load(Ordering::SeqCst), 66);
     }
 
     #[test]
