@@ -1094,9 +1094,27 @@ mod tests {
         assert!(api_key.contains("<redacted>"));
         assert!(!api_key.contains("sk-ant-api03-xyz"));
 
-        // Case-insensitive: "Authorization" and "X-API-Key" also redacted.
-        assert!(redact_header_line("Authorization", "Bearer x").contains("<redacted>"));
-        assert!(redact_header_line("X-API-Key", "y").contains("<redacted>"));
+        // Case-insensitive: "Authorization" and "X-API-Key" also redacted
+        // (value absent + <redacted> present).
+        let auth_caps = redact_header_line("Authorization", "Bearer case-auth-secret");
+        assert!(
+            auth_caps.contains("<redacted>"),
+            "Authorization must be redacted: {auth_caps}"
+        );
+        assert!(
+            !auth_caps.contains("case-auth-secret"),
+            "Authorization value must NOT appear: {auth_caps}"
+        );
+
+        let api_key_caps = redact_header_line("X-API-Key", "case-api-secret");
+        assert!(
+            api_key_caps.contains("<redacted>"),
+            "X-API-Key must be redacted: {api_key_caps}"
+        );
+        assert!(
+            !api_key_caps.contains("case-api-secret"),
+            "X-API-Key value must NOT appear: {api_key_caps}"
+        );
 
         // Non-auth headers are logged verbatim.
         let ct = redact_header_line("content-type", "application/json");
