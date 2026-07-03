@@ -18,6 +18,20 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use tracing::{debug, instrument};
 
+/// Format a header for debug logging, redacting auth values.
+///
+/// `authorization` and `x-api-key` are replaced with `<redacted>` so client
+/// credentials don't leak into logs in the no-key passthrough mode. Other
+/// headers are logged verbatim.
+fn redact_header_line(name: &str, value: &str) -> String {
+    let name_lower = name.to_lowercase();
+    if name_lower == "authorization" || name_lower == "x-api-key" {
+        format!("│ {}: <redacted>", name)
+    } else {
+        format!("│ {}: {}", name, value)
+    }
+}
+
 /// Anthropic connector configuration
 #[derive(Debug, Clone)]
 pub struct AnthropicConfig {
@@ -92,7 +106,7 @@ impl AnthropicConnector {
         debug!("├─────────────────────────────────────────────────────────");
         debug!("│ x-api-key: <api_key>");
         for (name, value) in &headers {
-            debug!("│ {}: {}", name, value);
+            debug!("{}", redact_header_line(name.as_str(), value.as_str()));
         }
         debug!("│ Content-Type: application/json");
         debug!("├─────────────────────────────────────────────────────────");
@@ -240,7 +254,7 @@ impl AnthropicConnector {
         debug!("├─────────────────────────────────────────────────────────");
         debug!("│ x-api-key: <api_key>");
         for (name, value) in &headers {
-            debug!("│ {}: {}", name, value);
+            debug!("{}", redact_header_line(name.as_str(), value.as_str()));
         }
         debug!("│ Content-Type: application/json");
         debug!("├─────────────────────────────────────────────────────────");
@@ -1062,6 +1076,50 @@ impl AnthropicResponseExt for reqwest::Response {
 mod tests {
     use super::*;
     use lunaroute_core::normalized::{ContentPart, FunctionDefinition, ImageSource, Tool};
+
+    #[test]
+    fn test_redact_header_line_redacts_auth() {
+        // Auth headers are redacted (value replaced with <redacted>).
+        let auth = redact_header_line("authorization", "Bearer sk-secret-123");
+        assert!(
+            auth.contains("<redacted>"),
+            "authorization must be redacted: {auth}"
+        );
+        assert!(
+            !auth.contains("sk-secret-123"),
+            "authorization value must NOT appear: {auth}"
+        );
+
+        let api_key = redact_header_line("x-api-key", "sk-ant-api03-xyz");
+        assert!(api_key.contains("<redacted>"));
+        assert!(!api_key.contains("sk-ant-api03-xyz"));
+
+        // Case-insensitive: "Authorization" and "X-API-Key" also redacted
+        // (value absent + <redacted> present).
+        let auth_caps = redact_header_line("Authorization", "Bearer case-auth-secret");
+        assert!(
+            auth_caps.contains("<redacted>"),
+            "Authorization must be redacted: {auth_caps}"
+        );
+        assert!(
+            !auth_caps.contains("case-auth-secret"),
+            "Authorization value must NOT appear: {auth_caps}"
+        );
+
+        let api_key_caps = redact_header_line("X-API-Key", "case-api-secret");
+        assert!(
+            api_key_caps.contains("<redacted>"),
+            "X-API-Key must be redacted: {api_key_caps}"
+        );
+        assert!(
+            !api_key_caps.contains("case-api-secret"),
+            "X-API-Key value must NOT appear: {api_key_caps}"
+        );
+
+        // Non-auth headers are logged verbatim.
+        let ct = redact_header_line("content-type", "application/json");
+        assert_eq!(ct, "│ content-type: application/json");
+    }
 
     #[test]
     fn test_config_creation() {
