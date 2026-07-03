@@ -233,7 +233,7 @@ impl Provider for LoggingProvider {
             let message = &response.choices[0].message;
             // MessageContent is an enum, check if it's text
             if let lunaroute_core::normalized::MessageContent::Text(text) = &message.content {
-                info!("│ Content: {}", text);
+                debug!("│ Content: {}", text);
             }
         }
         info!(
@@ -287,13 +287,13 @@ impl Provider for LoggingProvider {
                     }
                     NormalizedStreamEvent::Delta { delta, .. } => {
                         if let Some(ref content) = delta.content {
-                            info!("│ 📝 {}", content);
+                            debug!("│ 📝 {}", content);
                         }
                     }
                     NormalizedStreamEvent::ToolCallDelta { function, .. } => {
                         if let Some(func) = function {
                             if let Some(name) = &func.name {
-                                info!("│ 🔧 Tool call: {}", name);
+                                debug!("│ 🔧 Tool call: {}", name);
                             }
                             if let Some(args) = &func.arguments {
                                 debug!("│ 🔧 Tool args delta: {}", args);
