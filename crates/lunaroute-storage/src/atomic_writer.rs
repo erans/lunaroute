@@ -4,7 +4,7 @@ use crate::traits::StorageResult;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// Atomic file writer that writes to a temporary file and renames on success
@@ -39,6 +39,9 @@ impl AtomicWriter {
             .open(&temp_path)?;
         #[cfg(not(unix))]
         let file = File::create(&temp_path)?;
+
+        #[cfg(unix)]
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
 
         Ok(Self {
             temp_path,
@@ -136,6 +139,32 @@ mod tests {
             "session file must be 0600 (owner rw only), got {:o}",
             mode & 0o777
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_atomic_write_chmods_existing_temp_file_to_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session_response.bin");
+        let temp_path = AtomicWriter::temp_path(&path);
+
+        fs::write(&temp_path, b"stale").unwrap();
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let temp_mode = fs::metadata(&temp_path).unwrap().permissions().mode();
+        assert_eq!(temp_mode & 0o777, 0o644);
+
+        let mut writer = AtomicWriter::new(&path).unwrap();
+        writer.write(b"secret response content").unwrap();
+        writer.commit().unwrap();
+
+        let content = fs::read(&path).unwrap();
+        assert_eq!(content, b"secret response content");
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert!(!temp_path.exists());
     }
 
     #[test]
