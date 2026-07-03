@@ -1,8 +1,10 @@
 //! Atomic file writer to ensure safe file operations
 
 use crate::traits::StorageResult;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 /// Atomic file writer that writes to a temporary file and renames on success
@@ -25,7 +27,17 @@ impl AtomicWriter {
         // Create temporary file path
         let temp_path = Self::temp_path(&final_path);
 
-        // Create the temporary file
+        // Create the temporary file with restrictive permissions (0600) so
+        // other local users can't read recorded session content (prompts,
+        // tool I/O). fs::rename preserves the mode to the final path.
+        #[cfg(unix)]
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temp_path)?;
+        #[cfg(not(unix))]
         let file = File::create(&temp_path)?;
 
         Ok(Self {
@@ -104,6 +116,26 @@ mod tests {
 
         let content = fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "Hello, world!");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_atomic_write_creates_file_with_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session_request.bin");
+
+        let mut writer = AtomicWriter::new(&path).unwrap();
+        writer.write(b"secret prompt content").unwrap();
+        writer.commit().unwrap(); // rename to final path
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "session file must be 0600 (owner rw only), got {:o}",
+            mode & 0o777
+        );
     }
 
     #[test]
