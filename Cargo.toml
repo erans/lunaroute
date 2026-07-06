@@ -44,7 +44,7 @@ hyper-util = { version = "0.1", features = ["full"] }
 http = "1.0"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["full"] }
-tower-http = { version = "0.6", features = ["full"] }
+tower-http = { version = "0.7", features = ["full"] }
 reqwest = { version = "0.13", features = ["json", "stream", "rustls"], default-features = false }
 eventsource-stream = "0.2"
 tokio-tungstenite = "0.29"
@@ -70,7 +70,7 @@ flate2 = "1.0"
 base64 = "0.22"
 
 # Cryptography
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 argon2 = "0.5"
 sha2 = "0.11"
 hmac = "0.13"
@@ -95,7 +95,7 @@ notify = "8.2"
 clap = { version = "4.5", features = ["derive", "env"] }
 
 # Testing
-mockall = "0.14"
+mockall = "0.15"
 wiremock = "0.6"
 tempfile = "3.8"
 serial_test = "3.0"
