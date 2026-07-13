@@ -17,7 +17,7 @@ tokio = { workspace = true }
 futures = { workspace = true }
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
 
 # Serialization
 serde = { workspace = true }
