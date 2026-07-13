@@ -19,7 +19,7 @@ tokio = { workspace = true }
 futures = { workspace = true }
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite"] }
 
 # Serialization
 serde = { workspace = true }
